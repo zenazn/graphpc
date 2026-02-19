@@ -21,7 +21,11 @@ import type { PathSegments } from "./path.ts";
 import { createStub, createDataProxy, classifyPath } from "./proxy.ts";
 import type { ProxyBackend } from "./proxy.ts";
 import { formatPath, formatValue } from "./format.ts";
-import { createSerializer, type SerializerOptions } from "./serialization.ts";
+import {
+  createSerializer,
+  createClientSerializer,
+  type SerializerOptions,
+} from "./serialization.ts";
 
 interface SSRRef {
   parentToken: number;
@@ -156,7 +160,11 @@ export function createSSRClient<S extends ServerInstance<any>>(
               result,
             });
           }
-          return result;
+          // Transform the result through the same serde pipeline the
+          // regular client uses — References become data+stub proxies,
+          // Paths become stubs, and any user-registered types round-trip
+          // correctly. This prevents SSR/client divergence.
+          return resultSerializer.parse(serializer.stringify(result));
         } else {
           const data = resolveData(node, ctx);
           if (!recordedData.has(token)) {
@@ -168,6 +176,21 @@ export function createSSRClient<S extends ServerInstance<any>>(
       });
     },
   };
+
+  // Serializer that mirrors the client's deserialization: References become
+  // data+stub proxies and Paths become stubs. Used inside backend.resolve()
+  // (which runs after this line, so the forward reference is safe).
+  const resultSerializer = createClientSerializer(
+    options,
+    (value) => {
+      const [path, data] = value as [PathSegments, Record<string, unknown>];
+      return createDataProxy(backend, path, data);
+    },
+    (value) => {
+      const [segments] = value as [PathSegments];
+      return createStub(backend, segments);
+    },
+  );
 
   const proxy = createStub(backend, []);
 

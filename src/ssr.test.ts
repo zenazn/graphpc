@@ -1,7 +1,9 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
 import { edge, method } from "./decorators.ts";
-import { Node, type RpcClient } from "./types.ts";
+import { Node, canonicalPath, type RpcClient } from "./types.ts";
+import { ref, pathTo, type Reference } from "./ref.ts";
+import type { Path } from "./node-path.ts";
 import { createSSRClient } from "./ssr.ts";
 import { createSerializer } from "./serialization.ts";
 import { createServer } from "./server.ts";
@@ -47,6 +49,10 @@ class Post extends Node {
     super();
   }
 
+  static [canonicalPath](root: Api, id: string) {
+    return root.posts.get(id);
+  }
+
   @edge(CommentsService)
   get comments(): CommentsService {
     return new CommentsService();
@@ -69,6 +75,16 @@ class PostsService extends Node {
   @method
   async count(): Promise<number> {
     return this.#posts.size;
+  }
+
+  @method
+  async listRefs(): Promise<Reference<Post>[]> {
+    return Promise.all([ref(Post, "1"), ref(Post, "2")]);
+  }
+
+  @method
+  async listPaths(): Promise<Path<Post>[]> {
+    return ["1", "2"].map((id) => pathTo(Post, id));
   }
 }
 
@@ -205,6 +221,56 @@ test("SSR tracking proxy records deep traversals", async () => {
   expect(data.refs[1]).toEqual([1, "get", "1"]);
   expect(data.refs[2]).toEqual([2, "comments"]);
   expect(data.refs[3]).toEqual([3, "get", "c1"]);
+});
+
+// -- SSR Reference unwrapping tests --
+
+test("SSR: method returning refs exposes data fields", async () => {
+  const client = createSSRClient<typeof gpc>(new Api(), {});
+
+  const posts = await client.root.posts.listRefs();
+  expect(Array.isArray(posts)).toBe(true);
+  expect(posts.length).toBe(2);
+
+  // Data fields on refs should be accessible through the SSR proxy
+  expect(posts[0]!.id).toBe("1");
+  expect(posts[0]!.title).toBe("Hello World");
+  expect(posts[1]!.id).toBe("2");
+  expect(posts[1]!.title).toBe("Second Post");
+});
+
+test("SSR: edge navigation from refs works", async () => {
+  const client = createSSRClient<typeof gpc>(new Api(), {});
+
+  const posts = await client.root.posts.listRefs();
+  const first = posts[0]!;
+
+  // Edge traversal through a ref should work (comments is an @edge on Post)
+  const comment = await first.comments.get("c1");
+  expect(comment.id).toBe("c1");
+  expect(comment.text).toBe("Great post!");
+});
+
+test("SSR: method call through ref works", async () => {
+  const client = createSSRClient<typeof gpc>(new Api(), {});
+
+  const posts = await client.root.posts.listRefs();
+  const comment = await posts[0]!.comments.get("c1");
+
+  const upvotes = await comment.upvote();
+  expect(upvotes).toBe(42);
+});
+
+test("SSR: method returning paths produces navigable stubs", async () => {
+  const client = createSSRClient<typeof gpc>(new Api(), {});
+
+  const stubs = await client.root.posts.listPaths();
+  expect(stubs.length).toBe(2);
+
+  // Each stub should be navigable — await fetches data
+  const post = await stubs[0]!;
+  expect(post.id).toBe("1");
+  expect(post.title).toBe("Hello World");
 });
 
 test("generateHydrationData includes schema", () => {
@@ -651,13 +717,17 @@ test("custom serializer: SSR hydration round-trips custom types", async () => {
 });
 
 test("custom serializer: without options, custom types fail to serialize", async () => {
-  // SSR client WITHOUT custom serializer — Money won't be reduced
+  // SSR client WITHOUT custom serializer — Money won't be reduced.
+  // The serde step in backend.resolve() fails immediately (same as the
+  // server-side serialization failure in the regular client flow).
   const client = createSSRClient<typeof shopGpc>(new ShopApi(), {});
 
-  await client.root.products.get("p1").price();
-
-  // devalue can't stringify arbitrary non-POJOs without a reducer
-  expect(() => client.generateHydrationData()).toThrow();
+  try {
+    await client.root.products.get("p1").price();
+    expect.unreachable("should have thrown");
+  } catch {
+    // devalue can't stringify arbitrary non-POJOs without a reducer
+  }
 });
 
 test("custom serializer: full pipeline client vs SSR vs hydrated", async () => {
