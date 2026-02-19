@@ -138,7 +138,7 @@ Built-in errors (all extend `RpcError`): `ValidationError`, `EdgeNotFoundError`,
 
 ## Reconnection
 
-Auto-reconnects with exponential backoff (enabled by default). In-flight promises survive disconnects. New epoch on reconnect. After retry exhaustion, new operations reject with `ConnectionLostError`; call `client.reconnect()` to reset retries and try again. Mutations are at-least-once — use idempotency keys for non-idempotent ones. Disable with `reconnect: false`. Details: [Reconnection](reconnection.md).
+If the transport drops while idle, the client waits until the next operation and opens a fresh connection. If in-flight operations exist, it reconnects eagerly with exponential backoff. In-flight promises survive disconnects. New epoch on reconnect. After retry exhaustion, new operations reject with `ConnectionLostError`; call `client.reconnect()` to reset retries and try again. Mutations are at-least-once — use idempotency keys for non-idempotent ones. Disable with `reconnect: false`. Details: [Reconnection](reconnection.md).
 
 ## Testing
 

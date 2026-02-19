@@ -10,6 +10,9 @@ import { Node } from "./types.ts";
 import type { Transport } from "./protocol.ts";
 import { flush, waitForEvent } from "./test-utils.ts";
 
+/** Yields to the microtask queue so deferred .then() calls can fire. */
+const tick = () => Promise.resolve();
+
 // -- Test API --
 
 class Post extends Node {
@@ -127,20 +130,17 @@ test("no reconnect — disconnect rejects pending with CONNECTION_CLOSED", async
   }
 });
 
-test("basic reconnect — disconnect while idle, subsequent operations work", async () => {
+test("idle disconnect — next operation opens fresh connection (lazy reconnect)", async () => {
   const { client, disconnect } = setup();
 
   // Complete an initial operation
   const result1 = await client.root.ping();
   expect(result1).toBe("pong");
 
-  // Disconnect
+  // Disconnect while idle (no pending operations)
   disconnect();
 
-  // Wait for reconnection (immediate first attempt)
-  await waitForEvent(client, "reconnect");
-
-  // New operation should work on the new connection
+  // No eager reconnect — next operation lazily opens a fresh connection
   const result2 = await client.root.ping();
   expect(result2).toBe("pong");
 });
@@ -176,24 +176,16 @@ test("in-flight operation replayed on new connection", async () => {
   expect(result).toBe("done");
 });
 
-test("in-flight edge + get replayed — deep path replayed correctly", async () => {
+test("deep path works after idle disconnect", async () => {
   const { client, disconnect } = setup();
 
-  // Start a deep path operation
-  const promise = client.root.posts.count();
-
-  // Let schema arrive and edge + get be sent
   await client.ready;
-  await flush();
 
-  // Disconnect mid-flight
+  // Disconnect while idle
   disconnect();
 
-  // Wait for reconnection
-  await waitForEvent(client, "reconnect");
-
-  // Should complete on new connection
-  const result = await promise;
+  // Deep path lazily connects and completes on fresh connection
+  const result = await client.root.posts.count();
   expect(result).toBe(42);
 });
 
@@ -240,11 +232,10 @@ test("edge deduplication — shared prefixes sent once on replay", async () => {
   );
   expect(firstConnPostsEdges.length).toBe(1);
 
-  // Disconnect — resolvedEdges is cleared
+  // Disconnect while idle — resolvedEdges is cleared
   currentServerTransport!.close();
-  await waitForEvent(client, "reconnect");
 
-  // New concurrent operations on second connection
+  // New concurrent operations on second connection (lazy reconnect)
   const [count] = await Promise.all([
     client.root.posts.count(),
     client.root.posts.get("1"),
@@ -295,12 +286,9 @@ test("max retries exhausted — onReconnectFailed fires, pending rejected with C
   // Let initial connection establish
   await client.root.ping();
 
-  // Disconnect
-  currentServerTransport!.close();
-
-  // Force operation to start immediately during reconnect phase.
-  // Await it directly — retries happen in setTimeout callbacks during the await.
   const promise = Promise.resolve(client.root.posts.count());
+  await tick();
+  currentServerTransport!.close();
 
   try {
     await promise;
@@ -313,7 +301,7 @@ test("max retries exhausted — onReconnectFailed fires, pending rejected with C
   expect(failedCalled).toBe(true);
 });
 
-test("callbacks fire at correct times", async () => {
+test("idle disconnect fires 'disconnect' but not 'reconnect'", async () => {
   const events: string[] = [];
   const gpc = createServer({}, (_ctx: unknown) => new Api());
   let currentServerTransport: Transport | null = null;
@@ -326,11 +314,7 @@ test("callbacks fire at correct times", async () => {
   };
 
   const client = createClient<typeof gpc>(
-    {
-      reconnect: {
-        initialDelay: 10,
-      },
-    },
+    { reconnect: { initialDelay: 10 } },
     transportFactory,
   );
 
@@ -339,13 +323,45 @@ test("callbacks fire at correct times", async () => {
 
   await client.root.ping();
 
-  // Disconnect
+  // Idle disconnect — no eager reconnect
   currentServerTransport!.close();
 
-  // Wait for reconnection
-  await waitForEvent(client, "reconnect");
-
+  // Next operation opens a fresh connection (not a "reconnection")
   await client.root.ping();
+
+  expect(events).toEqual(["disconnect"]);
+});
+
+test("in-flight disconnect fires 'disconnect' then 'reconnect'", async () => {
+  const events: string[] = [];
+  const gpc = createServer({}, (_ctx: unknown) => new Api());
+  let currentServerTransport: Transport | null = null;
+
+  const transportFactory = () => {
+    const [serverTransport, clientTransport] = createMockTransportPair();
+    currentServerTransport = serverTransport;
+    gpc.handle(serverTransport, {});
+    return clientTransport;
+  };
+
+  const client = createClient<typeof gpc>(
+    { reconnect: { initialDelay: 10 } },
+    transportFactory,
+  );
+
+  client.on("disconnect", () => events.push("disconnect"));
+  client.on("reconnect", () => events.push("reconnect"));
+
+  // Start slow operation (200ms server-side)
+  const promise = Promise.resolve(client.root.slow());
+  await client.ready;
+  await flush();
+
+  // Disconnect while slow is in-flight (response delayed 200ms)
+  currentServerTransport!.close();
+
+  // Promise completes on reconnected transport
+  await promise;
 
   expect(events).toEqual(["disconnect", "reconnect"]);
 });
@@ -374,8 +390,8 @@ test("off removes event listener", async () => {
   await client.root.ping();
 
   currentServerTransport!.close();
-  await waitForEvent(client, "reconnect");
 
+  // Next operation opens fresh connection
   await client.root.ping();
 
   // Handler was removed — no events recorded
@@ -460,15 +476,14 @@ test("disconnect during reconnect — retries continue", async () => {
   const result1 = await client.root.ping();
   expect(result1).toBe("pong");
 
-  // Disconnect (connection 1)
+  // Idle disconnect (connection 1)
   currentServerTransport!.close();
 
-  // Connection 2 auto-dies after 5ms, connection 3 should succeed
-  await waitForEvent(client, "reconnect"); // connection 2 (briefly up)
-  await waitForEvent(client, "reconnect"); // connection 3 (stable)
-
-  const result2 = await client.root.ping();
-  expect(result2).toBe("pong");
+  // slow() lazily connects (connection 2, auto-dies after 5ms).
+  // Server-side slow takes 200ms, so connection 2 dies while in-flight
+  // → eager reconnect → connection 3 succeeds
+  const result2 = await client.root.slow();
+  expect(result2).toBe("done");
   expect(connectionNumber).toBeGreaterThanOrEqual(3);
 });
 
@@ -488,19 +503,23 @@ test("new operations during reconnect — queued, execute after reconnect", asyn
     transportFactory,
   );
 
-  await client.root.ping();
+  const slowPromise = Promise.resolve(client.root.slow());
+  await client.ready;
+  await flush();
 
-  // Disconnect
+  // Disconnect with slow in-flight → eager reconnect (30ms delay)
   currentServerTransport!.close();
 
-  // Immediately start a new operation during reconnect window
-  const promise = client.root.posts.count();
+  // Start a new operation during the reconnect window
+  const countPromise = client.root.posts.count();
 
-  // Wait for reconnection
-  await waitForEvent(client, "reconnect");
-
-  const result = await promise;
-  expect(result).toBe(42);
+  // Both should complete after reconnect
+  const [slowResult, countResult] = await Promise.all([
+    slowPromise,
+    countPromise,
+  ]);
+  expect(slowResult).toBe("done");
+  expect(countResult).toBe(42);
 });
 
 // -- reconnect() tests --
@@ -528,10 +547,14 @@ test("reconnect() after exhaustion revives client", async () => {
   // Establish initial connection
   await client.root.ping();
 
-  // Make factory fail and disconnect to exhaust retries
   failFactory = true;
+  const failedPromise = Promise.resolve(client.root.ping());
+  await tick();
   currentServerTransport!.close();
   await waitForEvent(client, "reconnectFailed");
+  try {
+    await failedPromise;
+  } catch {}
 
   // Restore factory and call reconnect()
   failFactory = false;
@@ -565,8 +588,14 @@ test("new operations after exhaustion reject immediately", async () => {
   );
 
   await client.root.ping();
+
+  const failedPromise = Promise.resolve(client.root.ping());
+  await tick();
   currentServerTransport!.close();
   await waitForEvent(client, "reconnectFailed");
+  try {
+    await failedPromise;
+  } catch {}
 
   // New operation should reject immediately, not hang
   try {
@@ -635,8 +664,9 @@ test("reconnect() during active reconnection restarts", async () => {
 
   await client.root.ping();
 
-  // Make the immediate reconnect attempt fail, putting us in a 60s backoff
   shouldFail = true;
+  const inFlightPromise = Promise.resolve(client.root.ping());
+  await tick();
   currentServerTransport!.close();
   // Let the immediate attempt (setTimeout 0) fire and fail
   await flush();
@@ -645,6 +675,10 @@ test("reconnect() during active reconnection restarts", async () => {
   shouldFail = false;
   client.reconnect();
   await waitForEvent(client, "reconnect");
+
+  // In-flight operation completes on the new connection
+  const inFlightResult = await inFlightPromise;
+  expect(inFlightResult).toBe("pong");
 
   const result = await client.root.ping();
   expect(result).toBe("pong");
@@ -686,8 +720,13 @@ test("reconnect() fires reconnect event", async () => {
   await client.root.ping();
 
   failFactory = true;
+  const failedPromise = Promise.resolve(client.root.ping());
+  await tick();
   currentServerTransport!.close();
   await waitForEvent(client, "reconnectFailed");
+  try {
+    await failedPromise;
+  } catch {}
 
   // Events so far: disconnect, reconnectFailed
   expect(events).toEqual(["disconnect", "reconnectFailed"]);
@@ -722,11 +761,15 @@ test("reconnect() can exhaust again", async () => {
 
   await client.root.ping();
 
-  // Exhaust retries
   failFactory = true;
+  const failedPromise = Promise.resolve(client.root.ping());
+  await tick();
   currentServerTransport!.close();
   await waitForEvent(client, "reconnectFailed");
   expect(failedCount).toBe(1);
+  try {
+    await failedPromise;
+  } catch {}
 
   // reconnect() with still-failing factory — should exhaust again
   client.reconnect();

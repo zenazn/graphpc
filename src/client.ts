@@ -222,10 +222,21 @@ export function createClient<S extends ServerInstance<any>>(
       }
       pending.clear();
 
-      isReconnecting = true;
       emit("disconnect");
       clearConnectionState();
-      scheduleReconnect();
+
+      if (pendingTerminals.size > 0) {
+        // Eager reconnect: in-flight operations need replay.
+        // Keep old transport ref so stale microtasks harmlessly
+        // drop messages on the closed transport instead of crashing.
+        isReconnecting = true;
+        scheduleReconnect();
+      } else {
+        // Lazy reconnect: no pending work, so don't reconnect now.
+        // Null out transport so ensureConnected() opens a fresh
+        // connection when the next operation arrives.
+        transport = null;
+      }
     } else {
       // No reconnect — reject everything permanently
       const err = new RpcError("CONNECTION_CLOSED", "Transport closed");

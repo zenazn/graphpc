@@ -81,6 +81,18 @@ client.off("disconnect", handler);
 | `'reconnect'`       | A new transport connects and the server sends its hello |
 | `'reconnectFailed'` | All `maxRetries` attempts have been exhausted           |
 
+## Lazy vs Eager Reconnection
+
+If the transport drops while the client is idle (no in-flight operations), the client does **not** reconnect immediately. Instead, it waits until the next operation arrives and opens a fresh connection on demand — just like the initial connection.
+
+If the transport drops while operations **are** in-flight, the client reconnects eagerly using the backoff strategy described above. Pending promises stay alive and are replayed on the new connection once it's established.
+
+This means:
+
+- **Idle timeout on the server** does not cause a reconnect loop. The client stays dormant until the next operation.
+- **`'reconnect'` only fires** after an eager reconnect (in-flight operations were pending). An idle disconnect followed by a fresh connection does **not** emit `'reconnect'`.
+- **`'disconnect'` always fires** when the transport closes, regardless of whether operations were in-flight.
+
 ## Request Queuing
 
 If the WebSocket drops while requests are in-flight, their promises do **not** reject. Instead, they're queued internally until the connection is restored.
