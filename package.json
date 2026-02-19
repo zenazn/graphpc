@@ -1,6 +1,6 @@
 {
   "name": "graphpc",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Type-safe graph API for TypeScript. Like GraphQL, without the query language.",
   "license": "MIT",
   "author": "Carl Jackson",
@@ -35,7 +35,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ],
   "scripts": {
     "build": "bun run build:server && bun run build:client && bun run build:eslint && bun run build:types",
