@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { edge, method } from "./decorators.ts";
-import { getContext, abortThisConn } from "./context.ts";
+import { getContext, abortSignal, abortThisConn } from "./context.ts";
 import { createServer } from "./server.ts";
 import { createClient } from "./client.ts";
 import { createMockTransportPair } from "./protocol.ts";
@@ -10,9 +10,12 @@ import { Node } from "./types.ts";
 import type { ServerInstance } from "./types.ts";
 import { flush } from "./test-utils.ts";
 
-test("getContext() throws outside of a request", () => {
+test("context functions throw outside of a request", () => {
   expect(() => getContext()).toThrow(
     "getContext() called outside of a request",
+  );
+  expect(() => abortSignal()).toThrow(
+    "abortSignal() called outside of a request",
   );
 });
 

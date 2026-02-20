@@ -244,79 +244,64 @@ test("root path lookup (edgePath=[]) works", () => {
 
 // --- Regression tests: rich types in cache keys ---
 
-test("Date edge arg does not collide with its ISO string", () => {
+test("rich type args (Date, Map) don't collide with their string equivalents", () => {
   const date = new Date("2024-01-01");
-  const isoString = date.toISOString(); // "2024-01-01T00:00:00.000Z"
 
-  const cache = makeCache();
-  cache.activate({
+  // Date edge arg vs ISO string
+  const cache1 = makeCache();
+  cache1.activate({
     schema: [{ edges: { byDate: 1 } }, { edges: {} }],
-    refs: [
-      [0, "byDate", date], // token 1: byDate(Date)
-    ],
+    refs: [[0, "byDate", date]],
     data: [[1, { found: "date-arg" }]],
   });
+  expect(cache1.lookup(formatPath([["byDate", date]]), null).hit).toBe(true);
+  expect(
+    cache1.lookup(formatPath([["byDate", date.toISOString()]]), null).hit,
+  ).toBe(false);
 
-  // Date arg should hit — fullPath is [["byDate", date]]
-  const dateKey = formatPath([["byDate", date]]);
-  expect(cache.lookup(dateKey, null).hit).toBe(true);
-
-  // ISO string arg should miss — different cache key
-  const stringKey = formatPath([["byDate", isoString]]);
-  expect(cache.lookup(stringKey, null).hit).toBe(false);
-});
-
-test("Map edge args produce correct cache keys", () => {
-  const m = new Map([["a", 1]]);
-
-  const cache = makeCache();
-  cache.activate({
+  // Map edge arg — hit/miss correctly
+  const cache2 = makeCache();
+  cache2.activate({
     schema: [{ edges: { lookup: 1 } }, { edges: {} }],
-    refs: [
-      [0, "lookup", m], // token 1: lookup(Map)
-    ],
+    refs: [[0, "lookup", new Map([["a", 1]])]],
     data: [[1, { result: "map-hit" }]],
   });
-
-  // Same Map value should hit
   const hitKey = formatPath([["lookup", new Map([["a", 1]])]]);
-  expect(cache.lookup(hitKey, null).hit).toBe(true);
-  expect((cache.lookup(hitKey, null) as any).value).toEqual({
+  expect(cache2.lookup(hitKey, null).hit).toBe(true);
+  expect((cache2.lookup(hitKey, null) as any).value).toEqual({
     result: "map-hit",
   });
+  expect(
+    cache2.lookup(formatPath([["lookup", new Map([["b", 2]])]]), null).hit,
+  ).toBe(false);
 
-  // Different Map should miss
-  const missKey = formatPath([["lookup", new Map([["b", 2]])]]);
-  expect(cache.lookup(missKey, null).hit).toBe(false);
-});
-
-test("method call cache key with Date/Map args works", () => {
-  const date = new Date("2024-06-15");
-  const m = new Map([["x", 10]]);
-
-  const cache = makeCache();
-  cache.activate({
+  // Method call with Date+Map args — hit/miss correctly
+  const cache3 = makeCache();
+  cache3.activate({
     schema: [{ edges: { svc: 1 } }, { edges: {} }],
-    refs: [[0, "svc"]], // token 1
-    data: [[1, "query", [date, m], "rich-result"]], // call: svc.query(date, map) = "rich-result"
+    refs: [[0, "svc"]],
+    data: [
+      [
+        1,
+        "query",
+        [new Date("2024-06-15"), new Map([["x", 10]])],
+        "rich-result",
+      ],
+    ],
   });
-
   const pathKey = formatPath(["svc"]);
-
-  // Same args should hit
-  const result = cache.lookup(pathKey, {
+  const result = cache3.lookup(pathKey, {
     name: "query",
     args: [new Date("2024-06-15"), new Map([["x", 10]])],
   });
   expect(result.hit).toBe(true);
   expect((result as any).value).toBe("rich-result");
-
-  // Different args should miss
-  const miss = cache.lookup(pathKey, {
-    name: "query",
-    args: [new Date("2025-01-01"), new Map([["x", 10]])],
-  });
-  expect(miss.hit).toBe(false);
+  expect(
+    cache3.lookup(pathKey, {
+      name: "query",
+      args: [new Date("2025-01-01"), new Map([["x", 10]])],
+    }).hit,
+  ).toBe(false);
 });
 
 // --- validateHydrationData ---
@@ -326,21 +311,12 @@ test("validateHydrationData accepts valid data", () => {
   expect(validateHydrationData(data)).toBe(data);
 });
 
-test("validateHydrationData rejects null", () => {
+test("validateHydrationData rejects invalid inputs", () => {
   expect(() => validateHydrationData(null)).toThrow(TypeError);
-});
-
-test("validateHydrationData rejects string", () => {
   expect(() => validateHydrationData("not hydration data")).toThrow(TypeError);
-});
-
-test("validateHydrationData rejects object missing refs", () => {
   expect(() => validateHydrationData({ data: [], schema: [] })).toThrow(
     TypeError,
   );
-});
-
-test("validateHydrationData rejects object with non-array schema", () => {
   expect(() =>
     validateHydrationData({ refs: [], data: [], schema: "bad" }),
   ).toThrow(TypeError);

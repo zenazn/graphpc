@@ -71,6 +71,7 @@ export interface ReconnectOptions {
 export interface ClientOptions extends SerializerOptions {
   hydrationTimeout?: number;
   reconnect?: boolean | ReconnectOptions;
+  timers?: Timers;
 }
 
 // -- Server event types --

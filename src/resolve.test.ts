@@ -362,6 +362,22 @@ test("resolveGet blocks prototype access", async () => {
   );
 });
 
+test("resolveEdge blocks __proto__, prototype, constructor", async () => {
+  class TestNode {
+    name = "test";
+  }
+  const node = new TestNode();
+  expect(resolveEdge(node, "__proto__", [], {})).rejects.toBeInstanceOf(
+    EdgeNotFoundError,
+  );
+  expect(resolveEdge(node, "prototype", [], {})).rejects.toBeInstanceOf(
+    EdgeNotFoundError,
+  );
+  expect(resolveEdge(node, "constructor", [], {})).rejects.toBeInstanceOf(
+    EdgeNotFoundError,
+  );
+});
+
 test("resolveGet blocks @edge member access (must use edge op)", async () => {
   class Child extends Node {}
   class Parent {

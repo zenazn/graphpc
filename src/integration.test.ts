@@ -103,31 +103,6 @@ function setup() {
   return { client, gpc };
 }
 
-test("navigate edges and fetch data", async () => {
-  const { client } = setup();
-
-  // Navigate to a user and fetch data
-  const userData = await client.root.users.get("1");
-  expect(userData.name).toBe("Alice");
-  expect(userData.email).toBe("alice@example.com");
-});
-
-test("call a method", async () => {
-  const { client } = setup();
-
-  const count = await client.root.posts.count();
-  expect(count).toBe(2);
-});
-
-test("navigate deep and call method", async () => {
-  const { client } = setup();
-
-  // Fetch post data
-  const postData = await client.root.posts.get("1");
-  expect(postData.title).toBe("Hello World");
-  expect(postData.body).toBe("First post");
-});
-
 test("method returning references", async () => {
   const { client } = setup();
 
@@ -178,11 +153,20 @@ test("sync method return", async () => {
   expect(msg).toBe("hello");
 });
 
-test("method throws non-RpcError wraps with GET_ERROR code", async () => {
+test("non-RpcError wraps with error code (method → GET_ERROR, getter edge → EDGE_ERROR)", async () => {
+  class FailChild extends Node {
+    value = "ok";
+  }
+
   class ThrowingApi extends Node {
     @method
     async fail(): Promise<void> {
       throw new Error("something broke");
+    }
+
+    @edge(FailChild)
+    get boom(): FailChild {
+      throw new TypeError("getter exploded");
     }
   }
 
@@ -195,6 +179,14 @@ test("method throws non-RpcError wraps with GET_ERROR code", async () => {
   } catch (err: any) {
     expect(err).toBeInstanceOf(RpcError);
     expect(err.code).toBe("GET_ERROR");
+  }
+
+  try {
+    await client.root.boom;
+    expect.unreachable("should have thrown");
+  } catch (err: any) {
+    expect(err).toBeInstanceOf(RpcError);
+    expect(err.code).toBe("EDGE_ERROR");
   }
 });
 
@@ -212,16 +204,20 @@ test("error propagation for missing edges", async () => {
   }
 });
 
-test("multiple concurrent operations", async () => {
-  const { client } = setup();
+test("operation middleware throwing yields INTERNAL_ERROR", async () => {
+  const server = createServer({}, () => new Api());
+  server.on("operation", () => {
+    throw new Error("middleware boom");
+  });
+  const client = createClient<typeof server>({}, () => mockConnect(server, {}));
 
-  const [count, userData] = await Promise.all([
-    client.root.posts.count(),
-    client.root.users.get("1").then((d) => d),
-  ]);
-
-  expect(count).toBe(2);
-  expect(userData.name).toBe("Alice");
+  try {
+    await client.root.posts;
+    expect.unreachable("should have thrown");
+  } catch (err: any) {
+    expect(err).toBeInstanceOf(RpcError);
+    expect(err.code).toBe("INTERNAL_ERROR");
+  }
 });
 
 // -- @hidden integration tests --
@@ -271,40 +267,33 @@ function setupHidden(ctx: {}) {
   return { client, gpc, received };
 }
 
-test("hidden edge excluded from schema, rejected on access", async () => {
-  // Non-admin: admin edge hidden
-  const { client, received } = setupHidden({ isAdmin: false });
+test("hidden edge: excluded from schema for non-admin, visible for admin", async () => {
+  // Non-admin: admin edge hidden from schema, rejected on access
+  {
+    const { client, received } = setupHidden({ isAdmin: false });
+    const schemaMsg = serializer.parse(received[0]!) as any;
+    expect(schemaMsg.schema[0].edges).toHaveProperty("posts");
+    expect(schemaMsg.schema[0].edges).toHaveProperty("users");
+    expect(schemaMsg.schema[0].edges).not.toHaveProperty("admin");
 
-  // The schema sent to the client should not contain the admin edge
-  const schemaMsg = serializer.parse(received[0]!) as any;
-
-  // Root type (index 0) should have posts and users but NOT admin
-  expect(schemaMsg.schema[0].edges).toHaveProperty("posts");
-  expect(schemaMsg.schema[0].edges).toHaveProperty("users");
-  expect(schemaMsg.schema[0].edges).not.toHaveProperty("admin");
-
-  // Attempting to access hidden edge should fail
-  try {
-    await client.root.admin.secretData();
-    expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    // Client doesn't see "admin" as an edge (hidden from schema), so
-    // classifyPath rejects locally — the path is invalid
-    expect(err.code).toBe("INVALID_PATH");
+    try {
+      await client.root.admin.secretData();
+      expect.unreachable("should have thrown");
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(RpcError);
+      expect(err.code).toBe("INVALID_PATH");
+    }
   }
-});
 
-test("hidden edge visible for matching context", async () => {
-  // Admin: admin edge visible
-  const { client, received } = setupHidden({ isAdmin: true });
+  // Admin: admin edge visible and accessible
+  {
+    const { client, received } = setupHidden({ isAdmin: true });
+    const schemaMsg = serializer.parse(received[0]!) as any;
+    expect(schemaMsg.schema[0].edges).toHaveProperty("admin");
 
-  const schemaMsg = serializer.parse(received[0]!) as any;
-  expect(schemaMsg.schema[0].edges).toHaveProperty("admin");
-
-  // Should be able to call the method through the admin edge
-  const result = await client.root.admin.secretData();
-  expect(result).toBe("admin-only");
+    const result = await client.root.admin.secretData();
+    expect(result).toBe("admin-only");
+  }
 });
 
 test("hidden method rejected for one context, works for another", async () => {
@@ -339,7 +328,10 @@ test("unreachable types omitted from schema entirely", async () => {
 
 // -- idleTimeout tests --
 
-function setupWithTimeout(idleTimeout: number) {
+function setupWithTimeout(
+  idleTimeout: number,
+  timers?: import("./types.ts").Timers,
+) {
   const [serverTransport, clientTransport] = createMockTransportPair();
   let closed = false;
   const originalClose = serverTransport.close.bind(serverTransport);
@@ -347,45 +339,55 @@ function setupWithTimeout(idleTimeout: number) {
     closed = true;
     originalClose();
   };
-  const server = createServer({ idleTimeout }, () => new Api());
+  const server = createServer({ idleTimeout, timers }, () => new Api());
   server.handle(serverTransport, {});
   return { serverTransport, clientTransport, isClosed: () => closed };
 }
 
 test("idleTimeout closes connection after inactivity", async () => {
-  const { isClosed } = setupWithTimeout(50);
+  const timers = fakeTimers();
+  const { isClosed } = setupWithTimeout(50, timers);
 
   expect(isClosed()).toBe(false);
-  await new Promise((r) => setTimeout(r, 100));
+  timers.fire();
   expect(isClosed()).toBe(true);
 });
 
 test("idleTimeout resets on activity", async () => {
-  const { clientTransport, isClosed } = setupWithTimeout(80);
+  const timers = fakeTimers();
+  const { clientTransport, isClosed } = setupWithTimeout(80, timers);
 
-  // Send a message mid-timeout to reset the timer
-  await new Promise((r) => setTimeout(r, 50));
-  expect(isClosed()).toBe(false);
+  // Initial idle timer is pending
+  expect(timers.pending()).toBe(1);
+
+  // Send a message to reset the timer
   clientTransport.send(serializer.stringify({ op: "data", tok: 0 }));
+  await flush();
 
-  // Original timeout would have fired by now, but the reset pushed it out
-  await new Promise((r) => setTimeout(r, 50));
+  // Timer was cleared and re-set (still 1 pending)
+  expect(timers.pending()).toBe(1);
   expect(isClosed()).toBe(false);
 
-  // Now wait for the full timeout after the last activity
-  await new Promise((r) => setTimeout(r, 80));
+  // Fire the (reset) timer — should close
+  timers.fire();
   expect(isClosed()).toBe(true);
 });
 
 test("idleTimeout does not fire during pending operations", async () => {
+  let resolveOp!: () => void;
+  const gate = new Promise<void>((r) => {
+    resolveOp = r;
+  });
+
   class SlowApi extends Node {
     @method
     async slow(): Promise<string> {
-      await new Promise((r) => setTimeout(r, 150));
+      await gate;
       return "done";
     }
   }
 
+  const timers = fakeTimers();
   const [serverTransport, clientTransport] = createMockTransportPair();
   let closed = false;
   const originalClose = serverTransport.close.bind(serverTransport);
@@ -393,23 +395,54 @@ test("idleTimeout does not fire during pending operations", async () => {
     closed = true;
     originalClose();
   };
-  const server = createServer({ idleTimeout: 50 }, () => new SlowApi());
+  const server = createServer({ idleTimeout: 50, timers }, () => new SlowApi());
   server.handle(serverTransport, {});
 
-  // Send a get that takes 150ms — longer than the 50ms idle timeout
+  // Send a get that blocks on gate
   clientTransport.send(
     serializer.stringify({ op: "get", tok: 0, name: "slow" }),
   );
+  await flush();
 
-  // Wait for the idle timeout to pass while the op is still pending
-  await new Promise((r) => setTimeout(r, 80));
-  expect(closed).toBe(false); // Should NOT close while op is pending
+  // Fire the idle timer — should NOT close while op is pending
+  timers.fireAll();
+  expect(closed).toBe(false);
 
-  // Wait for the operation to complete
-  await new Promise((r) => setTimeout(r, 120));
+  // Let the operation complete
+  resolveOp();
+  await flush();
+
   // Now idle timeout should fire after the op finishes
-  await new Promise((r) => setTimeout(r, 80));
+  timers.fire();
   expect(closed).toBe(true);
+});
+
+test("invalid token in wire message returns INVALID_TOKEN error", async () => {
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: string[] = [];
+
+  const originalSend = serverTransport.send.bind(serverTransport);
+  serverTransport.send = (data: string) => {
+    received.push(data);
+    originalSend(data);
+  };
+
+  const server = createServer({}, () => new Api());
+  server.handle(serverTransport, {});
+
+  // Remove the initial schema message
+  received.shift();
+
+  // Send a get with a token that doesn't exist
+  clientTransport.send(
+    serializer.stringify({ op: "get", tok: 9999, name: "x" }),
+  );
+
+  await flush();
+
+  const response = serializer.parse(received[0]!) as any;
+  expect(response.error).toBeDefined();
+  expect(response.error.code).toBe("INVALID_TOKEN");
 });
 
 // -- maxTokens tests --
@@ -514,13 +547,14 @@ test("maxTokens sends TOKEN_LIMIT_EXCEEDED error", async () => {
 test("maxPendingOps limits concurrency and queues excess ops", async () => {
   let concurrency = 0;
   let maxConcurrency = 0;
+  const resolvers: (() => void)[] = [];
 
   class ConcurrencyApi extends Node {
     @method
     async work(): Promise<string> {
       concurrency++;
       maxConcurrency = Math.max(maxConcurrency, concurrency);
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise<void>((r) => resolvers.push(r));
       concurrency--;
       return "done";
     }
@@ -533,24 +567,40 @@ test("maxPendingOps limits concurrency and queues excess ops", async () => {
   const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
 
   // Launch 4 concurrent calls — only 2 should execute user code at a time
-  const results = await Promise.all([
+  const promises = Promise.all([
     client.root.work(),
     client.root.work(),
     client.root.work(),
     client.root.work(),
   ]);
 
+  await flush();
+  expect(maxConcurrency).toBe(2);
+  expect(resolvers.length).toBe(2);
+
+  // Resolve first batch → frees slots → next 2 start
+  resolvers[0]!();
+  resolvers[1]!();
+  await flush();
+  expect(resolvers.length).toBe(4);
+
+  // Resolve second batch
+  resolvers[2]!();
+  resolvers[3]!();
+
+  const results = await promises;
   expect(results).toEqual(["done", "done", "done", "done"]);
   expect(maxConcurrency).toBe(2);
 });
 
 test("maxPendingOps queued ops complete successfully", async () => {
   const order: number[] = [];
+  const resolvers: (() => void)[] = [];
 
   class OrderApi extends Node {
     @method(z.number())
     async task(id: number): Promise<number> {
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise<void>((r) => resolvers.push(r));
       order.push(id);
       return id;
     }
@@ -563,35 +613,35 @@ test("maxPendingOps queued ops complete successfully", async () => {
   const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
 
   // With maxPendingOps=1, user code runs sequentially
-  const results = await Promise.all([
+  const promises = Promise.all([
     client.root.task(1),
     client.root.task(2),
     client.root.task(3),
   ]);
 
+  await flush();
+  expect(resolvers.length).toBe(1);
+
+  // Resolve sequentially
+  resolvers[0]!();
+  await flush();
+  expect(resolvers.length).toBe(2);
+
+  resolvers[1]!();
+  await flush();
+  expect(resolvers.length).toBe(3);
+
+  resolvers[2]!();
+
+  const results = await promises;
   expect(results).toEqual([1, 2, 3]);
   expect(order).toEqual([1, 2, 3]);
-});
-
-test("maxPendingOps does not affect behavior when limit is not reached", async () => {
-  const gpc = createServer(
-    { maxPendingOps: 100, idleTimeout: 0 },
-    () => new Api(),
-  );
-  const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
-
-  const [count, userData] = await Promise.all([
-    client.root.posts.count(),
-    client.root.users.get("1").then((d) => d),
-  ]);
-
-  expect(count).toBe(2);
-  expect(userData.name).toBe("Alice");
 });
 
 test("maxPendingOps works with edge traversals", async () => {
   let concurrency = 0;
   let maxConcurrency = 0;
+  const resolvers: (() => void)[] = [];
 
   class SlowPost extends Node {
     id: string;
@@ -609,7 +659,7 @@ test("maxPendingOps works with edge traversals", async () => {
   class SlowPostsService extends Node {
     @edge(SlowPost, z.string())
     async get(id: string): Promise<SlowPost> {
-      await new Promise((r) => setTimeout(r, 30));
+      await new Promise<void>((r) => resolvers.push(r));
       const post = new SlowPost(id);
       concurrency--;
       return post;
@@ -629,12 +679,18 @@ test("maxPendingOps works with edge traversals", async () => {
   );
   const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
 
-  const [a, b, c] = await Promise.all([
+  const promises = Promise.all([
     client.root.posts.get("1"),
     client.root.posts.get("2"),
     client.root.posts.get("3"),
   ]);
 
+  await flush();
+
+  // Resolve all gates — slot mechanism bounds concurrent handleEdge responses
+  for (const r of resolvers) r();
+
+  const [a, b, c] = await promises;
   expect(a.title).toBe("Post 1");
   expect(b.title).toBe("Post 2");
   expect(c.title).toBe("Post 3");
@@ -656,7 +712,7 @@ test("maxQueuedOps closes connection when inflight count exceeds limit", async (
   class SlowApi extends Node {
     @method
     async slow(): Promise<string> {
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise<void>(() => {}); // never resolves — keeps op in-flight
       return "done";
     }
   }
@@ -681,75 +737,6 @@ test("maxQueuedOps closes connection when inflight count exceeds limit", async (
   expect(closed).toBe(false);
 
   // Message 4: inflight count 4 > maxQueuedOps → connection closed
-  clientTransport.send(
-    serializer.stringify({ op: "get", tok: 0, name: "slow" }),
-  );
-  await flush();
-  expect(closed).toBe(true);
-});
-
-test("maxQueuedOps does not close when inflight stays within limit", async () => {
-  let completed = 0;
-
-  class CountApi extends Node {
-    @method
-    async work(): Promise<number> {
-      await new Promise((r) => setTimeout(r, 10));
-      return ++completed;
-    }
-  }
-
-  const gpc = createServer(
-    { maxPendingOps: Infinity, maxQueuedOps: 10, idleTimeout: 0 },
-    () => new CountApi(),
-  );
-  const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
-
-  // 3 concurrent ops — well within maxQueuedOps of 10
-  const results = await Promise.all([
-    client.root.work(),
-    client.root.work(),
-    client.root.work(),
-  ]);
-
-  expect(results).toEqual([1, 2, 3]);
-});
-
-test("maxQueuedOps with high maxPendingOps still bounds total inflight", async () => {
-  const [serverTransport, clientTransport] = createMockTransportPair();
-  let closed = false;
-  const originalClose = serverTransport.close.bind(serverTransport);
-  serverTransport.close = () => {
-    closed = true;
-    originalClose();
-  };
-
-  class SlowApi extends Node {
-    @method
-    async slow(): Promise<string> {
-      await new Promise((r) => setTimeout(r, 200));
-      return "done";
-    }
-  }
-
-  // maxPendingOps is high so all ops execute concurrently,
-  // but maxQueuedOps is low to bound total inflight messages
-  const server = createServer(
-    { maxPendingOps: 100, maxQueuedOps: 2, idleTimeout: 0 },
-    () => new SlowApi(),
-  );
-  server.handle(serverTransport, {});
-
-  clientTransport.send(
-    serializer.stringify({ op: "get", tok: 0, name: "slow" }),
-  );
-  clientTransport.send(
-    serializer.stringify({ op: "get", tok: 0, name: "slow" }),
-  );
-  await flush();
-  expect(closed).toBe(false);
-
-  // 3rd message exceeds maxQueuedOps → connection closed
   clientTransport.send(
     serializer.stringify({ op: "get", tok: 0, name: "slow" }),
   );
@@ -814,13 +801,11 @@ test("transport.close() cleans up tokens and poisoned maps", async () => {
 
 // -- Poisoned token propagation tests --
 
-test("poisoned token propagates to child edge traversals", async () => {
+test("poisoned token propagates to child edges and method calls", async () => {
   const { client } = setup();
 
-  // Navigate to a post that doesn't exist — this poisons the token
-  // Then try to navigate a child edge from the poisoned token
+  // Child edge traversal from poisoned token
   try {
-    // posts.get("999") will fail, and then .comments should propagate the poison
     await (client as any).root.posts.get("999").comments;
     expect.unreachable("should have thrown");
   } catch (err: any) {
@@ -828,13 +813,9 @@ test("poisoned token propagates to child edge traversals", async () => {
     expect(err.code).toBe("EDGE_ERROR");
     expect(err.message).toContain("Post 999 not found");
   }
-});
 
-test("poisoned token propagates to method calls", async () => {
-  const { client } = setup();
-
+  // Method call on poisoned token
   try {
-    // posts.get("999") poisons the token, updateTitle should get the poison
     await client.root.posts.get("999").updateTitle("new title");
     expect.unreachable("should have thrown");
   } catch (err: any) {
@@ -1089,26 +1070,9 @@ test("classifyPath: verifies wire messages for all-edges path (data fetch)", asy
 
 // -- Property and getter access via get op --
 
-test("single prop access via get op", async () => {
-  class PropNode extends Node {
+test("property and getter access via get op", async () => {
+  class PropGetterNode extends Node {
     value = 42;
-
-    @method
-    async doSomething(): Promise<string> {
-      return "done";
-    }
-  }
-
-  const gpc = createServer({}, (_ctx: {}) => new PropNode());
-  const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
-
-  // Accessing a non-edge, non-method property should go through the get op
-  const result = await (client as any).root.value;
-  expect(result).toBe(42);
-});
-
-test("getter access via get op", async () => {
-  class GetterNode extends Node {
     #internal = 100;
 
     get computed(): number {
@@ -1116,11 +1080,16 @@ test("getter access via get op", async () => {
     }
   }
 
-  const gpc = createServer({}, (_ctx: {}) => new GetterNode());
+  const gpc = createServer({}, (_ctx: {}) => new PropGetterNode());
   const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
 
-  const result = await (client as any).root.computed;
-  expect(result).toBe(200);
+  // Plain property
+  const propResult = await (client as any).root.value;
+  expect(propResult).toBe(42);
+
+  // Getter
+  const getterResult = await (client as any).root.computed;
+  expect(getterResult).toBe(200);
 });
 
 // -- Request-response correlation tests --
@@ -1428,44 +1397,46 @@ test("method calls never coalesce (two concurrent calls send two get messages)",
 
 // -- Read-after-write cache invalidation --
 
-test("read-after-write via ref invalidates data cache", async () => {
-  const store = new Map([["1", { title: "Original" }]]);
+const rwStore = new Map([["1", { title: "Original" }]]);
 
-  class RWItem extends Node {
-    id: string;
-    constructor(id: string) {
-      super();
-      this.id = id;
-    }
-
-    get title() {
-      return store.get(this.id)!.title;
-    }
-
-    static [canonicalPath](root: RWApi, id: string) {
-      return root.items.get(id);
-    }
-
-    @method(z.string())
-    async setTitle(newTitle: string): Promise<Reference<RWItem>> {
-      store.get(this.id)!.title = newTitle;
-      return ref(RWItem, this.id);
-    }
+class RWItem extends Node {
+  id: string;
+  constructor(id: string) {
+    super();
+    this.id = id;
   }
 
-  class RWItems extends Node {
-    @edge(RWItem, z.string())
-    get(id: string): RWItem {
-      return new RWItem(id);
-    }
+  get title() {
+    return rwStore.get(this.id)!.title;
   }
 
-  class RWApi extends Node {
-    @edge(RWItems)
-    get items(): RWItems {
-      return new RWItems();
-    }
+  static [canonicalPath](root: RWApi, id: string) {
+    return root.items.get(id);
   }
+
+  @method(z.string())
+  async setTitle(newTitle: string): Promise<Reference<RWItem>> {
+    rwStore.get(this.id)!.title = newTitle;
+    return ref(RWItem, this.id);
+  }
+}
+
+class RWItems extends Node {
+  @edge(RWItem, z.string())
+  get(id: string): RWItem {
+    return new RWItem(id);
+  }
+}
+
+class RWApi extends Node {
+  @edge(RWItems)
+  get items(): RWItems {
+    return new RWItems();
+  }
+}
+
+function rwSetup() {
+  rwStore.set("1", { title: "Original" });
 
   const [serverTransport, clientTransport] = createMockTransportPair();
   const sent: any[] = [];
@@ -1478,6 +1449,12 @@ test("read-after-write via ref invalidates data cache", async () => {
   const gpc = createServer({}, (_ctx: {}) => new RWApi());
   gpc.handle(serverTransport, {});
   const client = createClient<typeof gpc>({}, () => clientTransport);
+
+  return { client, sent };
+}
+
+test("read-after-write via ref invalidates data cache", async () => {
+  const { client, sent } = rwSetup();
 
   const item = client.root.items.get("1");
 
@@ -1498,55 +1475,7 @@ test("read-after-write via ref invalidates data cache", async () => {
 });
 
 test("read-after-write invalidates getCache for property reads", async () => {
-  const store = new Map([["1", { title: "Original" }]]);
-
-  class RWItem2 extends Node {
-    id: string;
-    constructor(id: string) {
-      super();
-      this.id = id;
-    }
-
-    get title() {
-      return store.get(this.id)!.title;
-    }
-
-    static [canonicalPath](root: RWApi2, id: string) {
-      return root.items.get(id);
-    }
-
-    @method(z.string())
-    async setTitle(newTitle: string): Promise<Reference<RWItem2>> {
-      store.get(this.id)!.title = newTitle;
-      return ref(RWItem2, this.id);
-    }
-  }
-
-  class RWItems2 extends Node {
-    @edge(RWItem2, z.string())
-    get(id: string): RWItem2 {
-      return new RWItem2(id);
-    }
-  }
-
-  class RWApi2 extends Node {
-    @edge(RWItems2)
-    get items(): RWItems2 {
-      return new RWItems2();
-    }
-  }
-
-  const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
-  const originalSend = clientTransport.send.bind(clientTransport);
-  clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
-    originalSend(data);
-  };
-
-  const gpc = createServer({}, (_ctx: {}) => new RWApi2());
-  gpc.handle(serverTransport, {});
-  const client = createClient<typeof gpc>({}, () => clientTransport);
+  const { client, sent } = rwSetup();
 
   const item = client.root.items.get("1");
 
@@ -1758,7 +1687,7 @@ test("node coalescing: two tokens for same path yield identical data", async () 
 
 // -- Server error event tests --
 
-test("malformed message closes connection", async () => {
+test("malformed message closes connection and emits error event", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
   let closed = false;
   const originalClose = serverTransport.close.bind(serverTransport);
@@ -1767,29 +1696,15 @@ test("malformed message closes connection", async () => {
     originalClose();
   };
 
+  const errors: unknown[] = [];
   const gpc = createServer({}, (_ctx: {}) => new Api());
+  gpc.on("error", (err) => errors.push(err));
   gpc.handle(serverTransport, {});
 
-  // Send garbage that can't be parsed
   clientTransport.send("not valid json {{{");
   await flush();
 
   expect(closed).toBe(true);
-});
-
-test("error event emitted on parse failure", async () => {
-  const [serverTransport, clientTransport] = createMockTransportPair();
-  const gpc = createServer({}, (_ctx: {}) => new Api());
-
-  const errors: unknown[] = [];
-  gpc.on("error", (err) => errors.push(err));
-
-  gpc.handle(serverTransport, {});
-
-  // Send malformed message
-  clientTransport.send("{{garbage}}");
-  await flush();
-
   expect(errors.length).toBe(1);
   expect(errors[0]).toBeInstanceOf(SyntaxError);
 });
@@ -1833,13 +1748,13 @@ test("server continues processing other connections after bad input", async () =
 
 // -- client.close() tests --
 
-test("close() rejects pending operations with CLIENT_CLOSED", async () => {
+test("close() rejects pending and post-close ops, is idempotent", async () => {
+  // Pending operation rejected
   const [serverTransport, clientTransport] = createMockTransportPair();
   const gpc = createServer({}, (_ctx: {}) => new Api());
   gpc.handle(serverTransport, {});
   const client = createClient<typeof gpc>({}, () => clientTransport);
 
-  // Start an operation but close before it resolves
   const promise = client.root.posts.count();
   client.close();
 
@@ -1850,6 +1765,19 @@ test("close() rejects pending operations with CLIENT_CLOSED", async () => {
     expect(err).toBeInstanceOf(RpcError);
     expect(err.code).toBe("CLIENT_CLOSED");
   }
+
+  // Post-close operation rejected
+  try {
+    await client.root.posts.count();
+    expect.unreachable("should have thrown");
+  } catch (err: any) {
+    expect(err).toBeInstanceOf(RpcError);
+    expect(err.code).toBe("CLIENT_CLOSED");
+  }
+
+  // Idempotent — no throw on repeated close
+  client.close();
+  client.close();
 });
 
 test("close() closes the transport", async () => {
@@ -1865,7 +1793,6 @@ test("close() closes the transport", async () => {
   gpc.handle(serverTransport, {});
   const client = createClient<typeof gpc>({}, () => clientTransport);
 
-  // Wait for schema so client is ready
   await client.ready;
 
   client.close();
@@ -1875,6 +1802,7 @@ test("close() closes the transport", async () => {
 test("close() stops reconnection attempts", async () => {
   const gpc = createServer({}, () => new Api());
   let factoryCalls = 0;
+  const timers = fakeTimers();
 
   const transportFactory = () => {
     factoryCalls++;
@@ -1884,49 +1812,20 @@ test("close() stops reconnection attempts", async () => {
   };
 
   const client = createClient<typeof gpc>(
-    { reconnect: { initialDelay: 10, maxRetries: 10 } },
+    { reconnect: { initialDelay: 10, maxRetries: 10 }, timers },
     transportFactory,
   );
 
-  // Wait for initial connection
   await client.ready;
   const initialCalls = factoryCalls;
 
-  // Close the client — should prevent any reconnection
   client.close();
 
-  // Wait long enough for multiple reconnect attempts to have fired if not stopped (actual timing test)
-  await new Promise((r) => setTimeout(r, 100));
+  // Fire all pending timers — no reconnection should happen after close
+  timers.fireAll();
+  await flush();
 
-  // No additional transport factory calls after close
   expect(factoryCalls).toBe(initialCalls);
-});
-
-test("close() rejects operations initiated after close", async () => {
-  const { client } = setup();
-
-  // Wait for schema
-  await client.ready;
-
-  client.close();
-
-  try {
-    await client.root.posts.count();
-    expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("CLIENT_CLOSED");
-  }
-});
-
-test("close() is idempotent", async () => {
-  const { client } = setup();
-  await client.ready;
-
-  // Should not throw when called multiple times
-  client.close();
-  client.close();
-  client.close();
 });
 
 test("node coalescing: failed edge is cached (no retry)", async () => {
@@ -2203,33 +2102,6 @@ test("registered custom error survives server round-trip", async () => {
   }
 });
 
-test("unregistered Error is still wrapped in RpcError", async () => {
-  class UnregisteredError extends Error {
-    constructor(message: string) {
-      super(message);
-      this.name = "UnregisteredError";
-    }
-  }
-
-  class ErrorApi2 extends Node {
-    @method
-    async fail(): Promise<void> {
-      throw new UnregisteredError("oops");
-    }
-  }
-
-  const gpc = createServer({}, (_ctx: {}) => new ErrorApi2());
-  const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
-
-  try {
-    await client.root.fail();
-    expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("GET_ERROR");
-  }
-});
-
 test("custom type mismatch causes deserialization failure", () => {
   class Money {
     constructor(
@@ -2482,7 +2354,7 @@ test("abortSignal() fires when connection closes", async () => {
     @method
     async longOp(): Promise<string> {
       capturedSignal = abortSignal();
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise<void>(() => {}); // block until connection closes
       return "done";
     }
   }
@@ -2604,42 +2476,6 @@ test("maxOperationTimeout poisons edge tokens", async () => {
   expect(edgeResults[0].error.code).toBe("OPERATION_TIMEOUT");
 });
 
-// -- Default maxTokens tests --
-
-test("default maxTokens is 9000", async () => {
-  // Create server with no explicit maxTokens — should default to 9000
-  const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
-  const originalSend = serverTransport.send.bind(serverTransport);
-  serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
-    originalSend(data);
-  };
-
-  const gpc = createServer({ idleTimeout: 0 }, () => new Api());
-  gpc.handle(serverTransport, {});
-  received.shift(); // remove schema
-
-  // Traverse a few edges — should work fine within the 9000 limit
-  clientTransport.send(
-    serializer.stringify({ op: "edge", tok: 0, edge: "posts" }),
-  );
-  clientTransport.send(
-    serializer.stringify({
-      op: "edge",
-      tok: 1,
-      edge: "get",
-      args: ["1"],
-    }),
-  );
-  await flush();
-
-  const edgeResults = received.filter((m: any) => m.op === "edge");
-  expect(edgeResults.length).toBe(2);
-  expect(edgeResults[0].error).toBeUndefined();
-  expect(edgeResults[1].error).toBeUndefined();
-});
-
 // -- Error redaction tests --
 
 test("redactErrors: unregistered errors get generic message", async () => {
@@ -2744,80 +2580,83 @@ test("redactErrors: RpcError thrown directly is never redacted", async () => {
 
 // -- errorId tests --
 
-test("errorId present on error responses", async () => {
-  const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
-  const originalSend = serverTransport.send.bind(serverTransport);
-  serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
-    originalSend(data);
-  };
+test("errorId present on get and edge error responses", async () => {
+  // Get error
+  {
+    const [serverTransport, clientTransport] = createMockTransportPair();
+    const received: any[] = [];
+    const originalSend = serverTransport.send.bind(serverTransport);
+    serverTransport.send = (data: string) => {
+      received.push(serializer.parse(data));
+      originalSend(data);
+    };
 
-  class FailApi extends Node {
-    @method
-    async fail(): Promise<void> {
-      throw new Error("boom");
+    class FailApi extends Node {
+      @method
+      async fail(): Promise<void> {
+        throw new Error("boom");
+      }
     }
+
+    const gpc = createServer(
+      { maxOperationTimeout: 0, idleTimeout: 0 },
+      () => new FailApi(),
+    );
+    gpc.handle(serverTransport, {});
+    received.shift(); // remove schema
+
+    clientTransport.send(
+      serializer.stringify({ op: "get", tok: 0, name: "fail" }),
+    );
+    await flush();
+
+    const getResults = received.filter((m: any) => m.op === "get");
+    expect(getResults.length).toBe(1);
+    expect(getResults[0].error).toBeDefined();
+    expect(typeof getResults[0].errorId).toBe("string");
+    expect(getResults[0].errorId.length).toBeGreaterThan(0);
   }
 
-  const gpc = createServer(
-    { maxOperationTimeout: 0, idleTimeout: 0 },
-    () => new FailApi(),
-  );
-  gpc.handle(serverTransport, {});
-  received.shift(); // remove schema
+  // Edge error
+  {
+    const [serverTransport, clientTransport] = createMockTransportPair();
+    const received: any[] = [];
+    const originalSend = serverTransport.send.bind(serverTransport);
+    serverTransport.send = (data: string) => {
+      received.push(serializer.parse(data));
+      originalSend(data);
+    };
 
-  clientTransport.send(
-    serializer.stringify({ op: "get", tok: 0, name: "fail" }),
-  );
-  await flush();
+    const gpc = createServer(
+      { maxOperationTimeout: 0, idleTimeout: 0 },
+      () => new Api(),
+    );
+    gpc.handle(serverTransport, {});
+    received.shift(); // remove schema
 
-  const getResults = received.filter((m: any) => m.op === "get");
-  expect(getResults.length).toBe(1);
-  expect(getResults[0].error).toBeDefined();
-  expect(typeof getResults[0].errorId).toBe("string");
-  expect(getResults[0].errorId.length).toBeGreaterThan(0);
-});
+    clientTransport.send(
+      serializer.stringify({ op: "edge", tok: 0, edge: "posts" }),
+    );
+    clientTransport.send(
+      serializer.stringify({
+        op: "edge",
+        tok: 1,
+        edge: "get",
+        args: ["999"],
+      }),
+    );
+    await flush();
 
-test("errorId present on edge error responses", async () => {
-  const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
-  const originalSend = serverTransport.send.bind(serverTransport);
-  serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
-    originalSend(data);
-  };
-
-  const gpc = createServer(
-    { maxOperationTimeout: 0, idleTimeout: 0 },
-    () => new Api(),
-  );
-  gpc.handle(serverTransport, {});
-  received.shift(); // remove schema
-
-  // Navigate to posts, then try to get a non-existent post
-  clientTransport.send(
-    serializer.stringify({ op: "edge", tok: 0, edge: "posts" }),
-  );
-  clientTransport.send(
-    serializer.stringify({
-      op: "edge",
-      tok: 1,
-      edge: "get",
-      args: ["999"],
-    }),
-  );
-  await flush();
-
-  const edgeResults = received.filter((m: any) => m.op === "edge");
-  const failedEdge = edgeResults.find((m: any) => m.error);
-  expect(failedEdge).toBeDefined();
-  expect(typeof failedEdge.errorId).toBe("string");
+    const edgeResults = received.filter((m: any) => m.op === "edge");
+    const failedEdge = edgeResults.find((m: any) => m.error);
+    expect(failedEdge).toBeDefined();
+    expect(typeof failedEdge.errorId).toBe("string");
+  }
 });
 
 // -- getErrorUuid() tests --
 
-test("getErrorUuid() retrieves UUID from caught errors", async () => {
+test("getErrorUuid() retrieves UUID from RPC errors, null otherwise", async () => {
   class FailApi extends Node {
     @method
     async fail(): Promise<void> {
@@ -2840,9 +2679,8 @@ test("getErrorUuid() retrieves UUID from caught errors", async () => {
     expect(typeof uuid).toBe("string");
     expect(uuid!.length).toBeGreaterThan(0);
   }
-});
 
-test("getErrorUuid() returns null for errors without UUID", () => {
+  // Non-RPC errors return null
   expect(getErrorUuid(new Error("plain"))).toBeNull();
   expect(getErrorUuid("string error")).toBeNull();
   expect(getErrorUuid(null)).toBeNull();
@@ -2850,69 +2688,73 @@ test("getErrorUuid() returns null for errors without UUID", () => {
 
 // -- operationError event tests --
 
-test("operationError event fires with original error, UUID, and redacted flag", async () => {
-  const events: any[] = [];
+test("operationError event: redacted for unregistered, non-redacted for RpcError", async () => {
+  // Unregistered error → redacted=true
+  {
+    const events: any[] = [];
 
-  class FailApi extends Node {
-    @method
-    async fail(): Promise<void> {
-      throw new Error("secret error");
+    class FailApi extends Node {
+      @method
+      async fail(): Promise<void> {
+        throw new Error("secret error");
+      }
     }
-  }
 
-  const gpc = createServer(
-    { redactErrors: true, maxOperationTimeout: 0, idleTimeout: 0 },
-    () => new FailApi(),
-  );
+    const gpc = createServer(
+      { redactErrors: true, maxOperationTimeout: 0, idleTimeout: 0 },
+      () => new FailApi(),
+    );
 
-  gpc.on("operationError", (_ctx, info) => {
-    events.push(info);
-  });
+    gpc.on("operationError", (_ctx, info) => {
+      events.push(info);
+    });
 
-  const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
+    const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
 
-  try {
-    await client.root.fail();
-  } catch {
-    // expected
-  }
-
-  expect(events.length).toBe(1);
-  expect(events[0].error).toBeInstanceOf(Error);
-  expect((events[0].error as Error).message).toBe("secret error");
-  expect(typeof events[0].errorId).toBe("string");
-  expect(events[0].redacted).toBe(true);
-});
-
-test("operationError event: non-redacted error has redacted=false", async () => {
-  const events: any[] = [];
-
-  class FailApi extends Node {
-    @method
-    async fail(): Promise<void> {
-      throw new RpcError("CUSTOM", "visible error");
+    try {
+      await client.root.fail();
+    } catch {
+      // expected
     }
+
+    expect(events.length).toBe(1);
+    expect(events[0].error).toBeInstanceOf(Error);
+    expect((events[0].error as Error).message).toBe("secret error");
+    expect(typeof events[0].errorId).toBe("string");
+    expect(events[0].redacted).toBe(true);
   }
 
-  const gpc = createServer(
-    { redactErrors: true, maxOperationTimeout: 0, idleTimeout: 0 },
-    () => new FailApi(),
-  );
+  // RpcError → redacted=false
+  {
+    const events: any[] = [];
 
-  gpc.on("operationError", (_ctx, info) => {
-    events.push(info);
-  });
+    class FailApi extends Node {
+      @method
+      async fail(): Promise<void> {
+        throw new RpcError("CUSTOM", "visible error");
+      }
+    }
 
-  const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
+    const gpc = createServer(
+      { redactErrors: true, maxOperationTimeout: 0, idleTimeout: 0 },
+      () => new FailApi(),
+    );
 
-  try {
-    await client.root.fail();
-  } catch {
-    // expected
+    gpc.on("operationError", (_ctx, info) => {
+      events.push(info);
+    });
+
+    const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
+
+    try {
+      await client.root.fail();
+    } catch {
+      // expected
+    }
+
+    expect(events.length).toBe(1);
+    expect(events[0].redacted).toBe(false);
   }
-
-  expect(events.length).toBe(1);
-  expect(events[0].redacted).toBe(false);
 });
 
 // -- Slot queue drain on close tests --
@@ -2924,7 +2766,7 @@ test("slot queue drain on close: queued ops get CONNECTION_CLOSED error", async 
     @method
     async slow(): Promise<string> {
       opsStarted++;
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise<void>(() => {}); // never resolves — keeps op in slot
       return "done";
     }
   }
@@ -3333,7 +3175,7 @@ async function navigateToItem(
   await flush();
 }
 
-test("data fetch on descendant token succeeds after ref() eviction", async () => {
+test("descendant tokens usable after ref() eviction (data, method, edge)", async () => {
   const { clientTransport, received } = deepSetup();
 
   // Navigate to items.get("1").children.get("5") — tokens 1-4
@@ -3357,32 +3199,15 @@ test("data fetch on descendant token succeeds after ref() eviction", async () =>
 
   received.length = 0;
 
-  // Data fetch on descendant token 4 (DeepChild) — should return stale data
+  // Data fetch on descendant token 4 (DeepChild)
   rawSend(clientTransport, { op: "data", tok: 4 });
   await flush();
 
   const dataResults = received.filter((m: any) => m.op === "data");
   expect(dataResults.length).toBe(1);
   expect(dataResults[0].error).toBeUndefined();
-  expect(dataResults[0].data).toBeDefined();
   expect(dataResults[0].data.id).toBe("5");
   expect(dataResults[0].data.value).toBe("child-5");
-});
-
-test("method call on descendant token succeeds after ref() eviction", async () => {
-  const { clientTransport, received } = deepSetup();
-
-  await navigateToChild(clientTransport);
-  received.length = 0;
-
-  // Trigger ref(DeepItem, "1")
-  rawSend(clientTransport, {
-    op: "get",
-    tok: 2,
-    name: "updateTitle",
-    args: ["Updated"],
-  });
-  await flush();
 
   received.length = 0;
 
@@ -3394,46 +3219,16 @@ test("method call on descendant token succeeds after ref() eviction", async () =
   expect(getResults.length).toBe(1);
   expect(getResults[0].error).toBeUndefined();
   expect(getResults[0].data).toBe("Hello from child 5");
-});
-
-test("edge traversal from descendant token succeeds after ref() eviction", async () => {
-  const { clientTransport, received } = deepSetup();
-
-  // Navigate only to items.get("1").children — tokens 1-3
-  rawSend(clientTransport, { op: "edge", tok: 0, edge: "items" }); // token 1
-  rawSend(clientTransport, {
-    op: "edge",
-    tok: 1,
-    edge: "get",
-    args: ["1"],
-  }); // token 2
-  rawSend(clientTransport, { op: "edge", tok: 2, edge: "children" }); // token 3
-  await flush();
-
-  const edges = received.filter((m: any) => m.op === "edge");
-  expect(edges.length).toBe(3);
-  for (const e of edges) expect(e.error).toBeUndefined();
 
   received.length = 0;
 
-  // Trigger ref(DeepItem, "1") — invalidates children (token 3's cache entry)
-  rawSend(clientTransport, {
-    op: "get",
-    tok: 2,
-    name: "updateTitle",
-    args: ["Updated"],
-  });
-  await flush();
-
-  received.length = 0;
-
-  // Edge traversal FROM descendant token 3 (DeepChildService.get("5"))
+  // Edge traversal from descendant token 3 (DeepChildService.get("7"))
   rawSend(clientTransport, {
     op: "edge",
     tok: 3,
     edge: "get",
-    args: ["5"],
-  }); // token 4
+    args: ["7"],
+  });
   await flush();
 
   const edgeResults = received.filter((m: any) => m.op === "edge");

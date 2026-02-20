@@ -387,44 +387,21 @@ describe("formatPath", () => {
 // -- Unambiguity --
 
 describe("unambiguity", () => {
-  test("string '42' vs number 42", () => {
-    expect(formatValue("42")).not.toBe(formatValue(42));
-  });
+  const pairs: [string, unknown, unknown][] = [
+    ["string '42' vs number 42", "42", 42],
+    ["string 'null' vs null", "null", null],
+    ["string 'true' vs boolean true", "true", true],
+    ["string 'undefined' vs undefined", "undefined", undefined],
+    ["string 'NaN' vs NaN", "NaN", NaN],
+    ["string 'Infinity' vs Infinity", "Infinity", Infinity],
+    ["number 0 vs -0", 0, -0],
+    ["number 42 vs bigint 42n", 42, 42n],
+    ["array [1] vs Set(1)", [1], new Set([1])],
+    ["object vs Map", { a: 1 }, new Map([["a", 1]])],
+  ];
 
-  test("string 'null' vs null", () => {
-    expect(formatValue("null")).not.toBe(formatValue(null));
-  });
-
-  test("string 'true' vs boolean true", () => {
-    expect(formatValue("true")).not.toBe(formatValue(true));
-  });
-
-  test("string 'undefined' vs undefined", () => {
-    expect(formatValue("undefined")).not.toBe(formatValue(undefined));
-  });
-
-  test("string 'NaN' vs NaN", () => {
-    expect(formatValue("NaN")).not.toBe(formatValue(NaN));
-  });
-
-  test("string 'Infinity' vs Infinity", () => {
-    expect(formatValue("Infinity")).not.toBe(formatValue(Infinity));
-  });
-
-  test("number 0 vs -0", () => {
-    expect(formatValue(0)).not.toBe(formatValue(-0));
-  });
-
-  test("number 42 vs bigint 42n", () => {
-    expect(formatValue(42)).not.toBe(formatValue(42n));
-  });
-
-  test("array [1] vs Set(1)", () => {
-    expect(formatValue([1])).not.toBe(formatValue(new Set([1])));
-  });
-
-  test("object vs Map", () => {
-    expect(formatValue({ a: 1 })).not.toBe(formatValue(new Map([["a", 1]])));
+  test.each(pairs)("%s", (_label, a, b) => {
+    expect(formatValue(a)).not.toBe(formatValue(b));
   });
 });
 

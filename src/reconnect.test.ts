@@ -13,6 +13,16 @@ import { flush, waitForEvent } from "./test-utils.ts";
 /** Yields to the microtask queue so deferred .then() calls can fire. */
 const tick = () => Promise.resolve();
 
+// -- Gate mechanism for slow() --
+// Each call to slow() blocks until its gate is resolved.
+// Tests resolve gates explicitly to control when slow() completes.
+let slowResolvers: (() => void)[] = [];
+
+function resolveAllSlow() {
+  for (const r of slowResolvers) r();
+  slowResolvers = [];
+}
+
 // -- Test API --
 
 class Post extends Node {
@@ -56,7 +66,7 @@ class Api extends Node {
 
   @method
   async slow(): Promise<string> {
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise<void>((r) => slowResolvers.push(r));
     return "done";
   }
 }
@@ -95,6 +105,7 @@ function setup() {
 // -- Test cases --
 
 test("no reconnect — disconnect rejects pending with CONNECTION_CLOSED", async () => {
+  slowResolvers = [];
   const gpc = createServer({}, (_ctx: unknown) => new Api());
   let currentServerTransport: Transport | null = null;
 
@@ -118,7 +129,7 @@ test("no reconnect — disconnect rejects pending with CONNECTION_CLOSED", async
   await client.ready;
   await flush();
 
-  // Disconnect before slow() can respond (takes 200ms)
+  // Disconnect while slow() is in-flight (blocked on gate)
   currentServerTransport!.close();
 
   try {
@@ -146,6 +157,7 @@ test("idle disconnect — next operation opens fresh connection (lazy reconnect)
 });
 
 test("in-flight operation replayed on new connection", async () => {
+  slowResolvers = [];
   const gpc = createServer({}, (_ctx: unknown) => new Api());
   let currentServerTransport: Transport | null = null;
 
@@ -161,17 +173,23 @@ test("in-flight operation replayed on new connection", async () => {
     transportFactory,
   );
 
-  // Start a slow operation (200ms on server)
-  const promise = client.root.slow();
+  // Start a slow operation (blocks on gate).
+  // Promise.resolve() eagerly triggers .then(), which starts the operation.
+  const promise = Promise.resolve(client.root.slow());
 
   // Let schema arrive and request be sent
   await client.ready;
   await flush();
 
-  // Disconnect before response (slow takes 200ms)
+  // Disconnect while slow is in-flight
   currentServerTransport!.close();
 
-  // The promise should resolve on the new connection (slow runs again on new server)
+  // Let reconnect happen (first attempt is immediate via setTimeout(fn, 0))
+  await flush();
+
+  // Resolve slow() on the new connection
+  resolveAllSlow();
+
   const result = await promise;
   expect(result).toBe("done");
 });
@@ -333,6 +351,7 @@ test("idle disconnect fires 'disconnect' but not 'reconnect'", async () => {
 });
 
 test("in-flight disconnect fires 'disconnect' then 'reconnect'", async () => {
+  slowResolvers = [];
   const events: string[] = [];
   const gpc = createServer({}, (_ctx: unknown) => new Api());
   let currentServerTransport: Transport | null = null;
@@ -352,15 +371,20 @@ test("in-flight disconnect fires 'disconnect' then 'reconnect'", async () => {
   client.on("disconnect", () => events.push("disconnect"));
   client.on("reconnect", () => events.push("reconnect"));
 
-  // Start slow operation (200ms server-side)
+  // Start slow operation (blocks on gate)
   const promise = Promise.resolve(client.root.slow());
   await client.ready;
   await flush();
 
-  // Disconnect while slow is in-flight (response delayed 200ms)
+  // Disconnect while slow is in-flight
   currentServerTransport!.close();
 
-  // Promise completes on reconnected transport
+  // Let reconnect happen
+  await flush();
+
+  // Resolve slow() on the new connection
+  resolveAllSlow();
+
   await promise;
 
   expect(events).toEqual(["disconnect", "reconnect"]);
@@ -451,6 +475,7 @@ test("edge replay failure — caller gets edge error", async () => {
 });
 
 test("disconnect during reconnect — retries continue", async () => {
+  slowResolvers = [];
   const gpc = createServer({}, (_ctx: unknown) => new Api());
   let connectionNumber = 0;
   let currentServerTransport: Transport | null = null;
@@ -462,7 +487,7 @@ test("disconnect during reconnect — retries continue", async () => {
 
     if (connectionNumber === 2) {
       // Second connection: close immediately after wiring (simulates flaky reconnect)
-      setTimeout(() => serverTransport.close(), 5);
+      setTimeout(() => serverTransport.close(), 0);
     }
     gpc.handle(serverTransport, {});
     return clientTransport;
@@ -479,15 +504,29 @@ test("disconnect during reconnect — retries continue", async () => {
   // Idle disconnect (connection 1)
   currentServerTransport!.close();
 
-  // slow() lazily connects (connection 2, auto-dies after 5ms).
-  // Server-side slow takes 200ms, so connection 2 dies while in-flight
+  // slow() lazily connects (connection 2, auto-dies after macrotask).
+  // Promise.resolve() eagerly triggers .then(), which starts the operation.
+  // slow() blocks on gate, connection 2 dies while in-flight
   // → eager reconnect → connection 3 succeeds
-  const result2 = await client.root.slow();
+  const slowPromise = Promise.resolve(client.root.slow());
+
+  // Connection 2 created (lazy), slow() sent
+  await flush();
+  // Connection 2 auto-close fires, reconnect scheduled
+  await flush();
+  // Reconnect (connection 3) established, slow() replayed
+  await flush();
+
+  // Resolve slow() on connection 3
+  resolveAllSlow();
+
+  const result2 = await slowPromise;
   expect(result2).toBe("done");
   expect(connectionNumber).toBeGreaterThanOrEqual(3);
 });
 
 test("new operations during reconnect — queued, execute after reconnect", async () => {
+  slowResolvers = [];
   const gpc = createServer({}, (_ctx: unknown) => new Api());
   let currentServerTransport: Transport | null = null;
 
@@ -507,11 +546,17 @@ test("new operations during reconnect — queued, execute after reconnect", asyn
   await client.ready;
   await flush();
 
-  // Disconnect with slow in-flight → eager reconnect (30ms delay)
+  // Disconnect with slow in-flight → eager reconnect
   currentServerTransport!.close();
 
   // Start a new operation during the reconnect window
   const countPromise = client.root.posts.count();
+
+  // Let reconnect happen (first attempt is immediate)
+  await flush();
+
+  // Resolve slow() on new connection
+  resolveAllSlow();
 
   // Both should complete after reconnect
   const [slowResult, countResult] = await Promise.all([

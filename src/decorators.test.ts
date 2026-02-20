@@ -324,44 +324,30 @@ test("paramNames handles mixed param styles", () => {
 
 // -- paramNames edge cases: strings, templates, comments in defaults --
 
-test("paramNames handles string literal with parentheses in default", () => {
-  class Api {
+test("paramNames handles strings/templates with brackets in defaults", () => {
+  class Greet {
     @method(z.string(), z.string())
     async greet(x: string = "(hello)", y: string): Promise<void> {}
   }
+  expect(getMethods(Greet).get("greet")!.paramNames).toEqual(["x", "y"]);
 
-  const meta = getMethods(Api).get("greet")!;
-  expect(meta.paramNames).toEqual(["x", "y"]);
-});
-
-test("paramNames handles single-quoted string with brackets in default", () => {
-  class Api {
+  class Process {
     @method(z.string(), z.number())
     async process(sep: string = "({[", n: number): Promise<void> {}
   }
+  expect(getMethods(Process).get("process")!.paramNames).toEqual(["sep", "n"]);
 
-  const meta = getMethods(Api).get("process")!;
-  expect(meta.paramNames).toEqual(["sep", "n"]);
-});
-
-test("paramNames handles template literal in default", () => {
-  class Api {
+  class Fmt {
     @method(z.string(), z.number())
     async fmt(prefix: string = `(${1 + 2})`, count: number): Promise<void> {}
   }
+  expect(getMethods(Fmt).get("fmt")!.paramNames).toEqual(["prefix", "count"]);
 
-  const meta = getMethods(Api).get("fmt")!;
-  expect(meta.paramNames).toEqual(["prefix", "count"]);
-});
-
-test("paramNames handles escaped quotes in string default", () => {
-  class Api {
+  class Escape {
     @method(z.string(), z.string())
     async escape(a: string = 'he said "(hi)"', b: string): Promise<void> {}
   }
-
-  const meta = getMethods(Api).get("escape")!;
-  expect(meta.paramNames).toEqual(["a", "b"]);
+  expect(getMethods(Escape).get("escape")!.paramNames).toEqual(["a", "b"]);
 });
 
 // -- validateArgs excess arguments tests --

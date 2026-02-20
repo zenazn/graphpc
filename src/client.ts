@@ -74,12 +74,15 @@ export function createClient<S extends ServerInstance<any>>(
         : options.reconnect;
 
   const scheduler = reconnectConfig
-    ? new ReconnectScheduler({
-        maxRetries: reconnectConfig.maxRetries ?? 5,
-        initialDelay: reconnectConfig.initialDelay ?? 1000,
-        maxDelay: reconnectConfig.maxDelay ?? 30000,
-        multiplier: reconnectConfig.multiplier ?? 2,
-      })
+    ? new ReconnectScheduler(
+        {
+          maxRetries: reconnectConfig.maxRetries ?? 5,
+          initialDelay: reconnectConfig.initialDelay ?? 1000,
+          maxDelay: reconnectConfig.maxDelay ?? 30000,
+          multiplier: reconnectConfig.multiplier ?? 2,
+        },
+        options.timers,
+      )
     : null;
 
   let schema: Schema = [];

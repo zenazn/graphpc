@@ -8,6 +8,7 @@ import {
   createRecordingProxy,
   getRecordedPath,
   walkPath,
+  pathTo,
 } from "./ref.ts";
 import { resolveData } from "./resolve.ts";
 import { EdgeNotFoundError } from "./errors.ts";
@@ -140,6 +141,25 @@ test("ref() throws when class has no [canonicalPath] method", async () => {
   };
   expect(runWithSession(session, () => ref(NoPath as any))).rejects.toThrow(
     "Class NoPath does not have a [canonicalPath] method",
+  );
+});
+
+test("pathTo() throws for classes without valid [canonicalPath]", () => {
+  class NoPath {
+    name = "test";
+  }
+  expect(() => pathTo(NoPath as any)).toThrow(
+    "does not have a [canonicalPath] method",
+  );
+
+  class BadPath {
+    name = "test";
+    static [canonicalPath]() {
+      return "not a proxy";
+    }
+  }
+  expect(() => pathTo(BadPath as any)).toThrow(
+    "did not return a recorded proxy",
   );
 });
 

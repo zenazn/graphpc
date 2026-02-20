@@ -166,31 +166,31 @@ describe("parseClientMessage", () => {
   });
 
   describe("rejects wrong types", () => {
-    it("edge: tok as string", () => {
+    it("tok must be a non-negative integer", () => {
       expect(() =>
         parseClientMessage({ op: "edge", tok: "0", edge: "x" }),
       ).toThrow("non-negative integer");
-    });
-
-    it("edge: tok as float", () => {
       expect(() =>
         parseClientMessage({ op: "edge", tok: 1.5, edge: "x" }),
       ).toThrow("non-negative integer");
-    });
-
-    it("edge: tok as negative", () => {
       expect(() =>
-        parseClientMessage({ op: "edge", tok: -1, edge: "x" }),
+        parseClientMessage({ op: "get", tok: NaN, name: "x" }),
       ).toThrow("non-negative integer");
+      expect(() => parseClientMessage({ op: "data", tok: true })).toThrow(
+        "non-negative integer",
+      );
     });
 
-    it("edge: edge as number", () => {
+    it("string fields must be strings", () => {
       expect(() =>
         parseClientMessage({ op: "edge", tok: 0, edge: 42 }),
       ).toThrow("must be a string");
+      expect(() =>
+        parseClientMessage({ op: "get", tok: 0, name: null }),
+      ).toThrow("must be a string");
     });
 
-    it("edge: args as non-array", () => {
+    it("args must be an array", () => {
       expect(() =>
         parseClientMessage({
           op: "edge",
@@ -199,36 +199,12 @@ describe("parseClientMessage", () => {
           args: "not-array",
         }),
       ).toThrow("must be an array");
-    });
-
-    it("edge: args as object", () => {
       expect(() =>
         parseClientMessage({ op: "edge", tok: 0, edge: "x", args: {} }),
       ).toThrow("must be an array");
-    });
-
-    it("get: name as null", () => {
-      expect(() =>
-        parseClientMessage({ op: "get", tok: 0, name: null }),
-      ).toThrow("must be a string");
-    });
-
-    it("get: tok as NaN", () => {
-      expect(() =>
-        parseClientMessage({ op: "get", tok: NaN, name: "x" }),
-      ).toThrow("non-negative integer");
-    });
-
-    it("get: args as non-array", () => {
       expect(() =>
         parseClientMessage({ op: "get", tok: 0, name: "x", args: 123 }),
       ).toThrow("must be an array");
-    });
-
-    it("data: tok as boolean", () => {
-      expect(() => parseClientMessage({ op: "data", tok: true })).toThrow(
-        "non-negative integer",
-      );
     });
   });
 });

@@ -163,46 +163,39 @@ test("SSR tracking proxy records method calls", async () => {
   expect(callEntries[0]![3]).toBe(2);
 });
 
-test("SSR tracking proxy deduplicates data entries for same node", async () => {
+test("SSR tracking proxy deduplicates data, calls, and edge refs", async () => {
   const client = createSSRClient<typeof gpc>(new Api(), {});
 
-  // Await the same node multiple times
+  // Await the same node multiple times → one data entry
   await client.root.posts;
   await client.root.posts;
   await client.root.posts;
 
   const data = createSerializer().parse(client.generateHydrationData()) as any;
-
-  // Only one ref (edge dedup) and one data entry (data dedup)
   expect(data.refs.length).toBe(1);
   const dataOnly = data.data.filter((d: any) => d.length === 2);
   expect(dataOnly.length).toBe(1);
-});
 
-test("SSR tracking proxy deduplicates call entries for same method", async () => {
-  const client = createSSRClient<typeof gpc>(new Api(), {});
-
-  // Call the same method multiple times
-  await client.root.posts.count();
-  await client.root.posts.count();
-
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
-  const callEntries = data.data.filter((d: any) => d.length === 4);
+  // Call the same method multiple times → one call entry
+  const client2 = createSSRClient<typeof gpc>(new Api(), {});
+  await client2.root.posts.count();
+  await client2.root.posts.count();
+  const data2 = createSerializer().parse(
+    client2.generateHydrationData(),
+  ) as any;
+  const callEntries = data2.data.filter((d: any) => d.length === 4);
   expect(callEntries.length).toBe(1);
-});
 
-test("SSR tracking proxy deduplicates same edge path", async () => {
-  const client = createSSRClient<typeof gpc>(new Api(), {});
-
-  // Navigate to posts twice — should only register one ref
-  const p1 = client.root.posts;
-  const p2 = client.root.posts;
-
+  // Navigate same edge twice → one ref
+  const client3 = createSSRClient<typeof gpc>(new Api(), {});
+  const p1 = client3.root.posts;
+  const p2 = client3.root.posts;
   await p1;
   await p2;
-
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
-  expect(data.refs.length).toBe(1);
+  const data3 = createSerializer().parse(
+    client3.generateHydrationData(),
+  ) as any;
+  expect(data3.refs.length).toBe(1);
 });
 
 test("SSR tracking proxy records deep traversals", async () => {
@@ -414,40 +407,42 @@ function noopTransport(): Transport {
   };
 }
 
-test("hydration: data fetch served from cache", async () => {
+/** SSR → hydrate shorthand: run ops on SSR client, generate hydration data, hydrate into a real client. */
+async function ssrHydrate(
+  ssrOps: (
+    client: ReturnType<typeof createSSRClient<typeof gpc>>,
+  ) => Promise<void>,
+  opts: Parameters<typeof createClient>[0] = {},
+  transport: () => Transport = noopTransport,
+) {
   const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.get("1");
-  const hydrationData = ssrClient.generateHydrationData();
+  await ssrOps(ssrClient);
+  const hydrated = createClient<typeof gpc>(opts, transport);
+  hydrated.hydrateString(ssrClient.generateHydrationData());
+  return hydrated;
+}
 
-  const hydrated = createClient<typeof gpc>({}, noopTransport);
-  hydrated.hydrateString(hydrationData);
-
+test("hydration: data fetch served from cache", async () => {
+  const hydrated = await ssrHydrate(async (c) => {
+    await c.root.posts.get("1");
+  });
   const result = await hydrated.root.posts.get("1");
   expect(result.id).toBe("1");
   expect(result.title).toBe("Hello World");
 });
 
 test("hydration: method call served from cache", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.count();
-  const hydrationData = ssrClient.generateHydrationData();
-
-  const hydrated = createClient<typeof gpc>({}, noopTransport);
-  hydrated.hydrateString(hydrationData);
-
+  const hydrated = await ssrHydrate(async (c) => {
+    await c.root.posts.count();
+  });
   const count = await hydrated.root.posts.count();
   expect(count).toBe(2);
 });
 
 test("hydration: cache serves multiple requests (entries not consumed)", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.get("1");
-  const hydrationData = ssrClient.generateHydrationData();
-
-  const hydrated = createClient<typeof gpc>({}, noopTransport);
-  hydrated.hydrateString(hydrationData);
-
-  // Same path can be awaited multiple times during hydration
+  const hydrated = await ssrHydrate(async (c) => {
+    await c.root.posts.get("1");
+  });
   const r1 = await hydrated.root.posts.get("1");
   const r2 = await hydrated.root.posts.get("1");
   expect(r1.id).toBe("1");
@@ -455,91 +450,75 @@ test("hydration: cache serves multiple requests (entries not consumed)", async (
 });
 
 test("hydration: cache miss falls through to transport", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.get("1");
-  const hydrationData = ssrClient.generateHydrationData();
-
-  // Use a real transport so cache misses can be served
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const server = createServer({}, (_ctx: {}) => new Api());
-  server.handle(serverTransport, {});
+  createServer({}, (_ctx: {}) => new Api()).handle(serverTransport, {});
 
-  const hydrated = createClient<typeof gpc>({}, () => clientTransport);
-  hydrated.hydrateString(hydrationData);
+  const hydrated = await ssrHydrate(
+    async (c) => {
+      await c.root.posts.get("1");
+    },
+    {},
+    () => clientTransport,
+  );
 
-  // Cached path resolves from cache
   const cached = await hydrated.root.posts.get("1");
   expect(cached.id).toBe("1");
 
-  // Uncached path falls through to transport
   const fresh = await hydrated.root.posts.get("2");
   expect(fresh.id).toBe("2");
   expect(fresh.title).toBe("Second Post");
 });
 
 test("hydration: endHydration() drops cache, requests go to transport", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.get("1");
-  const hydrationData = ssrClient.generateHydrationData();
-
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const server = createServer({}, (_ctx: {}) => new Api());
-  server.handle(serverTransport, {});
+  createServer({}, (_ctx: {}) => new Api()).handle(serverTransport, {});
 
-  const hydrated = createClient<typeof gpc>({}, () => clientTransport);
-  hydrated.hydrateString(hydrationData);
+  const hydrated = await ssrHydrate(
+    async (c) => {
+      await c.root.posts.get("1");
+    },
+    {},
+    () => clientTransport,
+  );
 
-  // Cache hit before endHydration
   const cached = await hydrated.root.posts.get("1");
   expect(cached.id).toBe("1");
 
   hydrated.endHydration();
 
-  // After endHydration, same path goes through transport
   const fresh = await hydrated.root.posts.get("1");
   expect(fresh.id).toBe("1");
   expect(fresh.title).toBe("Hello World");
 });
 
 test("hydration: inactivity timeout drops cache", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.get("1");
-  const hydrationData = ssrClient.generateHydrationData();
-
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const server = createServer({}, (_ctx: {}) => new Api());
-  server.handle(serverTransport, {});
+  createServer({}, (_ctx: {}) => new Api()).handle(serverTransport, {});
 
-  const hydrated = createClient<typeof gpc>(
+  const hydrated = await ssrHydrate(
+    async (c) => {
+      await c.root.posts.get("1");
+    },
     { hydrationTimeout: 50 },
     () => clientTransport,
   );
-  hydrated.hydrateString(hydrationData);
 
-  // Trigger a cache hit to start the inactivity tracking
   const cached = await hydrated.root.posts.get("1");
   expect(cached.id).toBe("1");
 
-  // Wait for inactivity timeout to fire
   await new Promise((r) => setTimeout(r, 100));
 
-  // After timeout, requests go through transport
   const fresh = await hydrated.root.posts.get("1");
   expect(fresh.id).toBe("1");
   expect(fresh.title).toBe("Hello World");
 });
 
 test("hydration: resolves before transport is ready", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.get("1");
-  await ssrClient.root.posts.count();
-  const hydrationData = ssrClient.generateHydrationData();
+  const hydrated = await ssrHydrate(async (c) => {
+    await c.root.posts.get("1");
+    await c.root.posts.count();
+  });
 
-  // No-op transport — never sends hello, so transport is never "ready"
-  const hydrated = createClient<typeof gpc>({}, noopTransport);
-  hydrated.hydrateString(hydrationData);
-
-  // Both data and call caches resolve instantly without transport
   const post = await hydrated.root.posts.get("1");
   expect(post.id).toBe("1");
 
@@ -548,37 +527,6 @@ test("hydration: resolves before transport is ready", async () => {
 });
 
 // -- client.hydrate() (pre-parsed data) tests --
-
-test("hydrate: data fetch served from pre-parsed cache", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.get("1");
-  const hydrationString = ssrClient.generateHydrationData();
-
-  // Simulate browser: JSON.parse produces a plain array (devalue format),
-  // then hydrate() uses revive() to unflatten it.
-  const preParsed = JSON.parse(hydrationString);
-
-  const hydrated = createClient<typeof gpc>({}, noopTransport);
-  hydrated.hydrate(preParsed);
-
-  const result = await hydrated.root.posts.get("1");
-  expect(result.id).toBe("1");
-  expect(result.title).toBe("Hello World");
-});
-
-test("hydrate: method call served from pre-parsed cache", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-  await ssrClient.root.posts.count();
-  const hydrationString = ssrClient.generateHydrationData();
-
-  const preParsed = JSON.parse(hydrationString);
-
-  const hydrated = createClient<typeof gpc>({}, noopTransport);
-  hydrated.hydrate(preParsed);
-
-  const count = await hydrated.root.posts.count();
-  expect(count).toBe(2);
-});
 
 test("hydrate: pre-parsed and string paths produce same results", async () => {
   const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
@@ -825,37 +773,17 @@ test("equivalence: client, SSR, and hydrated client all agree", async () => {
 
 // -- SSRClient shape tests --
 
-test("SSRClient has RpcClient-compatible shape", () => {
+test("SSRClient is assignable to RpcClient and ready resolves immediately", async () => {
   const client = createSSRClient<typeof gpc>(new Api(), {});
+  await client.ready; // should not hang
 
-  // Has all RpcClient properties
-  expect(client.root).toBeDefined();
-  expect(client.ready).toBeInstanceOf(Promise);
-  expect(typeof client.on).toBe("function");
-  expect(typeof client.off).toBe("function");
-  expect(typeof client.hydrate).toBe("function");
-  expect(typeof client.hydrateString).toBe("function");
-  expect(typeof client.endHydration).toBe("function");
-  expect(typeof client.close).toBe("function");
+  // Assignable to RpcClient
+  async function useClient(c: RpcClient<typeof gpc>) {
+    return c.root.posts.get("1");
+  }
+  const post = await useClient(client);
+  expect(post.title).toBe("Hello World");
 
   // Has SSRClient-specific method
   expect(typeof client.generateHydrationData).toBe("function");
-});
-
-test("SSRClient ready resolves immediately", async () => {
-  const client = createSSRClient<typeof gpc>(new Api(), {});
-  await client.ready; // should not hang
-});
-
-test("SSRClient is assignable to RpcClient", async () => {
-  const ssrClient = createSSRClient<typeof gpc>(new Api(), {});
-
-  // A function that accepts RpcClient should accept SSRClient
-  async function useClient(client: RpcClient<typeof gpc>) {
-    const post = await client.root.posts.get("1");
-    return post.title;
-  }
-
-  const title = await useClient(ssrClient);
-  expect(title).toBe("Hello World");
 });

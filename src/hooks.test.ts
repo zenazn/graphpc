@@ -91,33 +91,26 @@ test("no disconnect handler doesn't error on close", async () => {
   // No error thrown — test passes
 });
 
-test("connection event receives context", async () => {
-  let receivedCtx: unknown;
-
-  const [st] = createMockTransportPair();
-  const server = createServer({}, () => new Api());
-  server.on("connection", (ctx) => {
-    receivedCtx = ctx;
-  });
-  server.handle(st, { userId: "u1" });
-
-  expect(receivedCtx).toEqual({ userId: "u1" });
-});
-
-test("disconnect event receives context", async () => {
-  let receivedCtx: unknown;
+test("connection and disconnect events receive context", async () => {
+  let connCtx: unknown;
+  let disconnCtx: unknown;
 
   const [st, ct] = createMockTransportPair();
   const server = createServer({}, () => new Api());
+  server.on("connection", (ctx) => {
+    connCtx = ctx;
+  });
   server.on("disconnect", (ctx) => {
-    receivedCtx = ctx;
+    disconnCtx = ctx;
   });
   server.handle(st, { userId: "u1" });
+
+  expect(connCtx).toEqual({ userId: "u1" });
 
   ct.close();
   await flush();
 
-  expect(receivedCtx).toEqual({ userId: "u1" });
+  expect(disconnCtx).toEqual({ userId: "u1" });
 });
 
 test("connection handler error emits error event, doesn't crash server", async () => {

@@ -59,19 +59,14 @@ class Api extends Node {
 
 // -- eventDataToString --
 
-test("eventDataToString: string passthrough", () => {
+test("eventDataToString handles string, Uint8Array, and ArrayBuffer", () => {
   expect(eventDataToString("hello")).toBe("hello");
-});
-
-test("eventDataToString: Uint8Array", () => {
-  const data = new TextEncoder().encode('{"op":"data"}');
-  expect(eventDataToString(data)).toBe('{"op":"data"}');
-});
-
-test("eventDataToString: ArrayBuffer", () => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode('{"op":"edge"}').buffer;
-  expect(eventDataToString(data)).toBe('{"op":"edge"}');
+  expect(eventDataToString(new TextEncoder().encode('{"op":"data"}'))).toBe(
+    '{"op":"data"}',
+  );
+  expect(
+    eventDataToString(new TextEncoder().encode('{"op":"edge"}').buffer),
+  ).toBe('{"op":"edge"}');
 });
 
 // -- mockConnect --
