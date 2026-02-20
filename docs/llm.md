@@ -126,7 +126,7 @@ An **epoch** is a contiguous activity period with a shared cache. Edge traversal
 
 ## Error Handling
 
-Built-in errors (all extend `RpcError`): `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `PoisonedTokenError`, `ConnectionLostError`. `RpcError` itself is also exported for direct use. Custom errors need reducer/reviver registration on both sides. `formatPath()` and `formatValue()` produce human-readable strings for debugging. Details: [Errors](errors.md), [Serialization](serialization.md).
+Built-in errors (all extend `RpcError`): `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `ConnectionLostError`. `RpcError` itself is also exported for direct use. Custom errors need reducer/reviver registration on both sides. `formatPath()` and `formatValue()` produce human-readable strings for debugging. Details: [Errors](errors.md), [Serialization](serialization.md).
 
 ## Production
 

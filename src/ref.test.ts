@@ -12,7 +12,12 @@ import {
 import { resolveData } from "./resolve.ts";
 import { EdgeNotFoundError } from "./errors.ts";
 import { canonicalPath, Node } from "./types.ts";
-import { runWithSession, type Session } from "./context.ts";
+import {
+  runWithSession,
+  getNode,
+  type Session,
+  type CacheEntry,
+} from "./context.ts";
 
 class Tweet extends Node {
   id: string;
@@ -94,7 +99,7 @@ test("resolveData gets own properties", () => {
 
 test("walkPath resolves edges and uses cache", async () => {
   const api = new Api();
-  const cache = new Map<string, Promise<object>>();
+  const cache = new Map<string, CacheEntry>();
 
   const tweet = await walkPath(
     api,
@@ -106,8 +111,8 @@ test("walkPath resolves edges and uses cache", async () => {
   expect(tweet).toBeInstanceOf(Tweet);
   expect((tweet as Tweet).id).toBe("1");
 
-  // Cache should have entries
-  expect(cache.size).toBe(2); // tweets service + tweet
+  // Cache should have entries: root + tweets service + tweet
+  expect(cache.size).toBe(3);
 
   // Walking again with the same cache reuses entries
   const tweet2 = await walkPath(
@@ -176,8 +181,8 @@ test("node caching: multiple ref() calls sharing intermediate edges reuse cached
 
   expect(r1.path).toEqual(["tweets", ["get", "1"]]);
   expect(r2.path).toEqual(["tweets", ["get", "2"]]);
-  // Both share the cached "tweets" intermediate edge
-  expect(session.nodeCache.size).toBe(3); // tweets, tweet 1, tweet 2
+  // Both share the cached "tweets" intermediate edge: root + tweets + tweet1 + tweet2
+  expect(session.nodeCache.size).toBe(4);
 });
 
 // -- @hidden enforcement in walkPath and ref() --
@@ -196,7 +201,7 @@ class HiddenEdgeApi extends Node {
 
 test("walkPath throws EdgeNotFoundError for @hidden edge when ctx lacks permission", async () => {
   const api = new HiddenEdgeApi();
-  const cache = new Map<string, Promise<object>>();
+  const cache = new Map<string, CacheEntry>();
   const ctx = { isAdmin: false };
 
   expect(
@@ -206,7 +211,7 @@ test("walkPath throws EdgeNotFoundError for @hidden edge when ctx lacks permissi
 
 test("walkPath traverses @hidden edge when ctx has permission", async () => {
   const api = new HiddenEdgeApi();
-  const cache = new Map<string, Promise<object>>();
+  const cache = new Map<string, CacheEntry>();
   const ctx = { isAdmin: true };
 
   const node = await walkPath(api, ["secret"], cache, undefined, ctx);
@@ -282,7 +287,7 @@ class FailingApi extends Node {
 
 test("walkPath propagates error when intermediate edge throws", async () => {
   const api = new FailingApi();
-  const cache = new Map<string, Promise<object>>();
+  const cache = new Map<string, CacheEntry>();
 
   expect(
     walkPath(api, ["posts", ["get", "999"]], cache, undefined, {}),
@@ -291,7 +296,7 @@ test("walkPath propagates error when intermediate edge throws", async () => {
 
 test("walkPath caches the failed promise so retries see the same rejection", async () => {
   const api = new FailingApi();
-  const cache = new Map<string, Promise<object>>();
+  const cache = new Map<string, CacheEntry>();
 
   // First attempt — should fail
   const err1 = await walkPath(
@@ -304,8 +309,8 @@ test("walkPath caches the failed promise so retries see the same rejection", asy
   expect(err1).toBeInstanceOf(Error);
   expect((err1 as Error).message).toBe("Post 999 not found");
 
-  // Cache should contain entries for both the intermediate and failing edge
-  expect(cache.size).toBe(2);
+  // Cache should contain entries: root + posts + get("999")
+  expect(cache.size).toBe(3);
 
   // Second attempt with same cache — should get the same cached rejection
   const err2 = await walkPath(
@@ -329,7 +334,7 @@ class AlwaysFailApi extends Node {
 
 test("walkPath propagates EdgeNotFoundError from first segment", async () => {
   const api = new AlwaysFailApi();
-  const cache = new Map<string, Promise<object>>();
+  const cache = new Map<string, CacheEntry>();
 
   expect(
     walkPath(api, ["broken"], cache, undefined, {}),
@@ -378,7 +383,7 @@ class MutableApi extends Node {
   }
 }
 
-test("ref() returns fresh data after mutation (leaf cache eviction)", async () => {
+test("ref() returns fresh data after mutation (leaf cache invalidation)", async () => {
   const store = new Map([["1", "original"]]);
   const api = new MutableApi(store);
   const session: Session = {
@@ -397,23 +402,71 @@ test("ref() returns fresh data after mutation (leaf cache eviction)", async () =
   // Mutate backing store
   store.set("1", "updated");
 
-  // Second ref should see the mutation (leaf evicted, re-resolved)
+  // Second ref should see the mutation (leaf invalidated, re-resolved)
   const r2 = await runWithSession(session, () => ref(MutableItem, "1"));
   expect(r2.data).toEqual({ id: "1", name: "updated" });
 
-  // Intermediate edge ("items") should still be cached (3 entries: items + item@1 twice resolved)
-  // The items service is cached, only the leaf was evicted and re-resolved
+  // Intermediate edge ("items") should still be cached
+  expect(session.nodeCache.has("root.items")).toBe(true);
+});
+
+test("ref() invalidates descendant cache entries (subtree invalidation)", async () => {
+  // Scenario: MutableItem has a child edge whose result depends on the item's state.
+  // After mutating and calling ref(), the child edge cache must also be invalidated.
+  const store = new Map([["1", "original"]]);
+  const api = new MutableApi(store);
+  const session: Session = {
+    ctx: {},
+    root: api,
+    nodeCache: new Map(),
+    close: () => {},
+    reducers: undefined,
+    signal: new AbortController().signal,
+  };
+
+  // Seed cache: walk to items.get("1") and a child edge below it
+  await runWithSession(session, async () => {
+    await walkPath(
+      api,
+      ["items", ["get", "1"]],
+      session.nodeCache,
+      undefined,
+      {},
+    );
+  });
+  // Manually add a fake descendant entry to simulate a cached child edge
+  const leafKey = 'root.items.get("1")';
+  const fakeChild: CacheEntry = {
+    promise: Promise.resolve({} as any),
+    settled: true,
+    resolve: () => Promise.resolve({} as any),
+  };
+  session.nodeCache.set(leafKey + ".child", fakeChild);
+  expect(session.nodeCache.has(leafKey)).toBe(true);
+  expect(session.nodeCache.has(leafKey + ".child")).toBe(true);
+
+  // Mutate and ref — should invalidate both the leaf and its descendant
+  store.set("1", "updated");
+  const r = await runWithSession(session, () => ref(MutableItem, "1"));
+  expect(r.data).toEqual({ id: "1", name: "updated" });
+
+  // The descendant entry should still exist but be invalidated (promise reset)
+  expect(session.nodeCache.has(leafKey + ".child")).toBe(true);
+  const childEntry = session.nodeCache.get(leafKey + ".child")!;
+  expect(childEntry.promise).toBeNull();
+  // Intermediate "root.items" should still be cached
   expect(session.nodeCache.has("root.items")).toBe(true);
 });
 
 test("walkPath caches failure at first segment", async () => {
   const api = new AlwaysFailApi();
-  const cache = new Map<string, Promise<object>>();
+  const cache = new Map<string, CacheEntry>();
 
   await walkPath(api, ["broken"], cache, undefined, {}).catch(() => {});
-  expect(cache.size).toBe(1);
+  // root + broken
+  expect(cache.size).toBe(2);
 
-  // Cached promise should still reject (get the single entry from the cache)
-  const cachedPromise = cache.values().next().value;
-  expect(cachedPromise).rejects.toBeInstanceOf(EdgeNotFoundError);
+  // Cached entry should still reject
+  const cachedEntry = cache.get("root.broken")!;
+  expect(getNode(cachedEntry)).rejects.toBeInstanceOf(EdgeNotFoundError);
 });

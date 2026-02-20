@@ -10,13 +10,68 @@ import {
   type CanonicalArgs,
   type Context,
 } from "./types.ts";
-import { getSession } from "./context.ts";
+import {
+  getSession,
+  getNode,
+  invalidateEntry,
+  type CacheEntry,
+} from "./context.ts";
 import { resolveEdge, resolveData } from "./resolve.ts";
 import { Reference } from "./reference.ts";
 import { Path } from "./node-path.ts";
 export { Reference, isReference } from "./reference.ts";
 
 const RECORDED_PATH = Symbol("graphpc.recordedPath");
+
+/**
+ * Create a cache entry whose resolve function chains through a parent entry.
+ * Used by walkPath and ref() to ensure all path segments have entries.
+ */
+function makeCacheEntry(
+  parentKey: string,
+  edgeName: string,
+  args: unknown[],
+  cache: Map<string, CacheEntry>,
+  ctx: Context,
+): CacheEntry {
+  return {
+    promise: null,
+    settled: false,
+    resolve: () => {
+      const parentEntry = cache.get(parentKey)!;
+      return getNode(parentEntry).then((parent) =>
+        resolveEdge(parent, edgeName, args, ctx),
+      );
+    },
+  };
+}
+
+/**
+ * Ensure the cache has entries for every segment of a path.
+ * Creates missing entries with resolve functions that chain through parents.
+ * Returns the leaf cache key.
+ */
+function ensurePathEntries(
+  path: PathSegments,
+  cache: Map<string, CacheEntry>,
+  reducers: Record<string, (value: unknown) => false | unknown[]> | undefined,
+  ctx: Context,
+): string {
+  let cacheKey = "root";
+  for (const seg of path) {
+    const parentKey = cacheKey;
+    cacheKey += formatSegment(seg, reducers);
+    if (!cache.has(cacheKey)) {
+      const edgeName = typeof seg === "string" ? seg : seg[0];
+      const args = typeof seg === "string" ? [] : (seg.slice(1) as unknown[]);
+      cache.set(
+        cacheKey,
+        makeCacheEntry(parentKey, edgeName, args, cache, ctx),
+      );
+    }
+  }
+  return cacheKey;
+}
 
 /**
  * Create a reference to a node via its static [canonicalPath].
@@ -42,26 +97,43 @@ export async function ref<
     );
   }
 
-  // 2. Walk real graph with caching via session from ALS
+  // 2. Ensure all cache entries exist and get the leaf key
   const session = getSession();
 
-  // Evict the leaf node so walkPath re-resolves it with fresh data.
-  // Intermediate edges stay cached — only the final segment is invalidated.
-  let leafKey = "root";
-  for (const seg of path) {
-    leafKey += formatSegment(seg, session.reducers);
+  // Ensure root entry exists (production code creates it at connection
+  // start; this handles ref() in unit-test sessions with empty caches).
+  if (!session.nodeCache.has("root")) {
+    const r = session.root;
+    session.nodeCache.set("root", {
+      promise: Promise.resolve(r),
+      settled: true,
+      resolve: () => Promise.resolve(r),
+    });
   }
-  session.nodeCache.delete(leafKey);
 
-  const node = await walkPath(
-    session.root,
+  const leafKey = ensurePathEntries(
     path,
     session.nodeCache,
     session.reducers,
     session.ctx,
   );
 
-  // 3. Return Reference with path + extracted data
+  // 3. Force-invalidate the leaf (always re-resolve, regardless of state)
+  const leafEntry = session.nodeCache.get(leafKey)!;
+  leafEntry.promise = null;
+  leafEntry.settled = false;
+
+  // 4. Invalidate settled descendants so they re-resolve through the fresh leaf
+  for (const [key, entry] of session.nodeCache) {
+    if (key !== leafKey && key.startsWith(leafKey)) {
+      invalidateEntry(entry);
+    }
+  }
+
+  // 5. Get fresh node via the lazy resolve chain
+  const node = await getNode(leafEntry);
+
+  // 6. Return Reference with path + extracted data
   return new Reference(path, resolveData(node, session.ctx));
 }
 
@@ -109,36 +181,27 @@ export function getRecordedPath(proxy: any): PathSegments | undefined {
 
 /**
  * Walk a path against the real root, resolving each edge segment.
- * Uses a path-keyed node cache from the session to avoid redundant traversals.
+ * Ensures cache entries exist for every segment and resolves the leaf.
+ * The root entry is created automatically if not already in the cache.
  */
 export async function walkPath(
   root: object,
   path: PathSegments,
-  cache: Map<string, Promise<object>>,
+  cache: Map<string, CacheEntry>,
   reducers: Record<string, (value: unknown) => false | unknown[]> | undefined,
   ctx: Context,
 ): Promise<object> {
-  let current = root;
-  let cacheKey = "root";
-
-  for (let i = 0; i < path.length; i++) {
-    const seg = path[i]!;
-    cacheKey += formatSegment(seg, reducers);
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      current = await cached;
-      continue;
-    }
-
-    const edgeName = typeof seg === "string" ? seg : seg[0];
-    const args = typeof seg === "string" ? [] : (seg.slice(1) as unknown[]);
-
-    const promise = resolveEdge(current, edgeName, args, ctx);
-    cache.set(cacheKey, promise);
-    current = await promise;
+  // Ensure root entry exists
+  if (!cache.has("root")) {
+    cache.set("root", {
+      promise: Promise.resolve(root),
+      settled: true,
+      resolve: () => Promise.resolve(root),
+    });
   }
 
-  return current;
+  const leafKey = ensurePathEntries(path, cache, reducers, ctx);
+  return getNode(cache.get(leafKey)!);
 }
 
 /**

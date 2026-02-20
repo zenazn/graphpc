@@ -121,7 +121,7 @@ const { title: after } = await post; // "Hello World" — stale cache hit!
 
 To keep the cache fresh, mutations should return a `ref()` to the mutated node. On the server, `ref()` always re-resolves the target node (bypassing the per-request node cache), so the reference carries data from after the mutation. On the client, the arriving reference overwrites the data cache for that node — subsequent `await node` and `await node.title` calls return the updated data instead of a stale cache hit.
 
-Edges are **not** affected — edge tokens remain valid. The node's data cache is overwritten with the ref's fresh data, and per-property caches are invalidated (subsequent reads are served from the fresh data, not from stale per-property caches).
+Edges that descend from the ref'd node are also invalidated — cached nodes below the ref path are invalidated so subsequent traversals re-resolve from the fresh node. The node's data cache is overwritten with the ref's fresh data, and per-property caches are invalidated (subsequent reads are served from the fresh data, not from stale per-property caches).
 
 ```typescript
 // Server — return a ref to the mutated node

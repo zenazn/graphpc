@@ -9,7 +9,6 @@ import {
   EdgeNotFoundError,
   MethodNotFoundError,
   ConnectionLostError,
-  PoisonedTokenError,
 } from "./errors.ts";
 import { Reference } from "./reference.ts";
 import { PathArg } from "./path-arg.ts";
@@ -34,8 +33,6 @@ const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   ValidationError: (v) => v instanceof ValidationError && [v.issues],
   EdgeNotFoundError: (v) => v instanceof EdgeNotFoundError && [v.edge],
   MethodNotFoundError: (v) => v instanceof MethodNotFoundError && [v.method],
-  PoisonedTokenError: (v) =>
-    v instanceof PoisonedTokenError && [v.token, v.originalError],
   NodePath: (v) => v instanceof PathArg && [v.segments],
 };
 
@@ -47,8 +44,6 @@ const builtinRevivers: Record<string, (value: any) => unknown> = {
   EdgeNotFoundError: ([edge]: [string]) => new EdgeNotFoundError(edge),
   MethodNotFoundError: ([method]: [string]) => new MethodNotFoundError(method),
   ConnectionLostError: () => new ConnectionLostError(),
-  PoisonedTokenError: ([token, originalError]: [number, unknown]) =>
-    new PoisonedTokenError(token, originalError),
   NodePath: ([segments]: [PathSegments]) => new PathArg(segments),
 };
 

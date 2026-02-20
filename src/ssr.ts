@@ -6,7 +6,7 @@
  * Hydration is handled by createClient (see client.ts).
  */
 
-import { runWithSession, type Session } from "./context.ts";
+import { runWithSession, type Session, type CacheEntry } from "./context.ts";
 import { resolveEdge, resolveData, resolveGet } from "./resolve.ts";
 import { buildSchema } from "./schema.ts";
 import type { Schema } from "./protocol.ts";
@@ -84,7 +84,12 @@ export function createSSRClient<S extends ServerInstance<any>>(
     string,
     Promise<{ node: object; token: number }>
   >();
-  const nodeCache = new Map<string, Promise<object>>();
+  const nodeCache = new Map<string, CacheEntry>();
+  nodeCache.set("root", {
+    promise: Promise.resolve(root as object),
+    settled: true,
+    resolve: () => Promise.resolve(root as object),
+  });
   // Dedup sets for data/call entries
   const recordedData = new Set<number>();
   const recordedCalls = new Set<string>();

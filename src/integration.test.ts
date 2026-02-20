@@ -1566,6 +1566,103 @@ test("read-after-write invalidates getCache for property reads", async () => {
   expect(sent.length).toBe(countAfterMutation);
 });
 
+test("read-after-write via ref invalidates descendant edge caches", async () => {
+  const owners = [
+    { id: 1, name: "Alice" },
+    { id: 2, name: "Bob" },
+  ];
+  const things = [{ id: 1, label: "widget", ownerId: 1 }];
+
+  class RAWOwner extends Node {
+    id: number;
+    name: string;
+    constructor(record: (typeof owners)[0]) {
+      super();
+      this.id = record.id;
+      this.name = record.name;
+    }
+    static [canonicalPath](root: RAWRoot, id: number) {
+      return root.owners.get(id);
+    }
+  }
+
+  class RAWThing extends Node {
+    id: number;
+    label: string;
+    #ownerId: number;
+    constructor(record: (typeof things)[0]) {
+      super();
+      this.id = record.id;
+      this.label = record.label;
+      this.#ownerId = record.ownerId;
+    }
+    static [canonicalPath](root: RAWRoot, id: number) {
+      return root.things.get(id);
+    }
+    @edge(RAWOwner)
+    get owner(): RAWOwner {
+      const r = owners.find((o) => o.id === this.#ownerId);
+      if (!r) throw new Error("Owner not found");
+      return new RAWOwner(r);
+    }
+    @method(path(RAWOwner))
+    async reassign(newOwner: Path<RAWOwner>): Promise<Reference<RAWThing>> {
+      const o = await newOwner;
+      const record = things.find((t) => t.id === this.id);
+      if (record) record.ownerId = o.id;
+      return ref(RAWThing, this.id);
+    }
+  }
+
+  class RAWThingsService extends Node {
+    @edge(RAWThing, z.number())
+    get(id: number): RAWThing {
+      const r = things.find((t) => t.id === id);
+      if (!r) throw new Error(`Thing ${id} not found`);
+      return new RAWThing(r);
+    }
+  }
+
+  class RAWOwnersService extends Node {
+    @edge(RAWOwner, z.number())
+    get(id: number): RAWOwner {
+      const r = owners.find((o) => o.id === id);
+      if (!r) throw new Error(`Owner ${id} not found`);
+      return new RAWOwner(r);
+    }
+  }
+
+  class RAWRoot extends Node {
+    @edge(RAWThingsService)
+    get things() {
+      return new RAWThingsService();
+    }
+    @edge(RAWOwnersService)
+    get owners() {
+      return new RAWOwnersService();
+    }
+  }
+
+  const gpc = createServer({}, () => new RAWRoot());
+  const transport = mockConnect(gpc, {});
+  const client = createClient({}, () => transport);
+  await client.ready;
+  const rpc = client.root;
+
+  const thing = (rpc as any).things.get(1);
+
+  // Owner is Alice
+  expect((await thing.owner).name).toBe("Alice");
+
+  // Reassign to Bob
+  await thing.reassign(pathOf((rpc as any).owners.get(2)));
+
+  // Traversing the edge again should reflect the mutation
+  expect((await thing.owner).name).toBe("Bob");
+
+  client.close();
+});
+
 // -- Server-side node coalescing tests --
 
 test("node coalescing: same path resolves edge getter only once", async () => {
@@ -3086,4 +3183,420 @@ test("pathOf() throws on non-stub", () => {
   expect(() => pathOf("not a stub")).toThrow("pathOf() requires a stub");
   expect(() => pathOf(null)).toThrow("pathOf() requires a stub");
   expect(() => pathOf(42)).toThrow("pathOf() requires a stub");
+});
+
+// -- ref() eviction / token-cache invariants --
+//
+// These tests verify that tokens remain usable after ref() invalidates
+// descendant cache entries, that concurrent edge resolution survives
+// invalidation, and that ref()'s cached promises don't leak unhandled
+// rejections.
+
+const deepStore = new Map([
+  ["1", { title: "Item One" }],
+  ["2", { title: "Item Two" }],
+]);
+
+class DeepChild extends Node {
+  id: string;
+  value: string;
+
+  constructor(id: string) {
+    super();
+    this.id = id;
+    this.value = `child-${id}`;
+  }
+
+  @method
+  async greet(): Promise<string> {
+    return `Hello from child ${this.id}`;
+  }
+}
+
+class DeepChildService extends Node {
+  @edge(DeepChild, z.string())
+  get(id: string): DeepChild {
+    return new DeepChild(id);
+  }
+}
+
+let resolveSlowEdge: (() => void) | undefined;
+
+class SlowChild extends Node {
+  value = "slow-resolved";
+}
+
+class DeepItem extends Node {
+  id: string;
+
+  constructor(id: string) {
+    super();
+    this.id = id;
+  }
+
+  get title(): string {
+    return deepStore.get(this.id)?.title ?? "unknown";
+  }
+
+  static [canonicalPath](root: DeepApi, id: string) {
+    return root.items.get(id);
+  }
+
+  @edge(DeepChildService)
+  get children(): DeepChildService {
+    return new DeepChildService();
+  }
+
+  @edge(SlowChild)
+  async getSlow(): Promise<SlowChild> {
+    await new Promise<void>((r) => {
+      resolveSlowEdge = r;
+    });
+    return new SlowChild();
+  }
+
+  @method(z.string())
+  async updateTitle(newTitle: string): Promise<Reference<DeepItem>> {
+    const entry = deepStore.get(this.id);
+    if (entry) entry.title = newTitle;
+    return ref(DeepItem, this.id);
+  }
+}
+
+class DeepItemService extends Node {
+  @edge(DeepItem, z.string())
+  get(id: string): DeepItem {
+    if (!deepStore.has(id)) throw new Error(`Item ${id} not found`);
+    return new DeepItem(id);
+  }
+}
+
+class DeepApi extends Node {
+  @edge(DeepItemService)
+  get items(): DeepItemService {
+    return new DeepItemService();
+  }
+}
+
+function deepSetup() {
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: any[] = [];
+
+  const originalSend = serverTransport.send.bind(serverTransport);
+  serverTransport.send = (data: string) => {
+    received.push(serializer.parse(data));
+    originalSend(data);
+  };
+
+  const server = createServer(
+    { maxOperationTimeout: 0, idleTimeout: 0 },
+    () => new DeepApi(),
+  );
+  server.handle(serverTransport, {});
+
+  // Remove the initial schema/hello message
+  received.shift();
+
+  return { clientTransport, received };
+}
+
+function rawSend(transport: { send(data: string): void }, msg: object) {
+  transport.send(serializer.stringify(msg));
+}
+
+/**
+ * Navigate to items.get(id).children.get(childId), returning token numbers.
+ * After flush: tokens 1=DeepItemService, 2=DeepItem, 3=DeepChildService, 4=DeepChild.
+ */
+async function navigateToChild(
+  transport: { send(data: string): void },
+  id = "1",
+  childId = "5",
+) {
+  rawSend(transport, { op: "edge", tok: 0, edge: "items" }); // token 1
+  rawSend(transport, { op: "edge", tok: 1, edge: "get", args: [id] }); // token 2
+  rawSend(transport, { op: "edge", tok: 2, edge: "children" }); // token 3
+  rawSend(transport, { op: "edge", tok: 3, edge: "get", args: [childId] }); // token 4
+  await flush();
+}
+
+/**
+ * Navigate to items.get(id), returning token numbers.
+ * After flush: tokens 1=DeepItemService, 2=DeepItem.
+ */
+async function navigateToItem(
+  transport: { send(data: string): void },
+  id = "1",
+) {
+  rawSend(transport, { op: "edge", tok: 0, edge: "items" }); // token 1
+  rawSend(transport, { op: "edge", tok: 1, edge: "get", args: [id] }); // token 2
+  await flush();
+}
+
+test("data fetch on descendant token succeeds after ref() eviction", async () => {
+  const { clientTransport, received } = deepSetup();
+
+  // Navigate to items.get("1").children.get("5") — tokens 1-4
+  await navigateToChild(clientTransport);
+
+  // Verify all 4 edges succeeded
+  const edges = received.filter((m: any) => m.op === "edge");
+  expect(edges.length).toBe(4);
+  for (const e of edges) expect(e.error).toBeUndefined();
+
+  received.length = 0;
+
+  // Trigger ref(DeepItem, "1") via method — invalidates descendant cache entries
+  rawSend(clientTransport, {
+    op: "get",
+    tok: 2,
+    name: "updateTitle",
+    args: ["Updated"],
+  });
+  await flush();
+
+  received.length = 0;
+
+  // Data fetch on descendant token 4 (DeepChild) — should return stale data
+  rawSend(clientTransport, { op: "data", tok: 4 });
+  await flush();
+
+  const dataResults = received.filter((m: any) => m.op === "data");
+  expect(dataResults.length).toBe(1);
+  expect(dataResults[0].error).toBeUndefined();
+  expect(dataResults[0].data).toBeDefined();
+  expect(dataResults[0].data.id).toBe("5");
+  expect(dataResults[0].data.value).toBe("child-5");
+});
+
+test("method call on descendant token succeeds after ref() eviction", async () => {
+  const { clientTransport, received } = deepSetup();
+
+  await navigateToChild(clientTransport);
+  received.length = 0;
+
+  // Trigger ref(DeepItem, "1")
+  rawSend(clientTransport, {
+    op: "get",
+    tok: 2,
+    name: "updateTitle",
+    args: ["Updated"],
+  });
+  await flush();
+
+  received.length = 0;
+
+  // Method call on descendant token 4 (DeepChild.greet)
+  rawSend(clientTransport, { op: "get", tok: 4, name: "greet" });
+  await flush();
+
+  const getResults = received.filter((m: any) => m.op === "get");
+  expect(getResults.length).toBe(1);
+  expect(getResults[0].error).toBeUndefined();
+  expect(getResults[0].data).toBe("Hello from child 5");
+});
+
+test("edge traversal from descendant token succeeds after ref() eviction", async () => {
+  const { clientTransport, received } = deepSetup();
+
+  // Navigate only to items.get("1").children — tokens 1-3
+  rawSend(clientTransport, { op: "edge", tok: 0, edge: "items" }); // token 1
+  rawSend(clientTransport, {
+    op: "edge",
+    tok: 1,
+    edge: "get",
+    args: ["1"],
+  }); // token 2
+  rawSend(clientTransport, { op: "edge", tok: 2, edge: "children" }); // token 3
+  await flush();
+
+  const edges = received.filter((m: any) => m.op === "edge");
+  expect(edges.length).toBe(3);
+  for (const e of edges) expect(e.error).toBeUndefined();
+
+  received.length = 0;
+
+  // Trigger ref(DeepItem, "1") — invalidates children (token 3's cache entry)
+  rawSend(clientTransport, {
+    op: "get",
+    tok: 2,
+    name: "updateTitle",
+    args: ["Updated"],
+  });
+  await flush();
+
+  received.length = 0;
+
+  // Edge traversal FROM descendant token 3 (DeepChildService.get("5"))
+  rawSend(clientTransport, {
+    op: "edge",
+    tok: 3,
+    edge: "get",
+    args: ["5"],
+  }); // token 4
+  await flush();
+
+  const edgeResults = received.filter((m: any) => m.op === "edge");
+  expect(edgeResults.length).toBe(1);
+  expect(edgeResults[0].error).toBeUndefined();
+});
+
+test("concurrent edge resolution survives ref() eviction", async () => {
+  const { clientTransport, received } = deepSetup();
+
+  // Navigate to DeepItem (token 2)
+  await navigateToItem(clientTransport);
+
+  const edges = received.filter((m: any) => m.op === "edge");
+  expect(edges.length).toBe(2);
+  for (const e of edges) expect(e.error).toBeUndefined();
+
+  received.length = 0;
+
+  // Start slow edge traversal — creates entry in nodeCache, blocks on promise
+  rawSend(clientTransport, { op: "edge", tok: 2, edge: "getSlow" }); // token 3
+
+  // Concurrently trigger ref(DeepItem, "1") — invalidates the slow edge's entry
+  rawSend(clientTransport, {
+    op: "get",
+    tok: 2,
+    name: "updateTitle",
+    args: ["Updated"],
+  });
+
+  // Let the method complete (ref runs, invalidates slow entry).
+  // The slow edge is still blocked on its controllable promise.
+  await flush();
+
+  // Now resolve the slow edge
+  expect(resolveSlowEdge).toBeDefined();
+  resolveSlowEdge!();
+  await flush();
+
+  // The edge should have resolved successfully
+  const edgeResults = received.filter((m: any) => m.op === "edge");
+  expect(edgeResults.length).toBe(1);
+  expect(edgeResults[0].error).toBeUndefined();
+
+  received.length = 0;
+
+  // Data fetch on the slow child token — should succeed with resolved data
+  rawSend(clientTransport, { op: "data", tok: 3 });
+  await flush();
+
+  const dataResults = received.filter((m: any) => m.op === "data");
+  expect(dataResults.length).toBe(1);
+  expect(dataResults[0].error).toBeUndefined();
+  expect(dataResults[0].data).toBeDefined();
+  expect(dataResults[0].data.value).toBe("slow-resolved");
+});
+
+test("ref() deferred rejection does not cause unhandled rejection", async () => {
+  // Graph where ref()'s walkPath fails
+  class FailItem extends Node {
+    id: string;
+    constructor(id: string) {
+      super();
+      if (id === "bad") throw new Error("Cannot create bad item");
+      this.id = id;
+    }
+
+    static [canonicalPath](root: FailApi, id: string) {
+      return root.items.get(id);
+    }
+
+    @method
+    async triggerBadRef(): Promise<Reference<FailItem>> {
+      return ref(FailItem, "bad");
+    }
+  }
+
+  class FailItemService extends Node {
+    @edge(FailItem, z.string())
+    get(id: string): FailItem {
+      return new FailItem(id);
+    }
+  }
+
+  class FailApi extends Node {
+    @edge(FailItemService)
+    get items(): FailItemService {
+      return new FailItemService();
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: any[] = [];
+  const originalSend = serverTransport.send.bind(serverTransport);
+  serverTransport.send = (data: string) => {
+    received.push(serializer.parse(data));
+    originalSend(data);
+  };
+
+  const server = createServer(
+    { maxOperationTimeout: 0, idleTimeout: 0 },
+    () => new FailApi(),
+  );
+  server.handle(serverTransport, {});
+  received.shift(); // remove hello
+
+  // Navigate to items.get("1") — a valid item
+  rawSend(clientTransport, { op: "edge", tok: 0, edge: "items" }); // token 1
+  rawSend(clientTransport, {
+    op: "edge",
+    tok: 1,
+    edge: "get",
+    args: ["1"],
+  }); // token 2
+  await flush();
+
+  received.length = 0;
+
+  // Call method that triggers ref(FailItem, "bad") — walkPath will fail
+  // because FailItem("bad") throws in the constructor.
+  // The method should return an error, but ref()'s deferred in nodeCache
+  // should NOT cause an unhandled rejection.
+  rawSend(clientTransport, { op: "get", tok: 2, name: "triggerBadRef" });
+  await flush();
+
+  // Give the microtask queue time to detect unhandled rejections
+  await new Promise((r) => setTimeout(r, 50));
+
+  // The method should have returned an error (expected — bad ref)
+  const getResults = received.filter((m: any) => m.op === "get");
+  expect(getResults.length).toBe(1);
+  expect(getResults[0].error).toBeDefined();
+
+  // If we got here without an unhandled rejection crashing the test, it passes.
+});
+
+test("pipelined method (ref) + descendant data fetch both complete", async () => {
+  const { clientTransport, received } = deepSetup();
+
+  // Navigate to items.get("1").children.get("5") — tokens 1-4
+  await navigateToChild(clientTransport);
+  received.length = 0;
+
+  // Pipeline: method call that triggers ref() AND data fetch on descendant
+  // in the same batch (no flush between)
+  rawSend(clientTransport, {
+    op: "get",
+    tok: 2,
+    name: "updateTitle",
+    args: ["Updated"],
+  });
+  rawSend(clientTransport, { op: "data", tok: 4 });
+  await flush();
+
+  // Method response should have data (the ref return value)
+  const getResults = received.filter((m: any) => m.op === "get");
+  expect(getResults.length).toBe(1);
+  expect(getResults[0].error).toBeUndefined();
+
+  // Descendant data fetch should also succeed with stale data
+  const dataResults = received.filter((m: any) => m.op === "data");
+  expect(dataResults.length).toBe(1);
+  expect(dataResults[0].error).toBeUndefined();
+  expect(dataResults[0].data).toBeDefined();
+  expect(dataResults[0].data.id).toBe("5");
 });

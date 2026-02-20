@@ -148,7 +148,7 @@ Responses may also arrive out of order for `edge` operations. The server process
 
 ## Node Coalescing
 
-For a given path, a node must be created exactly once per connection. The server coalesces concurrent resolutions of the same path — if two operations race to resolve the same node, the first resolution wins and subsequent operations receive the same instance.
+For a given path, a node must be created exactly once per connection. The server maintains a `nodeCache` mapping cache keys (stringified paths) to entries. Each entry has a lazy resolve function; the first `getNode()` call triggers resolution and caches the resulting promise, and subsequent calls return the same promise. If two operations race to resolve the same node, the first call creates the promise and the second receives the same instance.
 
 This guarantees:
 
@@ -222,9 +222,9 @@ post.publish();  // may execute before updateTitle
 
 ## Failure Semantics
 
-### Poisoned Tokens
+### Failed Tokens
 
-Edge traversals **always consume a token**, even on failure. A failed token is **poisoned** — any subsequent operation targeting it immediately returns the original error:
+Edge traversals **always consume a token**, even on failure. A failed token propagates the original error — any subsequent operation targeting it receives the same rejection:
 
 ```
 → edge(1, "get", ["deleted-user"])           // implicit ID 3
@@ -234,7 +234,7 @@ Edge traversals **always consume a token**, even on failure. A failed token is *
 ← get result (tok=2, re=4, error: NotFound)  // same error, not executed
 ```
 
-This keeps client and server token counters in sync, which is critical for pipelining. Without this rule, a failed traversal would desynchronize the counters and break all subsequent messages.
+This keeps client and server token counters in sync, which is critical for pipelining. Without this rule, a failed traversal would desynchronize the counters and break all subsequent messages. Internally, each token maps to a cache key in `nodeCache`. Cache entries use lazy resolution — the entry's promise is created on first access and cached for subsequent accesses. A failed edge's rejection propagates to all pipelined children that depend on it.
 
 ### Error Types
 
@@ -243,7 +243,6 @@ Errors are serialized through devalue with custom reducers, so the client receiv
 - `ValidationError` — schema validation failed
 - `EdgeNotFoundError` — referenced edge doesn't exist
 - `MethodNotFoundError` — referenced method/property doesn't exist
-- `PoisonedTokenError` — operation on a poisoned token
 - `ConnectionLostError` — all reconnection attempts exhausted
 - `RpcError` — base class for all RPC errors
 
@@ -342,10 +341,9 @@ This prevents a single long-lived connection from accumulating unbounded token s
 
 When the limit is exceeded:
 
-1. The server assigns a token (to keep client/server counters synchronized for pipelined messages)
-2. The token is poisoned with an `RpcError` (code `TOKEN_LIMIT_EXCEEDED`)
-3. The error response is sent to the client
-4. The connection is closed
+1. The server assigns a token (to keep client/server counters synchronized for pipelined messages) and synchronously responds with an error — no cache entry is created
+2. An `RpcError` with code `TOKEN_LIMIT_EXCEEDED` is returned
+3. The connection is closed
 
 ## Max Pending Ops
 
@@ -380,4 +378,4 @@ const server = createServer(
 );
 ```
 
-For edge operations, the token is poisoned on timeout, so pipelined operations that depend on it fail immediately. See [Production Guide — Operation Timeout](production.md#operation-timeout).
+For edge operations, pipelined operations that depend on a timed-out edge fail when they attempt to resolve the parent token. See [Production Guide — Operation Timeout](production.md#operation-timeout).

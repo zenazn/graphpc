@@ -142,7 +142,7 @@ When a reference arrives on the client (as part of a method's return value), it 
 
 - **Node-load cache overwrite** — the ref's data replaces the cached entry at its canonical path. A subsequent `await node` returns the ref's fresh data instead of a stale cache hit.
 - **Property read invalidation** — cached property-read results for that node (e.g. `await node.title`) are cleared, so the next read sends a fresh wire message.
-- **Edges unaffected** — edge tokens for that node remain valid. Only the node's data and property caches are refreshed.
+- **Descendant edge invalidation** — cached nodes _below_ the ref'd node are invalidated so subsequent traversals re-resolve from the fresh node. This ensures edges that depend on the node's internal state (e.g. a foreign-key edge) reflect the mutation.
 
 This makes references the primary mechanism for keeping client-side state fresh after mutations. A mutation that returns references gives the caller immediate access to updated data _and_ ensures that any code re-reading the same node within the epoch sees the update too.
 
@@ -283,7 +283,7 @@ When you call `ref(Class, ...args)`:
 
 1. GraphPC calls `Class[canonicalPath](recordingProxy, ...args)` — the recording proxy captures each navigation step as a path segment, without executing real edge getters
 2. The `[canonicalPath]` method navigates the proxy (e.g., `root.posts.get(id)`), capturing the path
-3. GraphPC walks the **real** graph along that path. Intermediate edges use the per-request cache (so concurrent refs share work), but the **final edge is always re-resolved** — the target node is never served from cache. This guarantees `ref()` returns current data even when called after a mutation within the same request.
+3. GraphPC walks the **real** graph along that path. Intermediate edges use the per-request cache (so concurrent refs share work), but the **final edge is always re-resolved and all its descendants are invalidated** — the target node is never served from cache, and any previously cached nodes below it are invalidated so they re-resolve on next access. This guarantees `ref()` returns current data even when called after a mutation within the same request, and that subsequent edge traversals from the refreshed node see the new state.
 4. The node's data fields are extracted (own properties and getter results)
 5. Both the path and data are bundled into a `Reference<Class>`
 

@@ -35,7 +35,6 @@ export {
   ValidationError,
   EdgeNotFoundError,
   MethodNotFoundError,
-  PoisonedTokenError,
   ConnectionLostError,
 } from "./errors.ts";
 

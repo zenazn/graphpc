@@ -10,7 +10,6 @@ GraphPC provides error classes that all extend `RpcError`:
 | `ValidationError`     | `VALIDATION_ERROR` | `@edge` or `@method` argument fails schema validation                  |
 | `EdgeNotFoundError`   | `EDGE_NOT_FOUND`   | Edge doesn't exist or is `@hidden` from this connection                |
 | `MethodNotFoundError` | `METHOD_NOT_FOUND` | Method/property doesn't exist or is `@hidden`                          |
-| `PoisonedTokenError`  | `POISONED_TOKEN`   | Attempt to use a token for an edge that previously failed              |
 | `ConnectionLostError` | `CONNECTION_LOST`  | All reconnect attempts exhausted                                       |
 
 When `maxTokens` is exceeded, the server returns an `RpcError` with code `TOKEN_LIMIT_EXCEEDED` and closes the connection. See [Internals — Max Tokens](internals.md#max-tokens).
@@ -55,20 +54,20 @@ See [Serialization](serialization.md) for the full reducer/reviver contract.
 
 Here's what the client receives for every failure mode:
 
-| Failure                                     | Client receives                        | `instanceof`          |
-| ------------------------------------------- | -------------------------------------- | --------------------- |
-| `@edge`/`@method` argument fails validation | `ValidationError` with `.issues`       | `ValidationError`     |
-| Edge throws a registered custom error       | The custom error instance              | Custom class          |
-| Edge throws a non-registered custom error   | `RpcError` (message preserved)         | `RpcError` only       |
-| Edge throws any other value                 | `RpcError` with code `EDGE_ERROR`      | `RpcError`            |
-| Method throws a registered custom error     | The custom error instance              | Custom class          |
-| Method throws a non-registered custom error | `RpcError` (message preserved)         | `RpcError` only       |
-| Method throws any other value               | `RpcError` with code `GET_ERROR`       | `RpcError`            |
-| Data op throws any other value              | `RpcError` with code `DATA_ERROR`      | `RpcError`            |
-| `@hidden` edge accessed                     | `EdgeNotFoundError`                    | `EdgeNotFoundError`   |
-| `@hidden` method accessed                   | `MethodNotFoundError`                  | `MethodNotFoundError` |
-| Operation on failed edge's token            | `PoisonedTokenError` wrapping original | `PoisonedTokenError`  |
-| All reconnect attempts fail                 | `ConnectionLostError`                  | `ConnectionLostError` |
+| Failure                                     | Client receives                   | `instanceof`          |
+| ------------------------------------------- | --------------------------------- | --------------------- |
+| `@edge`/`@method` argument fails validation | `ValidationError` with `.issues`  | `ValidationError`     |
+| Edge throws a registered custom error       | The custom error instance         | Custom class          |
+| Edge throws a non-registered custom error   | `RpcError` (message preserved)    | `RpcError` only       |
+| Edge throws any other value                 | `RpcError` with code `EDGE_ERROR` | `RpcError`            |
+| Method throws a registered custom error     | The custom error instance         | Custom class          |
+| Method throws a non-registered custom error | `RpcError` (message preserved)    | `RpcError` only       |
+| Method throws any other value               | `RpcError` with code `GET_ERROR`  | `RpcError`            |
+| Data op throws any other value              | `RpcError` with code `DATA_ERROR` | `RpcError`            |
+| `@hidden` edge accessed                     | `EdgeNotFoundError`               | `EdgeNotFoundError`   |
+| `@hidden` method accessed                   | `MethodNotFoundError`             | `MethodNotFoundError` |
+| Operation on failed edge's token            | Original error (propagated)       | Varies                |
+| All reconnect attempts fail                 | `ConnectionLostError`             | `ConnectionLostError` |
 
 ## Error Redaction
 

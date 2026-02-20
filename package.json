@@ -1,6 +1,6 @@
 {
   "name": "graphpc",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "description": "Type-safe graph API for TypeScript. Like GraphQL, without the query language.",
   "license": "MIT",
   "author": "Carl Jackson",

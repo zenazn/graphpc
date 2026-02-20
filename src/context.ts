@@ -9,10 +9,45 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Schema } from "./protocol.ts";
 import type { Context } from "./types.ts";
 
+export interface CacheEntry {
+  promise: Promise<object> | null;
+  settled: boolean;
+  resolve: () => Promise<object>;
+}
+
+/** Get or create the lazy node promise from a cache entry. */
+export function getNode(entry: CacheEntry): Promise<object> {
+  if (!entry.promise) {
+    entry.promise = entry.resolve();
+    entry.promise.catch(() => {});
+    entry.promise.then(
+      () => {
+        entry.settled = true;
+      },
+      () => {
+        entry.settled = true;
+      },
+    );
+  }
+  return entry.promise;
+}
+
+/**
+ * Invalidate a cache entry. Resets the promise if it has settled so the
+ * next `getNode` call re-resolves. No-op if the promise has never been
+ * accessed or is still in-flight (in-flight invalidation is undefined
+ * by spec; this implementation ignores it).
+ */
+export function invalidateEntry(entry: CacheEntry): void {
+  if (!entry.promise || !entry.settled) return;
+  entry.promise = null;
+  entry.settled = false;
+}
+
 export interface Session {
   ctx: Context;
   root: object;
-  nodeCache: Map<string, Promise<object>>;
+  nodeCache: Map<string, CacheEntry>;
   close: () => void;
   reducers?: Record<string, (value: unknown) => false | unknown[]>;
   signal: AbortSignal;

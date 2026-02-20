@@ -19,7 +19,7 @@ GraphPC automatically registers reducers and revivers for:
 
 - **References** — `ref()` values, serialized as a custom type containing data and path
 - **Path references** — `PathArg` and `Path<T>` values, serialized as `NodePath` containing path segments
-- **RPC errors** — `RpcError`, `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `PoisonedTokenError`, `ConnectionLostError`
+- **RPC errors** — `RpcError`, `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `ConnectionLostError`
 
 These survive serialization and deserialization as actual class instances. Built-in names take precedence — if a user-supplied reducer or reviver uses the same name as a built-in, the built-in silently wins.
 

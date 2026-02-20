@@ -30,8 +30,8 @@ import {
   createClientSerializer,
   type Serializer,
 } from "./serialization.ts";
-import { RpcError, ConnectionLostError, PoisonedTokenError } from "./errors.ts";
-import { setErrorUuid, getErrorUuid } from "./error-uuid.ts";
+import { RpcError, ConnectionLostError } from "./errors.ts";
+import { setErrorUuid } from "./error-uuid.ts";
 import type {
   RpcStub,
   ClientOptions,
@@ -426,19 +426,7 @@ export function createClient<S extends ServerInstance<any>>(
           return;
         }
         pendingTerminals.delete(pt);
-        // Unwrap PoisonedTokenError so the user sees the root cause.
-        // With pipelining, a failed parent edge poisons the child token;
-        // the terminal response carries PoisonedTokenError wrapping the
-        // original error. Unwrap so user code sees the same error as if
-        // the failed edge had been awaited directly.
-        if (err instanceof PoisonedTokenError) {
-          // Copy the errorId from the wrapper to the unwrapped error
-          const uuid = getErrorUuid(err);
-          if (uuid) setErrorUuid(err.originalError, uuid);
-          pt.reject(err.originalError);
-        } else {
-          pt.reject(err);
-        }
+        pt.reject(err);
       },
     );
   }
@@ -487,7 +475,8 @@ export function createClient<S extends ServerInstance<any>>(
     options,
     (value) => {
       const [path, data] = value as [PathSegments, Record<string, unknown>];
-      const refToken = pathToTokenSync.get(pathKey(path));
+      const refPathKey = pathKey(path);
+      const refToken = pathToTokenSync.get(refPathKey);
       if (refToken !== undefined) {
         liveDataCache.set(refToken, data);
         const prefix = `${refToken}:`;
@@ -495,6 +484,23 @@ export function createClient<S extends ServerInstance<any>>(
           if (key.startsWith(prefix)) getCache.delete(key);
         }
         dataLoadCache.delete(refToken);
+      }
+      // Evict cached descendant edges so subsequent traversals
+      // re-resolve from the fresh node instead of reusing stale tokens.
+      for (const [edgeKey, _] of resolvedEdges) {
+        if (edgeKey !== refPathKey && edgeKey.startsWith(refPathKey)) {
+          resolvedEdges.delete(edgeKey);
+          const tok = pathToTokenSync.get(edgeKey);
+          if (tok !== undefined) {
+            pathToTokenSync.delete(edgeKey);
+            liveDataCache.delete(tok);
+            dataLoadCache.delete(tok);
+            const tokPrefix = `${tok}:`;
+            for (const key of getCache.keys()) {
+              if (key.startsWith(tokPrefix)) getCache.delete(key);
+            }
+          }
+        }
       }
       return createDataProxy(backend, path, data);
     },

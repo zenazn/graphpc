@@ -2,7 +2,7 @@
  * Server-side handler: token machine + message dispatch.
  */
 
-import { runWithSession } from "./context.ts";
+import { runWithSession, getNode, type CacheEntry } from "./context.ts";
 import { RpcError } from "./errors.ts";
 import { formatSegment } from "./format.ts";
 import type { OperationResult } from "./hooks.ts";
@@ -19,7 +19,6 @@ import { eventDataToString, parseClientMessage } from "./protocol.ts";
 import { resolveData, resolveEdge, resolveGet } from "./resolve.ts";
 import { buildSchema } from "./schema.ts";
 import { createSerializer, type SerializerOptions } from "./serialization.ts";
-import { TokenManager, type TokenClaim } from "./token-manager.ts";
 import {
   type Timers,
   defaultTimers,
@@ -182,11 +181,20 @@ function createHandler(
         process.env?.NODE_ENV === "production";
 
   return (transport: Transport, ctx: Context) => {
-    const tm = new TokenManager(root, options.maxTokens ?? 9000);
-    const nodeCache = new Map<string, Promise<object>>();
-    // Track the path cache-key for each token (for node coalescing).
-    const tokenCacheKeys = new Map<number, string>();
-    tokenCacheKeys.set(0, "root"); // root
+    const nodeCache = new Map<string, CacheEntry>();
+    nodeCache.set("root", {
+      promise: Promise.resolve(root),
+      settled: true,
+      resolve: () => Promise.resolve(root),
+    });
+
+    // Token → cache key. Computed synchronously when edge messages arrive,
+    // so pipelined children can look up parent keys without awaiting.
+    const tokens: string[] = ["root"];
+    let tokenCount = 1;
+    let shouldClose = false;
+    const maxTokens = options.maxTokens ?? 9000;
+
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingOps = 0;
     const connAbort = new AbortController();
@@ -257,6 +265,25 @@ function createHandler(
       if (slotQueue.length > 0) slotQueue.shift()!.resolve();
     }
 
+    /**
+     * Resolve a token to a node object.
+     * Token → cache key is synchronous; the cache entry resolves lazily.
+     */
+    function waitForToken(tok: number): Promise<object> {
+      if (tok >= tokenCount) {
+        throw new RpcError("INVALID_TOKEN", `Unknown token: ${tok}`);
+      }
+      const cacheKey = tokens[tok];
+      if (!cacheKey) {
+        throw new RpcError("INVALID_TOKEN", `Unknown token: ${tok}`);
+      }
+      const entry = nodeCache.get(cacheKey);
+      if (!entry) {
+        throw new RpcError("INVALID_TOKEN", `No cache entry for token ${tok}`);
+      }
+      return getNode(entry);
+    }
+
     // Track auto-wrapped errors → original thrown value.
     // When a handler wraps a non-RpcError, non-custom error in an RpcError,
     // it stores the mapping here so processErrorResponse knows it can redact.
@@ -281,9 +308,9 @@ function createHandler(
       const originalError = isWrapped
         ? wrappedOriginals.get(responseError)
         : responseError;
-      const shouldRedact = redactErrors && isWrapped;
+      const shouldRedactThis = redactErrors && isWrapped;
 
-      if (shouldRedact) {
+      if (shouldRedactThis) {
         response.error = new RpcError(
           (responseError as RpcError).code ?? "INTERNAL_ERROR",
           "Internal server error",
@@ -293,65 +320,28 @@ function createHandler(
       emitOperationError(ctx, {
         error: originalError,
         errorId,
-        redacted: shouldRedact,
+        redacted: shouldRedactThis,
       });
 
       return response;
     }
 
     async function handleEdge(
-      msg: ClientMessage & { op: "edge" },
       re: number,
-      claim: TokenClaim,
+      claimToken: number,
     ): Promise<EdgeResult> {
-      if (claim.error) {
-        return { op: "edge", tok: claim.token, re, error: claim.error };
-      }
-
-      let parent: object;
-      try {
-        parent = await tm.waitFor(msg.tok);
-      } catch (err) {
-        claim.poison(err as RpcError);
-        return { op: "edge", tok: claim.token, re, error: err as RpcError };
-      }
-
-      // Compute path-based cache key using human-readable format
-      const parentKey = tokenCacheKeys.get(msg.tok) ?? "root";
-      const seg: PathSegment =
-        msg.args && msg.args.length > 0 ? [msg.edge, ...msg.args] : msg.edge;
-      const fullKey = parentKey + formatSegment(seg, options.reducers);
-      tokenCacheKeys.set(claim.token, fullKey);
-
-      // Actual work: concurrency-limited
       await acquireSlot();
       try {
-        // Node coalescing: reuse existing resolution for the same path
-        let nodePromise = nodeCache.get(fullKey);
-        if (!nodePromise) {
-          nodePromise = resolveEdge(parent, msg.edge, msg.args ?? [], ctx);
-          nodeCache.set(fullKey, nodePromise);
+        const entry = nodeCache.get(tokens[claimToken]!)!;
+        await getNode(entry);
+        return { op: "edge", tok: claimToken, re };
+      } catch (err) {
+        if (err instanceof RpcError || serializer.handles(err)) {
+          return { op: "edge", tok: claimToken, re, error: err };
         }
-
-        try {
-          const child = await nodePromise;
-          claim.register(child);
-          return { op: "edge", tok: claim.token, re };
-        } catch (err) {
-          if (err instanceof RpcError) {
-            claim.poison(err);
-            return { op: "edge", tok: claim.token, re, error: err };
-          }
-          const isCustom = serializer.handles(err);
-          if (isCustom) {
-            claim.poison(err);
-            return { op: "edge", tok: claim.token, re, error: err };
-          }
-          const rpcErr = new RpcError("EDGE_ERROR", String(err));
-          wrappedOriginals.set(rpcErr, err);
-          claim.poison(rpcErr);
-          return { op: "edge", tok: claim.token, re, error: rpcErr };
-        }
+        const rpcErr = new RpcError("EDGE_ERROR", String(err));
+        wrappedOriginals.set(rpcErr, err);
+        return { op: "edge", tok: claimToken, re, error: rpcErr };
       } finally {
         releaseSlot();
       }
@@ -362,7 +352,7 @@ function createHandler(
       re: number,
     ): Promise<GetResult> {
       try {
-        const node = await tm.waitFor(msg.tok);
+        const node = await waitForToken(msg.tok);
         await acquireSlot();
         try {
           const result = await resolveGet(node, msg.name, msg.args ?? [], ctx);
@@ -385,7 +375,7 @@ function createHandler(
       re: number,
     ): Promise<DataResult> {
       try {
-        const node = await tm.waitFor(msg.tok);
+        const node = await waitForToken(msg.tok);
         await acquireSlot();
         try {
           const data = resolveData(node, ctx);
@@ -432,11 +422,70 @@ function createHandler(
       const opAbort = new AbortController();
       const opSignal = AbortSignal.any([connAbort.signal, opAbort.signal]);
 
-      // For edge ops, claim the token in the outer loop so the timeout
-      // closure can poison it.
-      let edgeClaim: TokenClaim | undefined;
+      // For edge ops: allocate token, compute cache key, and create cache
+      // entry — all synchronously, before any async work.
+      let claimToken = -1;
       if (msg.op === "edge") {
-        edgeClaim = tm.claim();
+        claimToken = tokenCount++;
+
+        // Token limit: respond synchronously and close.
+        if (tokenCount > maxTokens) {
+          shouldClose = true;
+          pendingOps--;
+          const error = new RpcError(
+            "TOKEN_LIMIT_EXCEEDED",
+            "Connection closed: token limit exceeded",
+          );
+          const response = {
+            op: "edge" as const,
+            tok: claimToken,
+            re: messageId,
+            error,
+            errorId: undefined as string | undefined,
+          };
+          processErrorResponse(response);
+          transport.send(serializer.stringify(response));
+          transport.close();
+          return;
+        }
+
+        // Compute cache key from parent's (already-known) key.
+        const parentKey = tokens[msg.tok];
+        if (parentKey !== undefined) {
+          const seg: PathSegment =
+            msg.args && msg.args.length > 0
+              ? [msg.edge, ...msg.args]
+              : msg.edge;
+          const fullKey = parentKey + formatSegment(seg, options.reducers);
+          tokens[claimToken] = fullKey;
+
+          if (!nodeCache.has(fullKey)) {
+            const pKey = parentKey;
+            const edgeName = msg.edge;
+            const edgeArgs = msg.args ?? [];
+            nodeCache.set(fullKey, {
+              promise: null,
+              settled: false,
+              resolve: () =>
+                getNode(nodeCache.get(pKey)!)
+                  .then((parent) =>
+                    resolveEdge(parent, edgeName, edgeArgs, ctx),
+                  )
+                  .catch((err) => {
+                    // Wrap non-RpcError so the cached rejection carries
+                    // EDGE_ERROR regardless of which handler reads it.
+                    if (err instanceof RpcError || serializer.handles(err))
+                      throw err;
+                    const rpcErr = new RpcError("EDGE_ERROR", String(err));
+                    wrappedOriginals.set(rpcErr, err);
+                    throw rpcErr;
+                  }),
+            });
+          }
+        }
+        // If parentKey is undefined (invalid parent token), tokens[claimToken]
+        // stays undefined. handleEdge will use the cache entry's lazy
+        // resolution which will cascade to the parent's error.
       }
 
       let responded = false;
@@ -453,10 +502,9 @@ function createHandler(
           );
           let response: ServerMessage & { errorId?: string };
           if (msg.op === "edge") {
-            edgeClaim!.poison(timeoutErr);
             response = {
               op: "edge",
-              tok: edgeClaim!.token,
+              tok: claimToken,
               re: messageId,
               error: timeoutErr,
             };
@@ -472,8 +520,6 @@ function createHandler(
             response as { error: unknown; errorId?: string },
           );
           transport.send(serializer.stringify(response));
-          // Do NOT decrement pendingOps here — the handler continues
-          // in the background and its finally block handles cleanup.
         }, maxOperationTimeout);
       }
 
@@ -493,8 +539,8 @@ function createHandler(
             const executeOp = async (): Promise<ServerMessage> => {
               switch (msg.op) {
                 case "edge": {
-                  const r = await handleEdge(msg, messageId, edgeClaim!);
-                  if (tm.shouldClose) transport.close();
+                  const r = await handleEdge(messageId, claimToken);
+                  if (shouldClose) transport.close();
                   return r;
                 }
                 case "get":
@@ -517,17 +563,12 @@ function createHandler(
                 ? operationHandlers.slice()
                 : undefined;
             if (handlers) {
-              // Compute path from tokenCacheKeys (already tracked, zero extra cost)
+              // Compute path from tokens (synchronous, zero extra cost)
               let opPath: string;
               if (msg.op === "edge") {
-                const parentKey = tokenCacheKeys.get(msg.tok) ?? "root";
-                const seg: PathSegment =
-                  msg.args && msg.args.length > 0
-                    ? [msg.edge, ...msg.args]
-                    : msg.edge;
-                opPath = parentKey + formatSegment(seg, options.reducers);
+                opPath = tokens[claimToken] ?? "root";
               } else {
-                opPath = tokenCacheKeys.get(msg.tok) ?? "root";
+                opPath = tokens[msg.tok] ?? "root";
               }
 
               const info = {
@@ -616,9 +657,8 @@ function createHandler(
       const closedErr = new RpcError("CONNECTION_CLOSED", "Connection closed");
       for (const waiter of slotQueue) waiter.reject(closedErr);
       slotQueue.length = 0;
-      tm.clear();
+      tokens.length = 0;
       nodeCache.clear();
-      tokenCacheKeys.clear();
     });
   };
 }

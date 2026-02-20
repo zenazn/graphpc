@@ -5,7 +5,6 @@ import {
   ValidationError,
   EdgeNotFoundError,
   ConnectionLostError,
-  PoisonedTokenError,
 } from "./errors.ts";
 import { Reference } from "./ref.ts";
 
@@ -96,16 +95,6 @@ test("roundtrip ConnectionLostError", () => {
   expect(result).toBeInstanceOf(ConnectionLostError);
   expect(result.code).toBe("CONNECTION_LOST");
   expect(result.message).toBe("All reconnection attempts failed");
-});
-
-test("roundtrip PoisonedTokenError", () => {
-  const s = createSerializer();
-  const cause = new EdgeNotFoundError("x");
-  const err = new PoisonedTokenError(5, cause);
-  const result = s.parse(s.stringify(err)) as PoisonedTokenError;
-  expect(result).toBeInstanceOf(PoisonedTokenError);
-  expect(result.token).toBe(5);
-  expect(result.originalError).toBeInstanceOf(EdgeNotFoundError);
 });
 
 test("reducer returning falsy values is treated as not handled", () => {

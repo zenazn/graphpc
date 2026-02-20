@@ -51,17 +51,3 @@ export class ConnectionLostError extends RpcError {
     super("CONNECTION_LOST", "All reconnection attempts failed");
   }
 }
-
-export class PoisonedTokenError extends RpcError {
-  readonly token: number;
-  readonly originalError: unknown;
-
-  constructor(token: number, originalError: unknown) {
-    super(
-      "POISONED_TOKEN",
-      `Token ${token} is poisoned: ${originalError instanceof Error ? originalError.message : String(originalError)}`,
-    );
-    this.token = token;
-    this.originalError = originalError;
-  }
-}
