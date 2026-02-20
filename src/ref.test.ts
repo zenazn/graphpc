@@ -336,6 +336,76 @@ test("walkPath propagates EdgeNotFoundError from first segment", async () => {
   ).rejects.toBeInstanceOf(EdgeNotFoundError);
 });
 
+// -- ref() after mutation invalidates leaf cache --
+
+class MutableItem extends Node {
+  id: string;
+  name: string;
+  constructor(id: string, name: string) {
+    super();
+    this.id = id;
+    this.name = name;
+  }
+
+  static [canonicalPath](root: MutableApi, id: string) {
+    return root.items.get(id);
+  }
+}
+
+class MutableItemsService extends Node {
+  store: Map<string, string>;
+  constructor(store: Map<string, string>) {
+    super();
+    this.store = store;
+  }
+
+  @edge(MutableItem, z.string())
+  get(id: string): MutableItem {
+    return new MutableItem(id, this.store.get(id) ?? "unknown");
+  }
+}
+
+class MutableApi extends Node {
+  store: Map<string, string>;
+  constructor(store: Map<string, string>) {
+    super();
+    this.store = store;
+  }
+
+  @edge(MutableItemsService)
+  get items(): MutableItemsService {
+    return new MutableItemsService(this.store);
+  }
+}
+
+test("ref() returns fresh data after mutation (leaf cache eviction)", async () => {
+  const store = new Map([["1", "original"]]);
+  const api = new MutableApi(store);
+  const session: Session = {
+    ctx: {},
+    root: api,
+    nodeCache: new Map(),
+    close: () => {},
+    reducers: undefined,
+    signal: new AbortController().signal,
+  };
+
+  // First ref populates cache
+  const r1 = await runWithSession(session, () => ref(MutableItem, "1"));
+  expect(r1.data).toEqual({ id: "1", name: "original" });
+
+  // Mutate backing store
+  store.set("1", "updated");
+
+  // Second ref should see the mutation (leaf evicted, re-resolved)
+  const r2 = await runWithSession(session, () => ref(MutableItem, "1"));
+  expect(r2.data).toEqual({ id: "1", name: "updated" });
+
+  // Intermediate edge ("items") should still be cached (3 entries: items + item@1 twice resolved)
+  // The items service is cached, only the leaf was evicted and re-resolved
+  expect(session.nodeCache.has("root.items")).toBe(true);
+});
+
 test("walkPath caches failure at first segment", async () => {
   const api = new AlwaysFailApi();
   const cache = new Map<string, Promise<object>>();

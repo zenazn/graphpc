@@ -32,7 +32,7 @@ class PostsService extends Node {
 }
 ```
 
-`ref()` is **async**. It resolves the canonical path, walks the graph to extract data, and returns a `Reference` containing both the path and the data.
+`ref()` is **async**. It resolves the canonical path, walks the graph to extract data, and returns a `Reference` containing both the path and the data. The target node is always freshly resolved — `ref()` bypasses the server's per-request node cache for the final edge, so the data reflects the current state of your backing store.
 
 ## `[canonicalPath]` — Declaring Canonical Paths
 
@@ -283,7 +283,7 @@ When you call `ref(Class, ...args)`:
 
 1. GraphPC calls `Class[canonicalPath](recordingProxy, ...args)` — the recording proxy captures each navigation step as a path segment, without executing real edge getters
 2. The `[canonicalPath]` method navigates the proxy (e.g., `root.posts.get(id)`), capturing the path
-3. GraphPC walks the **real** graph along that path, resolving each edge to get the actual node
+3. GraphPC walks the **real** graph along that path. Intermediate edges use the per-request cache (so concurrent refs share work), but the **final edge is always re-resolved** — the target node is never served from cache. This guarantees `ref()` returns current data even when called after a mutation within the same request.
 4. The node's data fields are extracted (own properties and getter results)
 5. Both the path and data are bundled into a `Reference<Class>`
 

@@ -44,6 +44,15 @@ export async function ref<
 
   // 2. Walk real graph with caching via session from ALS
   const session = getSession();
+
+  // Evict the leaf node so walkPath re-resolves it with fresh data.
+  // Intermediate edges stay cached — only the final segment is invalidated.
+  let leafKey = "root";
+  for (const seg of path) {
+    leafKey += formatSegment(seg, session.reducers);
+  }
+  session.nodeCache.delete(leafKey);
+
   const node = await walkPath(
     session.root,
     path,
