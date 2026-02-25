@@ -1,6 +1,10 @@
 # GraphPC — LLM Reference
 
-GraphPC is a TypeScript RPC library where the API is a typed object graph. Think tRPC but with graph traversal instead of flat procedures, and GraphQL but without a query language. The client navigates edges synchronously (no network call), then `await`s to fetch data or call methods.
+When to read this page: when generating code/prompts with LLMs and you need a compact, high-signal summary.
+
+Use this as a compression layer, not as the canonical source for edge cases. Follow linked docs for definitive behavior.
+
+GraphPC is a TypeScript RPC library where the API is a typed object graph. Think tRPC with graph traversal instead of flat procedures, and GraphQL without a query language. The client navigates edges synchronously (no network call), then `await`s to fetch data or call methods.
 
 ## Mental Model
 
@@ -13,7 +17,7 @@ Wire: WebSocket + devalue serialization, pipelined via token machine
 - All node classes extend `Node` (from `"graphpc"`)
 - **`@edge(TargetClass, ...schemas)`** on a getter/method = graph relationship. Client gets a synchronous stub.
 - **`@method(...schemas)`** on a method. Can return `T` or `Promise<T>`. Client always gets a Promise.
-- **Undecorated** non-function own properties + getters = data fields. Returned together by `await node`.
+- **Undecorated** non-function properties + getters (including inherited ones) = data fields. Returned together by `await node`.
 - **`@hidden(predicate)`** = conditionally hide any member (edge, method, or data field) per-connection.
 
 Navigation is lazy (no RPC). Data access (`await stub`, `await stub.prop`, `stub.method()`) triggers RPC.
@@ -73,7 +77,7 @@ Bun.serve({
 ### Client
 
 ```ts
-import { createClient } from "graphpc/client"; // or "graphpc" — both work
+import { createClient } from "graphpc/client";
 
 const client = createClient<typeof server>(
   {},
@@ -91,6 +95,8 @@ const n = await client.root.posts.count();
 
 - `"graphpc"` — everything (server + client). Depends on `node:async_hooks`.
 - `"graphpc/client"` — client-only. No Node.js dependencies; safe for browsers and edge runtimes.
+
+Default: use `"graphpc/client"` for client code and `"graphpc"` for server code.
 
 ## Decorators
 
@@ -126,7 +132,7 @@ An **epoch** is a contiguous activity period with a shared cache. Edge traversal
 
 ## Error Handling
 
-Built-in errors (all extend `RpcError`): `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `ConnectionLostError`. `RpcError` itself is also exported for direct use. Custom errors need reducer/reviver registration on both sides. `formatPath()` and `formatValue()` produce human-readable strings for debugging. Details: [Errors](errors.md), [Serialization](serialization.md).
+Built-in errors (all extend `RpcError`): `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `ConnectionLostError`. `RpcError` itself is also exported for direct use. Custom errors need reducer/reviver registration on both sides. Hidden-member errors are operation-dependent (`edge` op -> `EdgeNotFoundError`, `get` op -> `MethodNotFoundError`). `formatPath()` and `formatValue()` produce human-readable strings for debugging. Details: [Errors](errors.md), [Serialization](serialization.md).
 
 ## Production
 

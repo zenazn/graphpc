@@ -1,16 +1,20 @@
 # Type Safety
 
+When to read this page: when you want to understand exactly how server node types map to client `RpcStub<T>` types.
+
+If your issue is decorator/autocomplete mismatch rather than type mapping, see [Type Checking](type-checking.md).
+
 ## `RpcStub<T>`
 
 `RpcStub<T>` is a mapped type that transforms server API classes into their client-side stub equivalents. The client gets full TypeScript types inferred from the server definition — no hand-written client types, no codegen.
 
 ```typescript
 import {
-  createClient,
   createServer,
   createMockTransportPair,
   type RpcStub,
 } from "graphpc";
+import { createClient } from "graphpc/client";
 
 const [serverTransport, clientTransport] = createMockTransportPair();
 
@@ -87,7 +91,7 @@ client.root.posts.total()   // → Promise<number>  (network call)
 
 ### `await` on a stub → Data + stubs
 
-Awaiting a node stub fetches all data fields (own properties and getter results). The resolved object includes both the fetched data and stubs for further navigation:
+Awaiting a node stub fetches all data fields (properties and getter results, including inherited ones). The resolved object includes both the fetched data and stubs for further navigation:
 
 ```typescript
 // Server
@@ -112,7 +116,7 @@ const data = await user;                    // { name, email, fullName } + edge/
 data.name;                                  // "Alice" (data field)
 data.fullName;                              // "Alice (alice@example.com)" (getter result)
 data.posts;                                 // RpcStub<UserPosts> (still navigable)
-await data.updateName("carl")               // Methods work too
+await data.updateName("carl");              // Methods work too
 ```
 
 ## Path Parameter Mapping

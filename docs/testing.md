@@ -1,13 +1,18 @@
 # Testing
 
+When to read this page: when you are writing integration or unit tests for GraphPC APIs.
+
 ## Overview
 
 GraphPC ships `mockConnect()` and `createMockTransportPair()` for testing without a real WebSocket. `mockConnect()` is the primary testing utility — it creates a mock transport pair, wires it to the server, and returns the client-side transport.
 
+Use `createClient` from `graphpc/client` in test code, the same as browser/client code.
+
 ## `mockConnect()`
 
 ```typescript
-import { mockConnect, createServer, createClient } from "graphpc";
+import { mockConnect, createServer } from "graphpc";
+import { createClient } from "graphpc/client";
 
 const server = createServer({}, () => new Api());
 const client = createClient<typeof server>({}, () => mockConnect(server, ctx));
@@ -33,7 +38,8 @@ The most common pattern: create a server, connect it via `mockConnect`, and use 
 
 ```typescript
 import { test, expect } from "bun:test"; // or Jest, ...
-import { createServer, createClient, mockConnect } from "graphpc";
+import { createServer, mockConnect } from "graphpc";
+import { createClient } from "graphpc/client";
 
 test("fetch a post by id", async () => {
   const server = createServer({}, () => new Api());
@@ -115,7 +121,7 @@ test("nonexistent property throws MethodNotFoundError", async () => {
 Pass different contexts to `mockConnect` to test visibility:
 
 ```typescript
-test("admin edge is hidden from non-admin", async () => {
+test("admin edge is hidden from non-admin (normal proxy path)", async () => {
   const server = createServer({}, (ctx) => new Api());
   const client = createClient<typeof server>({}, () =>
     mockConnect(server, { userId: "1", isAdmin: false }),
@@ -125,6 +131,7 @@ test("admin edge is hidden from non-admin", async () => {
     await client.root.admin;
     expect.unreachable("should have thrown");
   } catch (err) {
+    // Hidden edge is absent from schema, so proxy classifies as `get`.
     expect(err).toBeInstanceOf(MethodNotFoundError);
   }
 });
@@ -139,6 +146,18 @@ test("admin edge is visible to admin", async () => {
   expect(panel).toBeDefined();
 });
 ```
+
+If you need protocol-level coverage, you can force a raw `edge` message and assert `EdgeNotFoundError`:
+
+```typescript
+// Pseudocode shape:
+// 1) Open a mock transport pair
+// 2) Call server.handle(serverTransport, nonAdminCtx)
+// 3) Send raw client message: { op: "edge", tok: 0, edge: "admin" }
+// 4) Assert the response is EDGE_NOT_FOUND
+```
+
+Tip: `await client.root.admin` and `await client.root.adminMethod()` both map cleanly to `MethodNotFoundError` in non-admin contexts. A deeper path like `await client.root.admin.secretData()` may fail earlier with `RpcError` (`INVALID_PATH`) because `admin` is not in the schema.
 
 ## Testing Individual Node Classes
 
@@ -175,3 +194,9 @@ const server = createServer(
 ```
 
 The `Timers` interface requires `setTimeout` and `clearTimeout` with the standard signatures. GraphPC's internal test suite uses a `fakeTimers()` helper (in `src/test-utils.ts`) — you can write a similar helper for your tests.
+
+## Read This Next
+
+1. [Error Handling](errors.md): asserting concrete error classes and serialized custom errors
+2. [Reconnection](reconnection.md): testing replay behavior and at-least-once mutation risk
+3. [Production Guide](production.md): carrying test assumptions into operational limits and observability

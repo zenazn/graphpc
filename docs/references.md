@@ -1,10 +1,20 @@
 # References
 
+When to read this page: when `@method` results need to stay navigable on the client.
+
+## Quick Chooser
+
+| If you need to... | Use | Why |
+| --- | --- | --- |
+| Return navigable objects from a `@method` with data already loaded | `ref()` / [`Reference<T>`](glossary.md) | Bundles canonical path + data so the client can use the node immediately |
+| Return lightweight navigable handles without data | `pathTo()` | Cheaper than `ref()` because it only records canonical paths |
+| Accept "act on this node" arguments from the client | `path()` + `pathOf()` | Client sends path identity; server validates and resolves on `await` |
+
 ## The Problem
 
 By default, `@method` calls return plain data. But sometimes a method needs to return objects that the client can interact with — call methods on, traverse edges from, or await for fresh data. For example, a `list()` method that returns posts should give the client navigable post objects, not just raw data.
 
-That's what references are for.
+That's what [`Reference<T>` values](glossary.md) are for.
 
 ## When You Need References
 
@@ -16,9 +26,11 @@ That's what references are for.
 
 Every class whose instances you pass to `ref()` needs a `[canonicalPath]` static method (explained below). Classes that only appear as direct edge return values don't need one.
 
+If you only need navigable identity (without bundled data), use `pathTo()` instead (see [Path References](paths.md)).
+
 ## `ref()` — Creating References
 
-Call `ref(Class, ...args)` to create a **reference** to an instance. References are serialized with both data and their canonical path, allowing the client to interact with them as navigable proxies:
+Call `ref(Class, ...args)` to create a **reference** to an instance. References are serialized with both data and their [canonical path](glossary.md#canonical-path), allowing the client to interact with them as navigable proxies:
 
 ```typescript
 import { Node, ref, Reference, method } from "graphpc";
@@ -36,7 +48,7 @@ class PostsService extends Node {
 
 ## `[canonicalPath]` — Declaring Canonical Paths
 
-A static `[canonicalPath]` method on a class declares how to reach instances of that class from the root of the graph. Import the `canonicalPath` symbol from graphpc:
+A static `[canonicalPath]` method on a class declares how to reach instances of that class from the root of the graph. Import the `canonicalPath` symbol from `graphpc`:
 
 ```typescript
 import { Node, canonicalPath } from "graphpc";
@@ -128,10 +140,10 @@ From the client's perspective, references look and feel like navigated edges —
 async list(): Promise<Reference<Post>[]> { ... }
 
 // In objects
-async getThread(): Promise<{ post: Reference<Post>, replies: Reference<Post>[] }> { ... }
+async getThread(): Promise<{ post: Reference<Post>; replies: Reference<Post>[] }> { ... }
 
 // Nested
-async getFeed(): Promise<{ items: Array<{ author: Reference<User>, post: Reference<Post> }> }> { ... }
+async getFeed(): Promise<{ items: Array<{ author: Reference<User>; post: Reference<Post> }> }> { ... }
 ```
 
 The serialization layer recursively walks the return value and resolves all `Reference` instances.
@@ -146,7 +158,7 @@ When a reference arrives on the client (as part of a method's return value), it 
 
 This makes references the primary mechanism for keeping client-side state fresh after mutations. A mutation that returns references gives the caller immediate access to updated data _and_ ensures that any code re-reading the same node within the epoch sees the update too.
 
-For the full caching model — epochs, coalescing rules, and the hydration epoch — see [Epochs & Caching](caching.md).
+For the full caching model — epochs, coalescing rules, and the hydration epoch — see [Epochs and Caching](caching.md).
 
 ## References and Authorization
 
@@ -284,7 +296,7 @@ When you call `ref(Class, ...args)`:
 1. GraphPC calls `Class[canonicalPath](recordingProxy, ...args)` — the recording proxy captures each navigation step as a path segment, without executing real edge getters
 2. The `[canonicalPath]` method navigates the proxy (e.g., `root.posts.get(id)`), capturing the path
 3. GraphPC walks the **real** graph along that path. Intermediate edges use the per-request cache (so concurrent refs share work), but the **final edge is always re-resolved and all its descendants are invalidated** — the target node is never served from cache, and any previously cached nodes below it are invalidated so they re-resolve on next access. This guarantees `ref()` returns current data even when called after a mutation within the same request, and that subsequent edge traversals from the refreshed node see the new state.
-4. The node's data fields are extracted (own properties and getter results)
+4. The node's data fields are extracted (properties and getter results, including inherited ones)
 5. Both the path and data are bundled into a `Reference<Class>`
 
 References can be created from anywhere in your server-side code — inside methods, edge getters, or any code they call — as long as it runs within a request context (the API root is accessed via `AsyncLocalStorage`).

@@ -1,5 +1,9 @@
 # Common Patterns
 
+When to read this page: after [Authentication and Authorization](auth.md), when your API shape starts growing.
+
+> You are here: Getting Started -> Mental Model -> Decorators -> Auth -> Patterns.
+
 This page covers general patterns for structuring your graph. For access-control patterns, see [Authentication and Authorization](auth.md), which covers:
 
 - [Edge Getters as Authorization Boundaries](auth.md#edge-getters-as-authorization-boundaries) — use edge getters to gate access to subgraphs based on context
@@ -11,6 +15,8 @@ This page covers general patterns for structuring your graph. For access-control
 - [Session Revocation](auth.md#session-revocation) — abort connections when sessions are invalidated
 
 ## Resource Hierarchies
+
+Use this when your domain is parent-child by construction (orgs -> teams -> members, posts -> comments).
 
 Real domain models are hierarchical — organizations contain teams, teams contain members, posts contain comments. Graph edges map directly to these relationships:
 
@@ -47,6 +53,8 @@ class TeamsService extends Node {
 Each level of the hierarchy naturally scopes its children. `TeamsService` only returns teams for its org — the `#orgId` is baked in by the parent edge. No ambient context or middleware needed.
 
 ## Pagination
+
+Use this when list endpoints need stable traversal and optional read-after-write freshness.
 
 The simplest pagination pattern is a method that returns items and a cursor:
 
@@ -251,7 +259,7 @@ React's `use()` and similar APIs require stable promise identity across re-rende
 
 - **Edge navigation is synchronous** — `client.root.posts.get("1")` always returns the same stub object. No network call, no new promise.
 - **Epoch cache** — awaiting a stub returns the same promise within an epoch. Two `use(post)` calls in the same render tree share one wire message.
-- **Referential stability** — stubs passed as props are stable objects. The promises they produce are stable because of coalescing (see [Epochs & Caching](caching.md#coalescing-rules)).
+- **Referential stability** — stubs passed as props are stable objects. The promises they produce are stable because of coalescing (see [Epochs and Caching](caching.md#coalescing-rules)).
 
 This is why edge-based pagination (pages as graph nodes) matters for this pattern. An edge like `.page()` returns a stable stub, while a method like `.list()` returns a new promise each call. With `use()`, you need the former. See the [Pages as Graph Nodes](#advanced-pages-as-graph-nodes) section above.
 
@@ -295,3 +303,9 @@ When a method returns `Reference<Post>[]`, each reference arrives on the client 
 - **Navigate edges** — `.comments` starts a new edge traversal, triggering its own fetch.
 
 This means a `<PostCard>` that received a reference from `.list()` renders immediately — the data is already there. Only further edge navigation creates new fetches. See [References](references.md) for the full `ref()` API.
+
+## Read This Next
+
+1. [References](references.md): full behavior of `ref()` and canonical paths
+2. [Path References](paths.md): passing graph identity between client and server
+3. [SSR and Hydration](ssr-and-hydration.md): carrying graph traversal and data across render/hydration boundaries

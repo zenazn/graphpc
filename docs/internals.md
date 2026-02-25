@@ -1,6 +1,10 @@
 # Protocol Internals
 
-> This document is for project contributors and protocol implementors. If you're using GraphPC to build an API, you don't need this — see [Architecture](architecture.md) instead.
+> This document is for project contributors and protocol implementors. If you're building an API, start with [Getting Started](getting-started.md), [Mental Model](mental-model.md), and [Architecture](architecture.md).
+
+When to read this page: when you need wire-level behavior, token mechanics, and exact operation semantics.
+
+This page is protocol-focused. For app-level guidance, prefer [Mental Model](mental-model.md), [Epochs and Caching](caching.md), and [Reconnection](reconnection.md).
 
 ## Connection Setup
 
@@ -91,7 +95,7 @@ The `get` op handles three kinds of access through a single message. The client 
 
 3. **Getter invocation** — If the name matches a getter defined on the node's prototype chain (stopping before `Object.prototype`), the getter is called and the result is returned. If the result is a function, the request is rejected with an error.
 
-The `data` op returns all data fields — own properties and getter results, excluding `@edge`, `@method`, and `@hidden` members. The `get` op is used for `@method` calls and individual field reads when the full node data has not yet been fetched.
+The `data` op returns all data fields — properties and getter results (including inherited ones), excluding `@edge`, `@method`, and `@hidden` members. The `get` op is used for `@method` calls and individual field reads when the full node data has not yet been fetched.
 
 The server applies security checks in order:
 
@@ -103,7 +107,9 @@ The server applies security checks in order:
 
 ### Client-Side Path Representation
 
-On the client, navigation builds a **path** — an array of segments. Property access appends a string (e.g., `"title"`), while a function call appends an array (e.g., `["get", "42"]` or `["method"]` for zero-arg calls). This distinction determines caching behavior for terminal operations: a string terminal (property read like `await node.title`) is cached within an epoch, while an array terminal (method call like `node.update("x")`) is never cached. Edge traversals — whether string or array segments — are always cached. See [Epochs & Caching](caching.md).
+On the client, navigation builds a **path** — an array of segments. Property access appends a string (e.g., `"title"`), while a function call appends an array (e.g., `["get", "42"]` or `["method"]` for zero-arg calls). This distinction determines caching behavior for terminal operations: a string terminal (property read like `await node.title`) is cached within an epoch, while an array terminal (method call like `node.update("x")`) is never cached. Edge traversals — whether string or array segments — are always cached. See [Epochs and Caching](caching.md).
+
+Because classification is schema-driven, hidden edges (omitted from schema) are often treated as terminal `get` operations by normal proxies. That is why hidden-edge access may surface as `MethodNotFoundError` in typical client usage, while a forced raw `edge` op yields `EdgeNotFoundError`.
 
 ## Token Machine
 
@@ -246,6 +252,8 @@ Errors are serialized through devalue with custom reducers, so the client receiv
 - `ConnectionLostError` — all reconnection attempts exhausted
 - `RpcError` — base class for all RPC errors
 
+Hidden-member errors are op-dependent (`edge` op -> `EdgeNotFoundError`, `get` op -> `MethodNotFoundError`) because client-side classification is schema-driven.
+
 ## Abort Signal Tree
 
 Each connection has a **connection-wide** `AbortController`. Each incoming message creates a **per-operation** `AbortController`. The signals are combined via `AbortSignal.any([connSignal, opSignal])` and stored on the session.
@@ -285,6 +293,8 @@ This matches the Web `WebSocket` API, so you can pass a `WebSocket` directly to 
 Both the standard Web `WebSocket` and the `ws` npm package structurally satisfy `Transport`. Pass them directly:
 
 ```typescript
+import { createClient } from "graphpc/client";
+
 // Client (browser or Node.js)
 const client = createClient<typeof server>(
   {},
@@ -316,6 +326,8 @@ For testing, use `mockConnect(server, ctx)` which creates a connected mock trans
 
 ```typescript
 import { mockConnect } from "graphpc";
+import { createClient } from "graphpc/client";
+
 const client = createClient<typeof server>({}, () => mockConnect(server, ctx));
 ```
 

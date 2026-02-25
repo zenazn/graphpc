@@ -1,8 +1,23 @@
-# Reconnection & Connection Resilience
+# Reconnection
+
+When to read this page: before shipping to unreliable networks, or whenever mutation replay behavior matters.
+
+## Most Teams Only Need This
+
+- Reconnection is enabled by default.
+- A reconnect creates a fresh [epoch](glossary.md#epoch) (new tokens/cache/context).
+- In-flight requests are queued and replayed after reconnect.
+- Idle disconnects reconnect lazily (on next operation), not immediately.
+- After retry exhaustion, operations fail with `ConnectionLostError`.
+- `client.reconnect()` resets retries and triggers a fresh attempt.
+- Delivery is at-least-once for in-flight operations.
+- Use idempotency keys for non-idempotent mutations.
 
 ## Overview
 
-The client auto-reconnects when the transport drops unexpectedly (server crash, network loss, WebSocket error). Each reconnection starts a new epoch — fresh tokens, fresh cache, fresh server-side context. The client re-establishes state transparently, so callers don't need to handle disconnections manually.
+The client auto-reconnects when the transport drops unexpectedly (server crash, network loss, WebSocket error). Each reconnection starts a new epoch with fresh tokens, fresh cache, and fresh server-side context. The client re-establishes state transparently, so callers usually don't need custom disconnect handling.
+
+For hydration epoch behavior, see [SSR and Hydration](ssr-and-hydration.md) and [Epochs and Caching](caching.md#the-hydration-epoch).
 
 ## Enabled by Default
 
@@ -108,17 +123,9 @@ const user = await client.root.users.get("42");
 
 After reconnecting, the client does **not** eagerly re-walk all previously resolved paths. The new connection starts a new epoch with a clean token space and empty cache.
 
-Paths are re-established lazily: only when a queued or new request needs a to access an edge on the new connection does the client replay that edge. This keeps reconnection lightweight — a client that had traversed hundreds of paths only replays the ones actually needed by pending work.
+Paths are re-established lazily: only when a queued or new request needs to access an edge on the new connection does the client replay that edge. This keeps reconnection lightweight — a client that had traversed hundreds of paths only replays the ones actually needed by pending work.
 
 If the server-side state has changed (node deleted, edge now hidden), the lazy replay surfaces the error normally to the caller — the same error they'd get on a fresh connection.
-
-## Hydration-to-Live Transition
-
-During the hydration epoch, reads are served from the hydration cache. No transport needed.
-
-If a request during the hydration epoch is **not** in the cache (e.g., a user interaction that wasn't part of SSR), it triggers a WebSocket connection and is sent over the wire once connected.
-
-The hydration epoch ends when `client.endHydration()` is called or after the inactivity timeout (default 250ms, configurable via `hydrationTimeout`). After that, the next request that needs data triggers a WebSocket connection, starting the first live epoch. All subsequent requests go through the transport. See [SSR and Hydration](ssr-and-hydration.md).
 
 ## Retry Exhaustion
 
@@ -140,7 +147,7 @@ try {
 }
 ```
 
-After exhaustion, new operations reject immediately with `ConnectionLostError` — they don't hang. Call `client.reconnect()` to revive the client (see below), or create a new client.
+After exhaustion, new operations reject immediately with `ConnectionLostError`; they do not hang. Call `client.reconnect()` to revive the client (see below), or create a new client.
 
 ## Manual Reconnection
 
@@ -167,7 +174,7 @@ window.addEventListener("online", () => {
 - The client has been closed via `close()`
 - Reconnection is disabled (`reconnect: false`)
 
-When called during an active reconnection (before exhaustion), it cancels the current backoff timer, resets the retry counter, and starts fresh — useful if you have external knowledge that the network is back.
+When called during an active reconnection (before exhaustion), it cancels the current backoff timer, resets the retry counter, and starts fresh. This is useful when you have external knowledge that the network is back.
 
 On success, the `"reconnect"` event fires normally. If the new attempts also fail, `"reconnectFailed"` fires again and the client returns to the exhausted state. You can call `reconnect()` again to retry.
 
@@ -211,7 +218,7 @@ await client.root.posts.create({ title: "Hello" });
 await client.root.billing.charge(29_99);
 ```
 
-Consider adding an idempotency key (e.g., a UUID) to non-idempotent methods so you can deduplicate those requests on the server.
+For non-idempotent mutations, include an idempotency key (for example, a UUID) so the server can deduplicate replayed requests.
 
 ### What About Reads?
 

@@ -1,6 +1,45 @@
 # Production Guide
 
+When to read this page: after your first real deployment path is working in development.
+
 This guide covers server hardening, error handling, and operational concerns for deploying GraphPC in production.
+
+## Most Teams Only Need This
+
+- Enable error redaction in production (`redactErrors`).
+- Log `operationError` with `errorId` for support correlation.
+- Set connection limits (`maxTokens`, `maxPendingOps`, `maxQueuedOps`).
+- Set transport payload limits at the WebSocket layer.
+- Configure `maxOperationTimeout` and use `abortSignal()` in long-running work.
+- Add request IDs in context for per-connection tracing.
+- Treat reconnect replays as at-least-once; use idempotency keys for risky mutations.
+- Instrument with `connection`, `disconnect`, and `operation` events.
+
+## Minimum Baseline
+
+Start here before deeper tuning:
+
+```typescript
+const server = createServer(
+  {
+    redactErrors: true,
+    maxTokens: 5000,
+    maxPendingOps: 20,
+    maxQueuedOps: 1000,
+    maxOperationTimeout: 30_000,
+    idleTimeout: 10_000,
+  },
+  (ctx) => new Api(),
+);
+```
+
+These are conservative starting values. Tune them based on your latency profile and concurrency/load targets.
+
+Then add:
+
+- transport payload limits (WebSocket layer)
+- operation/error logging with `operation` + `operationError`
+- idempotency keys for non-idempotent mutation methods
 
 ## Error Redaction
 

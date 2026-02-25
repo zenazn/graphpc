@@ -1,5 +1,7 @@
 # SSR and Hydration
 
+When to read this page: once basic traversal/method semantics are clear and you're integrating server rendering.
+
 ## Overview
 
 GraphPC supports server-side rendering (SSR). During SSR, components interact with real objects — no network, no WebSocket. GraphPC records which edges were traversed and which data was fetched, then serializes everything into the HTML for client-side hydration.
@@ -47,7 +49,7 @@ After rendering, call `client.generateHydrationData()` to get a string containin
 </script>
 ```
 
-This function uses [devalue](https://github.com/sveltejs/devalue)'s `stringify`, which produces a JSON array that is both valid JS (safe to embed in a `<script>` tag) and XSS-safe (all `<` characters are escaped).
+This function uses [devalue](https://github.com/sveltejs/devalue)'s `stringify`, which produces output that is safe to embed in a `<script>` tag (for example, `<` characters are escaped).
 
 ## Client-Side Hydration
 
@@ -69,25 +71,18 @@ const client = createClient<typeof server>({}, () => connectTransport());
 client.hydrateString(rawString);
 ```
 
-Either method must be called synchronously after `createClient` — before any `await`s on the client.
+Either method must be called synchronously after `createClient` and before any client `await`s.
 
-The client serves cached data instantly — before the WebSocket is even connected. Components hydrate **without any network calls**, seeing the same data they saw during SSR.
+The client serves cached data instantly, before the WebSocket is even connected. Components hydrate **without network calls**, seeing the same data they saw during SSR.
 
 ### Hydration Lifetime
 
-The entire hydration cache survives until hydration is **done**. Cache entries are **not** consumed on first access — each entry can serve multiple requests during hydration. In epoch terms, this is the **hydration epoch** — a special epoch whose cache is pre-populated from the SSR payload rather than from wire responses (see [Epochs & Caching](caching.md#the-hydration-epoch)).
+Hydration runs inside a special epoch. During this window, reads are served from the SSR payload cache instead of the wire. Cache entries are reusable during the hydration epoch.
 
 The hydration epoch ends when either:
 
 1. **`client.endHydration()`** is called explicitly, or
 2. An **inactivity timeout** fires (default 250ms, configurable via `hydrationTimeout`)
-
-Inactivity tracking:
-
-- The client is "active" while any cache hit is being consumed (within the microtask)
-- When in-flight count drops to 0, the inactivity timeout starts
-- If a new cache hit arrives during the timeout, the timer resets
-- When the timeout fires, all caches are dropped
 
 ```typescript
 // Explicit end
@@ -100,7 +95,9 @@ const client = createClient<typeof server>({ hydrationTimeout: 500 }, () =>
 client.hydrate(window.__rpc);
 ```
 
-After the hydration epoch ends, all cached data is dropped. The next request triggers a WebSocket connection, starting the first live epoch. All subsequent requests go through the transport normally.
+After hydration ends, the next cache miss that requires live data opens a WebSocket and starts a live epoch.
+
+For exact cache and timeout behavior, see [Epochs and Caching](caching.md#the-hydration-epoch).
 
 ### Lifecycle
 
@@ -114,20 +111,20 @@ Hydration (hydration epoch)
   4. createClient(opts, transportFactory) → client
   5. client.hydrate(window.__rpc)  (or client.hydrateString(str))
   6. Components re-render using client.root + cached data (instant, no network)
-  7. Cache entries reusable during the hydration epoch
+  7. Cache entries are reusable during the hydration epoch
 
 Transition (hydration epoch ends)
   8. endHydration() called or inactivity timeout fires
-  9. Hydration epoch ends — caches dropped, client becomes a normal transport-backed client
+  9. Hydration epoch ends — caches are dropped, client becomes a normal transport-backed client
      If the transport is not yet connected, requests are queued until it is.
-     See docs/reconnection.md.
+     See [Reconnection](reconnection.md).
 
 Live (live epochs — one per WebSocket connection)
   10. User interactions → requests go over the wire
       Each WebSocket connection is a live epoch with its own cache
 ```
 
-For how the client caches data after hydration ends, see [Epochs & Caching](caching.md).
+For how the client caches data after hydration ends, see [Epochs and Caching](caching.md).
 
 ## What Gets Tracked
 
@@ -141,7 +138,7 @@ Plain property access (non-edge, non-method) is not recorded — it delegates di
 
 ### Method Call Replay During Hydration
 
-Method call recording is what makes the hydration epoch different from a live epoch. During SSR, each `@method` call's arguments and return value are captured and embedded in the hydration payload. On the client, when a component calls the same method with the same arguments during the hydration epoch, the cached result is returned immediately — no network round-trip occurs.
+During SSR, each `@method` call's arguments and return value are captured in the hydration payload. During hydration, the same call (same path + args) is replayed from cache instead of the network.
 
 ```typescript
 // SSR — recorded: path=posts.list, args=[], result=[{title:"Hello World"}]
@@ -151,7 +148,7 @@ const posts = await client.root.posts.list();
 const posts = await client.root.posts.list(); // no WebSocket needed
 ```
 
-This is unique to the hydration epoch. In live epochs, `@method` results are never cached — every call goes over the wire.
+This behavior is unique to the hydration epoch. In live epochs, `@method` results are never cached.
 
 ## Unified Component Pattern
 

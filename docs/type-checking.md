@@ -1,5 +1,7 @@
 # Type Checking
 
+When to read this page: when TypeScript autocomplete or edge/method inference does not match runtime behavior.
+
 ## The Problem
 
 TypeScript decorators have no type-level effect — `@edge(PostsService)` tells the runtime about a relationship, but the type system doesn't see it. This creates two gaps:
@@ -15,6 +17,7 @@ All node classes (classes used as `@edge` targets) must extend `Node`:
 
 ```typescript
 import { Node, edge, method } from "graphpc";
+import { z } from "zod";
 
 class Post extends Node {
   id: string;
@@ -43,6 +46,12 @@ class PostsService extends Node {
 - **Non-function, non-Node property** → data (accessible after `await`)
 
 The `@edge` decorator also enforces this at runtime — calling `@edge(Target)` where `Target` doesn't extend `Node` throws immediately at class definition time.
+
+Quick checks when types look wrong:
+
+- Ensure every edge target class extends `Node`.
+- Ensure intended RPC callables are decorated with `@method` or `@edge`.
+- Enable the ESLint rule below to catch undecorated public methods.
 
 ## Shallow Return-Type Check
 

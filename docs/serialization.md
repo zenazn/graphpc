@@ -1,5 +1,9 @@
 # Serialization
 
+When to read this page: when adding custom types/errors or debugging cross-wire data shape issues.
+
+> Important: server and client must register the same custom reducers/revivers. Mismatches fail at deserialization time.
+
 ## devalue
 
 GraphPC uses [devalue](https://github.com/sveltejs/devalue) for all wire serialization. Devalue handles types that JSON cannot:
@@ -21,14 +25,15 @@ GraphPC automatically registers reducers and revivers for:
 - **Path references** — `PathArg` and `Path<T>` values, serialized as `NodePath` containing path segments
 - **RPC errors** — `RpcError`, `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `ConnectionLostError`
 
-These survive serialization and deserialization as actual class instances. Built-in names take precedence — if a user-supplied reducer or reviver uses the same name as a built-in, the built-in silently wins.
+These survive serialization and deserialization as actual class instances. Built-in names take precedence: if a user-supplied reducer or reviver uses the same name as a built-in, the built-in silently wins.
 
 ## Custom Types
 
 Register custom reducers (serialize) and revivers (deserialize) for domain-specific types:
 
 ```typescript
-import { createServer, createClient, createMockTransportPair } from "graphpc";
+import { createServer, createMockTransportPair } from "graphpc";
+import { createClient } from "graphpc/client";
 
 class NotFound extends Error {
   constructor(
@@ -61,7 +66,7 @@ const client = createClient<typeof server>(customTypes, () => clientTransport);
 
 A reducer receives a value and returns either:
 
-- `false` (or any falsy value) — this reducer doesn't handle this value
+- `false` (or any falsy value) — this reducer does not handle this value
 - An array — the serialized representation (will be passed to the reviver)
 
 ### Reviver Contract
@@ -86,7 +91,7 @@ Client and server **must** agree on the set of registered custom types. If they 
 GraphPC provides two functions for producing human-readable strings from paths and values — useful for error messages, debugging, and logging:
 
 ```typescript
-import { formatPath, formatValue } from "graphpc"; // or "graphpc/client"
+import { formatPath, formatValue } from "graphpc/client"; // or "graphpc" on the server
 
 formatPath(["posts", ["get", 42]]);
 // → 'root.posts.get(42)'

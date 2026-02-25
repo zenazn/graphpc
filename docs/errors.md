@@ -1,5 +1,7 @@
 # Error Handling
 
+When to read this page: when you want exact client-visible error types and `instanceof` behavior.
+
 ## Built-in Error Types
 
 GraphPC provides error classes that all extend `RpcError`:
@@ -8,8 +10,8 @@ GraphPC provides error classes that all extend `RpcError`:
 | --------------------- | ------------------ | ---------------------------------------------------------------------- |
 | `RpcError`            | varies             | Base class for all RPC errors; also wraps non-registered thrown values |
 | `ValidationError`     | `VALIDATION_ERROR` | `@edge` or `@method` argument fails schema validation                  |
-| `EdgeNotFoundError`   | `EDGE_NOT_FOUND`   | Edge doesn't exist or is `@hidden` from this connection                |
-| `MethodNotFoundError` | `METHOD_NOT_FOUND` | Method/property doesn't exist or is `@hidden`                          |
+| `EdgeNotFoundError`   | `EDGE_NOT_FOUND`   | Server handled an `edge` op for a missing or hidden edge               |
+| `MethodNotFoundError` | `METHOD_NOT_FOUND` | Server handled a `get` op for a missing or hidden member               |
 | `ConnectionLostError` | `CONNECTION_LOST`  | All reconnect attempts exhausted                                       |
 
 When `maxTokens` is exceeded, the server returns an `RpcError` with code `TOKEN_LIMIT_EXCEEDED` and closes the connection. See [Internals — Max Tokens](internals.md#max-tokens).
@@ -21,6 +23,9 @@ All built-in errors are automatically serialized and deserialized — the client
 Register reducers and revivers to preserve custom error types across the wire:
 
 ```typescript
+import { createServer } from "graphpc";
+import { createClient } from "graphpc/client";
+
 class InsufficientFunds extends Error {
   constructor(
     public required: number,
@@ -64,10 +69,20 @@ Here's what the client receives for every failure mode:
 | Method throws a non-registered custom error | `RpcError` (message preserved)    | `RpcError` only       |
 | Method throws any other value               | `RpcError` with code `GET_ERROR`  | `RpcError`            |
 | Data op throws any other value              | `RpcError` with code `DATA_ERROR` | `RpcError`            |
-| `@hidden` edge accessed                     | `EdgeNotFoundError`               | `EdgeNotFoundError`   |
+| `@hidden` edge via forced `edge` op         | `EdgeNotFoundError`               | `EdgeNotFoundError`   |
+| `@hidden` edge via normal proxy access      | Usually `MethodNotFoundError` (can be `RpcError` `INVALID_PATH` for deeper paths, e.g. `root.admin.secretData()`) | Varies |
 | `@hidden` method accessed                   | `MethodNotFoundError`             | `MethodNotFoundError` |
 | Operation on failed edge's token            | Original error (propagated)       | Varies                |
 | All reconnect attempts fail                 | `ConnectionLostError`             | `ConnectionLostError` |
+
+### Hidden-member nuance (important)
+
+Hidden-member errors are operation-dependent:
+
+- If the server receives an `edge` op for a hidden edge, it returns `EdgeNotFoundError`.
+- If the server receives a `get` op for a hidden member, it returns `MethodNotFoundError`.
+
+In normal client proxy usage, hidden edges are absent from the schema, so access is often classified as `get` and surfaces as `MethodNotFoundError`. For deeper paths, classification can fail earlier with `RpcError` (`INVALID_PATH`). A raw/probing client can still force an `edge` op and receive `EdgeNotFoundError`.
 
 ## Error Redaction
 

@@ -1,5 +1,7 @@
 # Decorators
 
+When to read this page: after [Getting Started](getting-started.md), when you need exact `@edge`, `@method`, and `@hidden` behavior.
+
 GraphPC provides three decorators: `@edge`, `@method`, and `@hidden`.
 
 ## `@edge`
@@ -104,7 +106,7 @@ Only functions annotated with `@method` can be called by the client. Note that u
 
 ## `@hidden`
 
-Conditionally hides a member from a connection's view based on the connection's context. Works on edges, methods, and data fields (own properties and getters). The predicate receives the context and returns `true` to hide, `false` to show.
+Conditionally hides a member from a connection's view based on the connection's context. Works on edges, methods, and data fields (properties and getters, including inherited ones). The predicate receives the context and returns `true` to hide, `false` to show.
 
 ```typescript
 @hidden((ctx) => !ctx.isAdmin)
@@ -157,7 +159,12 @@ secretToken = "sk-...";  // data field — hidden from non-admins
 
 ### Error behavior
 
-Through the client proxy, accessing a hidden edge or method throws `MethodNotFoundError` — identical to accessing a name that doesn't exist. The hidden member is absent from the schema, so the client treats it as a terminal access. There's no way for the client to distinguish "hidden" from "doesn't exist."
+Hidden-member errors are operation-dependent:
+
+- `edge` op on a hidden edge -> `EdgeNotFoundError`
+- `get` op on a hidden member -> `MethodNotFoundError`
+
+In normal client usage, hidden edges are removed from the connection schema. Because of that, the proxy often classifies access as a terminal `get`, so `await client.root.admin` commonly yields `MethodNotFoundError`. A forced raw `edge` request for the same name yields `EdgeNotFoundError`. In both cases, hidden and nonexistent members are intentionally indistinguishable to callers.
 
 For the full story — context as the authentication layer, session revocation, and how `@hidden` fits into the authorization model — see [Authentication and Authorization](auth.md).
 
@@ -208,7 +215,7 @@ Parameter names are extracted on a best-effort basis from `Function.prototype.to
 
 ### Path References as Arguments
 
-Use `path(Class)` to accept client-side path references as method parameters:
+Use `path(Class)` to accept client-side [path](glossary.md#path) references as method parameters:
 
 ```typescript
 import { path, Path } from "graphpc";
@@ -220,7 +227,7 @@ async move(post: Path<Post>, cat: Path<Category>): Promise<void> {
 }
 ```
 
-`path(Class)` returns a standard `StandardSchemaV1`, so it works exactly like any other schema. On the client, `Path<T>` parameters appear as `PathArg` — use `pathOf(stub)` to create one. See [Path References](paths.md) for full details.
+`path(Class)` returns a standard `StandardSchemaV1`, so it works exactly like any other schema. On the client, `Path<T>` parameters appear as `PathArg` (see [Glossary](glossary.md)) — use `pathOf(stub)` to create one. See [Path References](paths.md) for full details.
 
 ## Standard Schema
 
@@ -240,3 +247,9 @@ import { type } from "arktype";
 ```
 
 The only requirement is that the schema object has a `"~standard"` property with a `validate` method.
+
+## Read This Next
+
+1. [Authentication and Authorization](auth.md): using `@hidden` and context to shape per-connection schemas
+2. [References](references.md): returning navigable objects from `@method`
+3. [Path References](paths.md): passing node identity safely between client and server

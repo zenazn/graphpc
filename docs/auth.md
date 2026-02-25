@@ -1,5 +1,9 @@
 # Authentication and Authorization
 
+When to read this page: after [Decorators](decorators.md), when you are shaping what each connection can see and do.
+
+> You are here: Getting Started -> Mental Model -> Decorators -> Auth.
+
 GraphPC separates authentication and authorization:
 
 - **Authentication** (verifying identity) starts at context creation time. When a connection is established via `server.handle()`, you extract credentials from cookies, headers, or tokens and populate the context. For fully-authenticated APIs, reject the connection if credentials are invalid. For APIs with public portions, you can choose to defer authentication to the edge that requires it.
@@ -351,3 +355,9 @@ When a client reconnects (whether after `abortThisConn()`, a network drop, or a 
 This means reconnection is the mechanism for context refresh. If a session is invalidated or a user's role changes, abort the connection; the reconnecting client gets a new context reflecting their updated identity and permissions.
 
 For reconnection configuration and behavior details, see [Reconnection & Connection Resilience](reconnection.md).
+
+## Read This Next
+
+1. [Common Patterns](patterns.md): structuring resource hierarchies and pagination with the auth model in place
+2. [Path References](paths.md): safe identity passing and how `path()` interacts with visibility checks
+3. [Production Guide](production.md): revocation, logging, and operational guardrails for auth-sensitive systems

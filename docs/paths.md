@@ -1,10 +1,20 @@
 # Path References
 
+When to read this page: when a method needs to accept or return node identity without bundling node data.
+
+## Quick Chooser
+
+| If you need to... | Use | Why |
+| --- | --- | --- |
+| Send node identity from client to server method params | `pathOf(stub)` + `path(Class)` | Client sends [path](glossary.md#path) segments; server validates and resolves on `await` |
+| Return cheap navigable handles from server to client | `pathTo(Class, ...args)` | Records canonical paths without graph walking or data extraction |
+| Return navigable objects with data already loaded | `ref()` / `Reference<T>` | Includes data plus canonical path (higher cost, better read-after-write UX) |
+
 ## The Problem
 
 Sometimes a method needs to know _which node_ the caller is talking about. For example, moving a post to a different category — the method needs both the post and the category as arguments.
 
-Since nodes live on the server, the client can't pass them directly. But it can pass the _path_ it used to reach them — the same segments the client navigated through edges. The server can then walk that path to get a live node.
+Since nodes live on the server, the client can't pass them directly. But it can pass the _[path](glossary.md#path)_ it used to reach them — the same segments the client navigated through edges. The server can then walk that path to get a live node.
 
 ## Naming Guide
 
@@ -69,7 +79,7 @@ class PostsService extends Node {
 }
 ```
 
-Much cheaper than `ref()` — it just records path segments without executing edge getters or extracting data. The client receives each `Path<T>` as an `RpcStub<T>` — the same type as if they had navigated to that node via edges. They can then await it for data or continue navigating.
+Much cheaper than `ref()` — it just records path segments without executing edge getters or extracting data. The client receives each `Path<T>` as an `RpcStub<T>`, the same type they would get from direct edge traversal. They can then await it for data or continue navigating.
 
 The trade-off vs `ref()`: the client must make a separate request to fetch data, whereas `ref()` bundles data into the response.
 
@@ -92,7 +102,7 @@ The trade-off vs `ref()`: the client must make a separate request to fetch data,
 2. **Type check**: verifies the path ends at the expected class index.
 3. **Depth limit**: paths exceeding 64 segments are rejected.
 
-These checks catch bogus paths early without executing edge getters. When the `Path<T>` is later awaited, it walks the real graph (which performs full authorization checks at each edge).
+These checks catch bogus paths early without executing edge getters. When the `Path<T>` is later awaited, it walks the real graph, which performs full authorization checks at each edge.
 
 ## Mixed Schemas
 
