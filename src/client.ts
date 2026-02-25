@@ -42,7 +42,7 @@ import type {
   ClientEvent,
   ClientEventMap,
 } from "./types.ts";
-import { formatPath } from "./format.ts";
+import { formatPath, isDescendantPathKey } from "./format.ts";
 import type { PathSegments, PathSegment } from "./path.ts";
 import { createStub, createDataProxy, classifyPath } from "./proxy.ts";
 import type { ProxyBackend } from "./proxy.ts";
@@ -174,6 +174,12 @@ export function createClient<S extends ServerInstance<any>>(
       try {
         msg = parseServerMessage(serializer.parse(raw));
       } catch {
+        // We generally trust the server to send valid frames.
+        // If that contract is broken, fail closed so pending calls
+        // reject via normal disconnect/reconnect paths instead of hanging.
+        try {
+          t.close();
+        } catch {}
         return;
       }
       if (msg.op === "hello") {
@@ -316,14 +322,15 @@ export function createClient<S extends ServerInstance<any>>(
         edge: edgeName,
         ...(args.length > 0 && { args }),
       };
-      transport!.send(serializer.stringify(msg));
-
-      // Track server response for bookkeeping; errors are handled
-      // via poisoned tokens in the terminal operation's response.
-      pending.set(msgId, {
-        resolve: () => {},
-        reject: () => {},
-      });
+      // Register pending before send to handle transports that
+      // may deliver responses synchronously.
+      pending.set(msgId, { resolve: () => {}, reject: () => {} });
+      try {
+        transport!.send(serializer.stringify(msg));
+      } catch (err) {
+        pending.delete(msgId);
+        throw err;
+      }
 
       return token;
     });
@@ -372,11 +379,21 @@ export function createClient<S extends ServerInstance<any>>(
             tok: token,
             name: terminal.name,
           };
-          transport!.send(serializer.stringify(msg));
+          let rejectPending!: (err: unknown) => void;
           const promise = new Promise((resolve, reject) => {
+            rejectPending = reject;
             pending.set(msgId, { resolve, reject });
           });
           getCache.set(getCacheKey, promise);
+          // Register pending before send to handle transports that
+          // may deliver responses synchronously.
+          try {
+            transport!.send(serializer.stringify(msg));
+          } catch (err) {
+            pending.delete(msgId);
+            getCache.delete(getCacheKey);
+            rejectPending(err);
+          }
           return promise;
         }
 
@@ -388,9 +405,16 @@ export function createClient<S extends ServerInstance<any>>(
           name: terminal.name,
           ...(terminal.args.length > 0 && { args: terminal.args }),
         };
-        transport!.send(serializer.stringify(msg));
         return new Promise((resolve, reject) => {
           pending.set(msgId, { resolve, reject });
+          // Register pending before send to handle transports that
+          // may deliver responses synchronously.
+          try {
+            transport!.send(serializer.stringify(msg));
+          } catch (err) {
+            pending.delete(msgId);
+            reject(err);
+          }
         });
       } else {
         // Check if liveDataCache already has data (e.g., from ref overwrite)
@@ -403,8 +427,9 @@ export function createClient<S extends ServerInstance<any>>(
 
         const msgId = nextMessageId++;
         const msg: ClientMessage = { op: "data", tok: token };
-        transport!.send(serializer.stringify(msg));
+        let rejectPending!: (err: unknown) => void;
         const promise = new Promise((resolve, reject) => {
+          rejectPending = reject;
           pending.set(msgId, {
             resolve: (data: any) => {
               liveDataCache.set(token, data);
@@ -414,6 +439,15 @@ export function createClient<S extends ServerInstance<any>>(
           });
         });
         dataLoadCache.set(token, promise);
+        // Register pending before send to handle transports that
+        // may deliver responses synchronously.
+        try {
+          transport!.send(serializer.stringify(msg));
+        } catch (err) {
+          pending.delete(msgId);
+          dataLoadCache.delete(token);
+          rejectPending(err);
+        }
         return promise;
       }
     });
@@ -491,7 +525,7 @@ export function createClient<S extends ServerInstance<any>>(
       // Evict cached descendant edges so subsequent traversals
       // re-resolve from the fresh node instead of reusing stale tokens.
       for (const [edgeKey, _] of resolvedEdges) {
-        if (edgeKey !== refPathKey && edgeKey.startsWith(refPathKey)) {
+        if (isDescendantPathKey(refPathKey, edgeKey)) {
           resolvedEdges.delete(edgeKey);
           const tok = pathToTokenSync.get(edgeKey);
           if (tok !== undefined) {

@@ -65,17 +65,26 @@ export function createServer<TRoot extends object>(
 
   return {
     handle(transport: Transport, ctx: Context): void {
-      const root = factory(ctx);
-      const handler = createHandler(
-        root,
-        options,
-        emitError,
-        emitOperationError,
-        connectionHandlers,
-        disconnectHandlers,
-        operationHandlers,
-      );
-      handler(transport, ctx);
+      try {
+        const root = factory(ctx);
+        const handler = createHandler(
+          root,
+          options,
+          emitError,
+          emitOperationError,
+          connectionHandlers,
+          disconnectHandlers,
+          operationHandlers,
+        );
+        handler(transport, ctx);
+      } catch (err) {
+        emitError(err);
+        try {
+          transport.close();
+        } catch (closeErr) {
+          emitError(closeErr);
+        }
+      }
     },
     wsHandlers<T>(getContext: (data: T) => Context): WebSocketHandlers<T> {
       type Callbacks = { _message: (raw: string) => void; _close: () => void };
@@ -84,40 +93,51 @@ export function createServer<TRoot extends object>(
       return {
         data: undefined as unknown as T,
         open(ws: WsLike<T>) {
-          const callbacks: Callbacks = {
-            _message: () => {},
-            _close: () => {},
-          };
-          wsMap.set(ws, callbacks);
+          try {
+            const callbacks: Callbacks = {
+              _message: () => {},
+              _close: () => {},
+            };
+            wsMap.set(ws, callbacks);
 
-          const transport: Transport = {
-            send(data: string) {
-              ws.send(data);
-            },
-            close() {
+            const transport: Transport = {
+              send(data: string) {
+                ws.send(data);
+              },
+              close() {
+                ws.close();
+              },
+              addEventListener(type: string, listener: any) {
+                if (type === "message")
+                  callbacks._message = (raw: string) => listener({ data: raw });
+                else if (type === "close")
+                  callbacks._close = () => listener({});
+                // 'error' is handled via the error handler below
+              },
+              removeEventListener() {},
+            };
+
+            const ctx = getContext(ws.data);
+            const root = factory(ctx);
+            const handler = createHandler(
+              root,
+              options,
+              emitError,
+              emitOperationError,
+              connectionHandlers,
+              disconnectHandlers,
+              operationHandlers,
+            );
+            handler(transport, ctx);
+          } catch (err) {
+            emitError(err);
+            wsMap.delete(ws);
+            try {
               ws.close();
-            },
-            addEventListener(type: string, listener: any) {
-              if (type === "message")
-                callbacks._message = (raw: string) => listener({ data: raw });
-              else if (type === "close") callbacks._close = () => listener({});
-              // 'error' is handled via the error handler below
-            },
-            removeEventListener() {},
-          };
-
-          const ctx = getContext(ws.data);
-          const root = factory(ctx);
-          const handler = createHandler(
-            root,
-            options,
-            emitError,
-            emitOperationError,
-            connectionHandlers,
-            disconnectHandlers,
-            operationHandlers,
-          );
-          handler(transport, ctx);
+            } catch (closeErr) {
+              emitError(closeErr);
+            }
+          }
         },
         message(ws: WsLike<T>, message: string | ArrayBuffer | Uint8Array) {
           const cb = wsMap.get(ws);
@@ -191,6 +211,47 @@ function createHandler(
     // Token → cache key. Computed synchronously when edge messages arrive,
     // so pipelined children can look up parent keys without awaiting.
     const tokens: string[] = ["root"];
+    type TokenState = {
+      ready: Promise<void>;
+      settled: boolean;
+      resolve: () => void;
+      reject: (err: unknown) => void;
+    };
+    function createTokenState(): TokenState {
+      let resolveReady!: () => void;
+      let rejectReady!: (err: unknown) => void;
+      const state: TokenState = {
+        ready: new Promise<void>((resolve, reject) => {
+          resolveReady = resolve;
+          rejectReady = reject;
+        }),
+        settled: false,
+        resolve: () => {
+          if (state.settled) return;
+          state.settled = true;
+          resolveReady();
+        },
+        reject: (err: unknown) => {
+          if (state.settled) return;
+          state.settled = true;
+          rejectReady(err);
+        },
+      };
+      state.ready.catch(() => {});
+      return state;
+    }
+    const tokenStates: TokenState[] = [];
+    tokenStates[0] = createTokenState();
+    tokenStates[0]!.resolve();
+
+    function resolveTokenState(tok: number) {
+      tokenStates[tok]?.resolve();
+    }
+
+    function rejectTokenState(tok: number, err: unknown) {
+      tokenStates[tok]?.reject(err);
+    }
+
     let tokenCount = 1;
     let shouldClose = false;
     const maxTokens = options.maxTokens ?? 9000;
@@ -205,6 +266,8 @@ function createHandler(
     const slotQueue: Array<{
       resolve: () => void;
       reject: (err: Error) => void;
+      settled: boolean;
+      cleanup: () => void;
     }> = [];
 
     // Build schema for this connection's context
@@ -244,35 +307,80 @@ function createHandler(
 
     resetIdleTimer();
 
-    function acquireSlot(): Promise<void> {
+    function operationAbortError(): RpcError {
+      return connAbort.signal.aborted
+        ? new RpcError("CONNECTION_CLOSED", "Connection closed")
+        : new RpcError("OPERATION_TIMEOUT", "Operation timed out");
+    }
+
+    function acquireSlot(signal: AbortSignal): Promise<void> {
+      if (signal.aborted) {
+        return Promise.reject(operationAbortError());
+      }
       if (activeOps < maxPendingOps) {
         activeOps++;
         return Promise.resolve();
       }
       return new Promise<void>((resolve, reject) => {
-        slotQueue.push({
+        const waiter = {
+          settled: false,
+          cleanup: () => {},
           resolve: () => {
+            if (waiter.settled) return;
+            waiter.settled = true;
+            waiter.cleanup();
             activeOps++;
             resolve();
           },
-          reject,
-        });
+          reject: (err: Error) => {
+            if (waiter.settled) return;
+            waiter.settled = true;
+            waiter.cleanup();
+            reject(err);
+          },
+        };
+
+        const onAbort = () => {
+          const idx = slotQueue.indexOf(waiter);
+          if (idx !== -1) slotQueue.splice(idx, 1);
+          waiter.reject(operationAbortError());
+        };
+
+        waiter.cleanup = () => {
+          signal.removeEventListener("abort", onAbort);
+        };
+
+        signal.addEventListener("abort", onAbort, { once: true });
+        slotQueue.push(waiter);
+
+        // Handle aborts that race with listener registration.
+        if (signal.aborted) onAbort();
       });
     }
 
     function releaseSlot() {
       activeOps--;
-      if (slotQueue.length > 0) slotQueue.shift()!.resolve();
+      while (slotQueue.length > 0) {
+        const next = slotQueue.shift()!;
+        if (next.settled) continue;
+        next.resolve();
+        return;
+      }
     }
 
     /**
      * Resolve a token to a node object.
      * Token → cache key is synchronous; the cache entry resolves lazily.
      */
-    function waitForToken(tok: number): Promise<object> {
+    async function waitForToken(tok: number): Promise<object> {
       if (tok >= tokenCount) {
         throw new RpcError("INVALID_TOKEN", `Unknown token: ${tok}`);
       }
+      const tokenState = tokenStates[tok];
+      if (!tokenState) {
+        throw new RpcError("INVALID_TOKEN", `Unknown token: ${tok}`);
+      }
+      await tokenState.ready;
       const cacheKey = tokens[tok];
       if (!cacheKey) {
         throw new RpcError("INVALID_TOKEN", `Unknown token: ${tok}`);
@@ -329,18 +437,38 @@ function createHandler(
     async function handleEdge(
       re: number,
       claimToken: number,
+      opSignal: AbortSignal,
     ): Promise<EdgeResult> {
-      await acquireSlot();
+      await acquireSlot(opSignal);
       try {
-        const entry = nodeCache.get(tokens[claimToken]!)!;
+        if (opSignal.aborted) {
+          throw operationAbortError();
+        }
+        const key = tokens[claimToken];
+        if (!key) {
+          throw new RpcError(
+            "INVALID_TOKEN",
+            "Invalid parent token for edge traversal",
+          );
+        }
+        const entry = nodeCache.get(key);
+        if (!entry) {
+          throw new RpcError(
+            "INVALID_TOKEN",
+            "Invalid parent token for edge traversal",
+          );
+        }
         await getNode(entry);
+        resolveTokenState(claimToken);
         return { op: "edge", tok: claimToken, re };
       } catch (err) {
         if (err instanceof RpcError || serializer.handles(err)) {
+          rejectTokenState(claimToken, err);
           return { op: "edge", tok: claimToken, re, error: err };
         }
         const rpcErr = new RpcError("EDGE_ERROR", String(err));
         wrappedOriginals.set(rpcErr, err);
+        rejectTokenState(claimToken, rpcErr);
         return { op: "edge", tok: claimToken, re, error: rpcErr };
       } finally {
         releaseSlot();
@@ -350,11 +478,15 @@ function createHandler(
     async function handleGet(
       msg: ClientMessage & { op: "get" },
       re: number,
+      opSignal: AbortSignal,
     ): Promise<GetResult> {
       try {
         const node = await waitForToken(msg.tok);
-        await acquireSlot();
+        await acquireSlot(opSignal);
         try {
+          if (opSignal.aborted) {
+            throw operationAbortError();
+          }
           const result = await resolveGet(node, msg.name, msg.args ?? [], ctx);
           return { op: "get", tok: msg.tok, re, data: result };
         } finally {
@@ -373,11 +505,15 @@ function createHandler(
     async function handleData(
       msg: ClientMessage & { op: "data" },
       re: number,
+      opSignal: AbortSignal,
     ): Promise<DataResult> {
       try {
         const node = await waitForToken(msg.tok);
-        await acquireSlot();
+        await acquireSlot(opSignal);
         try {
+          if (opSignal.aborted) {
+            throw operationAbortError();
+          }
           const data = resolveData(node, ctx);
           return { op: "data", tok: msg.tok, re, data };
         } finally {
@@ -427,6 +563,7 @@ function createHandler(
       let claimToken = -1;
       if (msg.op === "edge") {
         claimToken = tokenCount++;
+        tokenStates[claimToken] = createTokenState();
 
         // Token limit: respond synchronously and close.
         if (tokenCount > maxTokens) {
@@ -436,6 +573,7 @@ function createHandler(
             "TOKEN_LIMIT_EXCEEDED",
             "Connection closed: token limit exceeded",
           );
+          rejectTokenState(claimToken, error);
           const response = {
             op: "edge" as const,
             tok: claimToken,
@@ -484,8 +622,7 @@ function createHandler(
           }
         }
         // If parentKey is undefined (invalid parent token), tokens[claimToken]
-        // stays undefined. handleEdge will use the cache entry's lazy
-        // resolution which will cascade to the parent's error.
+        // stays undefined. handleEdge turns that into INVALID_TOKEN.
       }
 
       let responded = false;
@@ -502,6 +639,7 @@ function createHandler(
           );
           let response: ServerMessage & { errorId?: string };
           if (msg.op === "edge") {
+            rejectTokenState(claimToken, timeoutErr);
             response = {
               op: "edge",
               tok: claimToken,
@@ -539,14 +677,14 @@ function createHandler(
             const executeOp = async (): Promise<ServerMessage> => {
               switch (msg.op) {
                 case "edge": {
-                  const r = await handleEdge(messageId, claimToken);
+                  const r = await handleEdge(messageId, claimToken, opSignal);
                   if (shouldClose) transport.close();
                   return r;
                 }
                 case "get":
-                  return handleGet(msg, messageId);
+                  return handleGet(msg, messageId, opSignal);
                 case "data":
-                  return handleData(msg, messageId);
+                  return handleData(msg, messageId, opSignal);
                 default: {
                   const _exhaustive: never = msg;
                   throw new Error(
@@ -621,13 +759,25 @@ function createHandler(
               if (opTimer) timers.clearTimeout(opTimer);
               const internalErr = new RpcError("INTERNAL_ERROR", String(err));
               wrappedOriginals.set(internalErr, err);
-              const errResponse = {
-                op: "get" as const,
-                tok: 0,
-                re: messageId,
-                error: internalErr,
-                errorId: undefined as string | undefined,
-              };
+              if (msg.op === "edge") {
+                rejectTokenState(claimToken, internalErr);
+              }
+              const errResponse =
+                msg.op === "edge"
+                  ? {
+                      op: "edge" as const,
+                      tok: claimToken,
+                      re: messageId,
+                      error: internalErr,
+                      errorId: undefined as string | undefined,
+                    }
+                  : ({
+                      op: msg.op,
+                      tok: msg.tok,
+                      re: messageId,
+                      error: internalErr,
+                      errorId: undefined as string | undefined,
+                    } as const);
               processErrorResponse(errResponse);
               transport.send(serializer.stringify(errResponse));
             }
@@ -657,6 +807,7 @@ function createHandler(
       const closedErr = new RpcError("CONNECTION_CLOSED", "Connection closed");
       for (const waiter of slotQueue) waiter.reject(closedErr);
       slotQueue.length = 0;
+      tokenStates.length = 0;
       tokens.length = 0;
       nodeCache.clear();
     });

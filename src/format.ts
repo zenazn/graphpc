@@ -48,6 +48,24 @@ export function formatPath(path: PathSegments, reducers?: Reducers): string {
   return out;
 }
 
+/**
+ * True when `candidate` is a strict descendant of `ancestor`.
+ *
+ * Both keys must be produced by formatPath/formatSegment. A descendant
+ * starts with the full ancestor key and then immediately continues with
+ * a new segment delimiter ('.' or '['), preventing false matches like
+ * "root.post" vs "root.posts".
+ */
+export function isDescendantPathKey(
+  ancestor: string,
+  candidate: string,
+): boolean {
+  if (candidate === ancestor) return false;
+  if (!candidate.startsWith(ancestor)) return false;
+  const next = candidate[ancestor.length];
+  return next === "." || next === "[";
+}
+
 export function formatSegment(seg: PathSegment, reducers?: Reducers): string {
   const seen = new Map<object, number>();
   const reducerEntries = reducers

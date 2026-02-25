@@ -1,5 +1,10 @@
 import { test, expect, describe } from "bun:test";
-import { formatValue, formatPath, formatSegment } from "./format.ts";
+import {
+  formatValue,
+  formatPath,
+  formatSegment,
+  isDescendantPathKey,
+} from "./format.ts";
 
 // -- Primitives --
 
@@ -381,6 +386,25 @@ describe("formatPath", () => {
         ["b", shared],
       ]),
     ).toBe("root.a({id: 1}).b($0)");
+  });
+});
+
+describe("isDescendantPathKey", () => {
+  test("matches strict descendants with dot/bracket boundaries", () => {
+    expect(isDescendantPathKey("root.post", "root.post.title")).toBe(true);
+    expect(isDescendantPathKey("root.post", 'root.post["title"]')).toBe(true);
+    expect(
+      isDescendantPathKey("root.post.get(1)", "root.post.get(1).title"),
+    ).toBe(true);
+  });
+
+  test("does not match the same key", () => {
+    expect(isDescendantPathKey("root.post", "root.post")).toBe(false);
+  });
+
+  test("does not over-match sibling prefixes", () => {
+    expect(isDescendantPathKey("root.post", "root.posts")).toBe(false);
+    expect(isDescendantPathKey("root.items", "root.items2.get(1)")).toBe(false);
   });
 });
 

@@ -10,7 +10,7 @@ import { STUB_PATH } from "./proxy.ts";
 
 export function pathOf(stub: any): PathArg {
   const segments = stub?.[STUB_PATH];
-  if (!segments) {
+  if (!Array.isArray(segments)) {
     throw new Error("pathOf() requires a stub or data proxy");
   }
   return new PathArg(segments);

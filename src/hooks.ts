@@ -4,6 +4,9 @@
  * The `operation` event uses a wrapping/middleware pattern that preserves
  * async context — so OTel spans created inside a handler are automatically
  * parents of any user-instrumented calls (fetch, DB, etc.).
+ *
+ * Intended use: observability/instrumentation. Use @hidden and edge/method
+ * authorization checks for access control decisions.
  */
 
 export interface OperationInfo {

@@ -130,7 +130,7 @@ Built-in errors (all extend `RpcError`): `ValidationError`, `EdgeNotFoundError`,
 
 ## Production
 
-`abortSignal()` returns the current operation's `AbortSignal` (fires on disconnect/timeout). `maxOperationTimeout` (default: 30s) sets per-operation limits. Unregistered errors are redacted in production (`NODE_ENV=production`); every error includes a UUID (`getErrorUuid(err)`). `server.on("operationError", ...)` for logging. Server events enable tracing/metrics; multiple `operation` handlers compose as middleware. Details: [Production Guide](production.md).
+`abortSignal()` returns the current operation's `AbortSignal` (fires on disconnect/timeout). `maxOperationTimeout` (default: 30s) sets per-operation limits. Unregistered errors are redacted in production (`NODE_ENV=production`); every error includes a UUID (`getErrorUuid(err)`). `server.on("operationError", ...)` for logging. Server events enable tracing/metrics; multiple `operation` handlers compose as middleware (observability only, not auth/policy). Details: [Production Guide](production.md).
 
 ## SSR & Hydration
 

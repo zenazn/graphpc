@@ -228,3 +228,20 @@ test("wsHandlers: multiple concurrent connections", async () => {
   handlers.close(ws1);
   handlers.close(ws2);
 });
+
+test("wsHandlers: open reports bootstrap errors and closes ws", () => {
+  const server = createServer({}, () => {
+    throw new Error("factory boom");
+  });
+  const handlers = server.wsHandlers<{}>((data) => data);
+
+  const errors: unknown[] = [];
+  server.on("error", (err) => errors.push(err));
+
+  const ws = createMockWs({});
+  handlers.open(ws);
+
+  expect(ws.closed).toBe(true);
+  expect(errors.length).toBe(1);
+  expect((errors[0] as Error).message).toBe("factory boom");
+});

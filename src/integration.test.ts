@@ -9,6 +9,7 @@ import { Path, path } from "./node-path.ts";
 import { PathArg } from "./path-arg.ts";
 import { pathOf } from "./path-of.ts";
 import { createMockTransportPair } from "./protocol.ts";
+import type { Transport } from "./protocol.ts";
 import { ref, Reference, pathTo } from "./ref.ts";
 import { createSerializer } from "./serialization.ts";
 import { createServer } from "./server.ts";
@@ -103,6 +104,58 @@ function setup() {
   return { client, gpc };
 }
 
+/** Test-only transport pair that delivers messages synchronously. */
+function createSyncTransportPair(): [Transport, Transport] {
+  type Listener = (event: { data: string } | {}) => void;
+  type ListenerSets = {
+    message: Set<Listener>;
+    close: Set<Listener>;
+    error: Set<Listener>;
+  };
+
+  const listeners: [ListenerSets, ListenerSets] = [
+    { message: new Set(), close: new Set(), error: new Set() },
+    { message: new Set(), close: new Set(), error: new Set() },
+  ];
+  const buffers: [string[], string[]] = [[], []];
+  let closed = false;
+
+  const create = (side: 0 | 1): Transport => {
+    const transport: Transport = {
+      send(data: string) {
+        if (closed) return;
+        const other = side === 0 ? 1 : 0;
+        const target = listeners[other].message;
+        if (target.size > 0) {
+          for (const listener of target) listener({ data });
+        } else {
+          buffers[other].push(data);
+        }
+      },
+      close() {
+        if (closed) return;
+        closed = true;
+        for (const s of [0, 1] as const) {
+          for (const listener of listeners[s].close) listener({});
+        }
+      },
+      addEventListener(type: string, listener: any) {
+        (listeners[side] as any)[type].add(listener);
+        if (type === "message" && buffers[side].length > 0) {
+          const msgs = buffers[side].splice(0);
+          for (const msg of msgs) listener({ data: msg });
+        }
+      },
+      removeEventListener(type: string, listener: any) {
+        (listeners[side] as any)[type].delete(listener);
+      },
+    };
+    return transport;
+  };
+
+  return [create(0), create(1)];
+}
+
 test("method returning references", async () => {
   const { client } = setup();
 
@@ -151,6 +204,28 @@ test("sync method return", async () => {
 
   const msg = await client.root.greeting();
   expect(msg).toBe("hello");
+});
+
+test("synchronous transport delivery does not race pending registration", async () => {
+  class SyncApi extends Node {
+    @method
+    ping(): string {
+      return "pong";
+    }
+  }
+
+  const gpc = createServer({}, () => new SyncApi());
+  const client = createClient<typeof gpc>({}, () => {
+    const [serverTransport, clientTransport] = createSyncTransportPair();
+    gpc.handle(serverTransport, {});
+    return clientTransport;
+  });
+
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("timeout")), 100),
+  );
+  const result = await Promise.race([client.root.ping(), timeout]);
+  expect(result).toBe("pong");
 });
 
 test("non-RpcError wraps with error code (method → GET_ERROR, getter edge → EDGE_ERROR)", async () => {
@@ -213,6 +288,25 @@ test("operation middleware throwing yields INTERNAL_ERROR", async () => {
 
   try {
     await client.root.posts;
+    expect.unreachable("should have thrown");
+  } catch (err: any) {
+    expect(err).toBeInstanceOf(RpcError);
+    expect(err.code).toBe("INTERNAL_ERROR");
+  }
+});
+
+test("edge middleware failure cannot be bypassed by descendant operations", async () => {
+  const server = createServer({}, () => new Api());
+  server.on("operation", (_ctx, info, execute) => {
+    if (info.op === "edge") {
+      throw new Error("edge middleware boom");
+    }
+    return execute();
+  });
+  const client = createClient<typeof server>({}, () => mockConnect(server, {}));
+
+  try {
+    await client.root.posts.count();
     expect.unreachable("should have thrown");
   } catch (err: any) {
     expect(err).toBeInstanceOf(RpcError);
@@ -436,6 +530,34 @@ test("invalid token in wire message returns INVALID_TOKEN error", async () => {
   // Send a get with a token that doesn't exist
   clientTransport.send(
     serializer.stringify({ op: "get", tok: 9999, name: "x" }),
+  );
+
+  await flush();
+
+  const response = serializer.parse(received[0]!) as any;
+  expect(response.error).toBeDefined();
+  expect(response.error.code).toBe("INVALID_TOKEN");
+});
+
+test("invalid parent token in edge message returns INVALID_TOKEN error", async () => {
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: string[] = [];
+
+  const originalSend = serverTransport.send.bind(serverTransport);
+  serverTransport.send = (data: string) => {
+    received.push(data);
+    originalSend(data);
+  };
+
+  const server = createServer({}, () => new Api());
+  server.handle(serverTransport, {});
+
+  // Remove the initial schema message
+  received.shift();
+
+  // Send an edge traversal with an invalid parent token
+  clientTransport.send(
+    serializer.stringify({ op: "edge", tok: 9999, edge: "posts" }),
   );
 
   await flush();
@@ -687,8 +809,13 @@ test("maxPendingOps works with edge traversals", async () => {
 
   await flush();
 
-  // Resolve all gates — slot mechanism bounds concurrent handleEdge responses
-  for (const r of resolvers) r();
+  // Resolve gates in waves — later edge ops may only enqueue after earlier
+  // ones finish under maxPendingOps backpressure.
+  while (resolvers.length > 0) {
+    const batch = resolvers.splice(0);
+    for (const r of batch) r();
+    await flush();
+  }
 
   const [a, b, c] = await promises;
   expect(a.title).toBe("Post 1");
@@ -1592,6 +1719,59 @@ test("read-after-write via ref invalidates descendant edge caches", async () => 
   client.close();
 });
 
+test("ref invalidation does not evict sibling paths with shared prefixes", async () => {
+  class PrefixPost extends Node {
+    static [canonicalPath](root: PrefixApi) {
+      return root.post;
+    }
+
+    @method
+    async touch(): Promise<Reference<PrefixPost>> {
+      return ref(PrefixPost);
+    }
+  }
+
+  class PrefixPosts extends Node {
+    @method
+    async count(): Promise<number> {
+      return 1;
+    }
+  }
+
+  class PrefixApi extends Node {
+    @edge(PrefixPost)
+    get post(): PrefixPost {
+      return new PrefixPost();
+    }
+
+    @edge(PrefixPosts)
+    get posts(): PrefixPosts {
+      return new PrefixPosts();
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const sent: any[] = [];
+  const originalSend = clientTransport.send.bind(clientTransport);
+  clientTransport.send = (data: string) => {
+    sent.push(serializer.parse(data));
+    originalSend(data);
+  };
+
+  const gpc = createServer({}, () => new PrefixApi());
+  gpc.handle(serverTransport, {});
+  const client = createClient<typeof gpc>({}, () => clientTransport);
+
+  await client.root.posts.count();
+  await client.root.post.touch();
+  await client.root.posts.count();
+
+  const postsEdges = sent.filter(
+    (m: any) => m.op === "edge" && m.edge === "posts",
+  );
+  expect(postsEdges.length).toBe(1);
+});
+
 // -- Server-side node coalescing tests --
 
 test("node coalescing: same path resolves edge getter only once", async () => {
@@ -1686,6 +1866,94 @@ test("node coalescing: two tokens for same path yield identical data", async () 
 });
 
 // -- Server error event tests --
+
+test("server.handle reports factory bootstrap errors and closes transport", () => {
+  const [serverTransport] = createMockTransportPair();
+  let closed = false;
+  const originalClose = serverTransport.close.bind(serverTransport);
+  serverTransport.close = () => {
+    closed = true;
+    originalClose();
+  };
+
+  const errors: unknown[] = [];
+  const gpc = createServer({}, () => {
+    throw new Error("factory boom");
+  });
+  gpc.on("error", (err) => errors.push(err));
+
+  expect(() => gpc.handle(serverTransport, {})).not.toThrow();
+  expect(closed).toBe(true);
+  expect(errors.length).toBe(1);
+  expect((errors[0] as Error).message).toBe("factory boom");
+});
+
+test("server.handle reports schema bootstrap errors and closes transport", () => {
+  class HiddenChild extends Node {}
+  class HiddenBoomApi extends Node {
+    @hidden(() => {
+      throw new Error("hidden boom");
+    })
+    @edge(HiddenChild)
+    get hidden(): HiddenChild {
+      return new HiddenChild();
+    }
+  }
+
+  const [serverTransport] = createMockTransportPair();
+  let closed = false;
+  const originalClose = serverTransport.close.bind(serverTransport);
+  serverTransport.close = () => {
+    closed = true;
+    originalClose();
+  };
+
+  const errors: unknown[] = [];
+  const gpc = createServer({}, () => new HiddenBoomApi());
+  gpc.on("error", (err) => errors.push(err));
+
+  expect(() => gpc.handle(serverTransport, {})).not.toThrow();
+  expect(closed).toBe(true);
+  expect(errors.length).toBe(1);
+  expect((errors[0] as Error).message).toBe("hidden boom");
+});
+
+test("malformed server responses are treated as fatal (no hang)", async () => {
+  class PingApi extends Node {
+    @method
+    ping(): string {
+      return "pong";
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  let serverSendCount = 0;
+  const originalSend = serverTransport.send.bind(serverTransport);
+  serverTransport.send = (data: string) => {
+    serverSendCount++;
+    // Keep hello valid; corrupt all subsequent server frames.
+    if (serverSendCount === 1) {
+      originalSend(data);
+    } else {
+      originalSend(serializer.stringify("bad-frame"));
+    }
+  };
+
+  const server = createServer({}, () => new PingApi());
+  server.handle(serverTransport, {});
+  const client = createClient<typeof server>(
+    { reconnect: false },
+    () => clientTransport,
+  );
+
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("timeout")), 100),
+  );
+
+  await expect(
+    Promise.race([client.root.ping(), timeout]),
+  ).rejects.toMatchObject({ code: "CONNECTION_CLOSED" });
+});
 
 test("malformed message closes connection and emits error event", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
@@ -2476,6 +2744,71 @@ test("maxOperationTimeout poisons edge tokens", async () => {
   expect(edgeResults[0].error.code).toBe("OPERATION_TIMEOUT");
 });
 
+test("maxOperationTimeout: queued timed-out ops never execute later", async () => {
+  let releaseSlow: (() => void) | undefined;
+  let mutateCalls = 0;
+
+  class TimeoutQueueApi extends Node {
+    @method
+    async slow(): Promise<string> {
+      await new Promise<void>((resolve) => {
+        releaseSlow = resolve;
+      });
+      return "slow";
+    }
+
+    @method
+    async mutate(): Promise<string> {
+      mutateCalls++;
+      return "mutated";
+    }
+  }
+
+  const timers = fakeTimers();
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: any[] = [];
+  const originalSend = serverTransport.send.bind(serverTransport);
+  serverTransport.send = (data: string) => {
+    received.push(serializer.parse(data));
+    originalSend(data);
+  };
+
+  const gpc = createServer(
+    { maxPendingOps: 1, maxOperationTimeout: 5000, timers, idleTimeout: 0 },
+    () => new TimeoutQueueApi(),
+  );
+  gpc.handle(serverTransport, {});
+  received.shift(); // remove schema
+
+  // First op occupies the single slot; second op queues behind it.
+  clientTransport.send(
+    serializer.stringify({ op: "get", tok: 0, name: "slow" }),
+  );
+  clientTransport.send(
+    serializer.stringify({ op: "get", tok: 0, name: "mutate" }),
+  );
+  await flush();
+
+  expect(mutateCalls).toBe(0);
+
+  // Time out both operations.
+  timers.fireAll();
+  await flush();
+
+  const getResults = received.filter((m: any) => m.op === "get");
+  expect(getResults.length).toBe(2);
+  for (const msg of getResults) {
+    expect(msg.error?.code).toBe("OPERATION_TIMEOUT");
+  }
+
+  // Let the slow op finish and release the slot: queued mutate must not run.
+  releaseSlow?.();
+  await flush();
+  await flush();
+
+  expect(mutateCalls).toBe(0);
+});
+
 // -- Error redaction tests --
 
 test("redactErrors: unregistered errors get generic message", async () => {
@@ -3019,6 +3352,13 @@ test("pathOf() from data proxy works", async () => {
   const arg = pathOf(postData);
   expect(arg).toBeInstanceOf(PathArg);
   expect(arg.segments).toEqual(["pathPosts", ["get", "1"]]);
+});
+
+test("pathOf() supports root stub", () => {
+  const { client } = pathSetup();
+  const arg = pathOf(client.root);
+  expect(arg).toBeInstanceOf(PathArg);
+  expect(arg.segments).toEqual([]);
 });
 
 test("pathOf() throws on non-stub", () => {

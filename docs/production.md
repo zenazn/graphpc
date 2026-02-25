@@ -71,6 +71,8 @@ The `operationError` event fires for every error transmitted to a client. It doe
 
 Server events enable tracing, metrics, and logging without coupling to any specific observability stack. The `operation` event uses a wrapping/middleware pattern that preserves async context — so spans created inside a handler are automatically parents of any user-instrumented calls (fetch, DB clients, etc.).
 
+Use `operation` for instrumentation, not authorization. Access control should live in graph code (`@hidden`, edge getters, and method logic), which is enforced by schema filtering and runtime resolution.
+
 ```typescript
 import { createServer } from "graphpc";
 
@@ -107,6 +109,8 @@ server.on("disconnect", (ctx) => {
 ### `operation`
 
 Wraps each operation (edge, get, data). The handler **must** call `execute()` exactly once and return its result. The `execute()` call runs user code (edge getters, methods, data resolution) inside the handler's async context.
+
+`operation` is an observability hook. Do not rely on it for policy enforcement.
 
 When multiple `operation` handlers are registered, they compose, similar to middleware. First registered = outermost wrapper:
 

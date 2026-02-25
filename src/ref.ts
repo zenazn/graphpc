@@ -2,7 +2,7 @@
  * async ref(), recording proxy, and walkPath.
  */
 
-import { formatSegment } from "./format.ts";
+import { formatSegment, isDescendantPathKey } from "./format.ts";
 import type { PathSegments, PathSegment } from "./path.ts";
 import {
   canonicalPath,
@@ -125,7 +125,7 @@ export async function ref<
 
   // 4. Invalidate settled descendants so they re-resolve through the fresh leaf
   for (const [key, entry] of session.nodeCache) {
-    if (key !== leafKey && key.startsWith(leafKey)) {
+    if (isDescendantPathKey(leafKey, key)) {
       invalidateEntry(entry);
     }
   }
