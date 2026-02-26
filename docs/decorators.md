@@ -47,6 +47,21 @@ class SearchService extends Node {
 
 Each positional schema validates the corresponding argument. Passing more arguments than there are schemas is an error.
 
+### Self-referential edges
+
+For edges that reference their own class (e.g. tree nodes), pass a thunk instead of the class directly:
+
+```typescript
+class TreeNode extends Node {
+  @edge(() => TreeNode)
+  get children(): TreeNode[] {
+    return this.#children;
+  }
+}
+```
+
+This is necessary because the class binding isn't available during decorator evaluation. The thunk is resolved lazily at runtime.
+
 ## `@method`
 
 Marks a method as callable by the client — it returns data over the wire. Methods can return `T` or `Promise<T>` — the client always receives `Promise<T>`.

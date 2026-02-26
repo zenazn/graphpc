@@ -63,7 +63,7 @@ test("buildSchema creates indexed schema from class metadata", () => {
 
 test("buildSchema handles cycles", () => {
   class NodeA extends Node {
-    @edge(NodeA)
+    @edge(() => NodeA)
     get self(): NodeA {
       return new NodeA();
     }

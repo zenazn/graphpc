@@ -157,19 +157,9 @@ test("resolveData: excludes @hidden members", () => {
 test("resolveData: excludes @hidden own properties", () => {
   class TestNode {
     visible = "yes";
+    @hidden(() => true)
     secret = "top-secret";
   }
-  // Mark "secret" as hidden
-  hidden(() => true)(
-    TestNode.prototype,
-    "secret",
-    Object.getOwnPropertyDescriptor(TestNode.prototype, "secret") || {
-      value: undefined,
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    },
-  );
 
   const node = new TestNode();
   const data = resolveData(node, {});

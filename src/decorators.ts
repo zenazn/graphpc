@@ -1,10 +1,9 @@
 /**
- * Legacy TypeScript decorators: @edge, @method, @hidden
+ * TC39 stage 3 decorators: @edge, @method, @hidden
  *
- * Bun uses legacy (experimentalDecorators-style) decorators:
- *   (target, propertyKey, descriptor)
- *
- * Metadata is stored via WeakMaps keyed by constructor identity.
+ * Decorators receive (value, context) per the TC39 spec.
+ * Metadata is stored in a single WeakMap keyed by the decorator metadata
+ * object that Bun attaches to each class.
  * Schemas use Standard Schema (https://standardschema.dev/).
  *
  * @edge(TargetClass) — first arg is always the target class constructor.
@@ -29,65 +28,98 @@ export interface MethodMeta {
   paramNames: string[];
 }
 
-// -- Metadata storage (WeakMaps keyed by constructor) --
+// -- Metadata storage --
 
-const edgesMap = new WeakMap<Function, Map<string, EdgeMeta>>();
-const methodsMap = new WeakMap<Function, Map<string, MethodMeta>>();
-
-function getOrCreate<V>(
-  ctor: Function,
-  store: WeakMap<Function, Map<string, V>>,
-): Map<string, V> {
-  let map = store.get(ctor);
-  if (!map) {
-    map = new Map();
-    store.set(ctor, map);
-  }
-  return map;
+interface ClassMeta {
+  edges: Map<string, EdgeMeta>;
+  methods: Map<string, MethodMeta>;
+  hidden: Map<string, HiddenPredicate>;
 }
 
-const collectCache = new WeakMap<
-  WeakMap<Function, Map<string, any>>,
-  WeakMap<Function, Map<string, any>>
->();
+/**
+ * Own (non-inherited) metadata per class, keyed by the DecoratorMetadataObject
+ * that Bun attaches during class definition. Decorators write here via
+ * context.metadata; getEdges/getMethods/getHidden read via the constructor's
+ * metadata attachment.
+ */
+const metadataMap = new WeakMap<object, ClassMeta>();
 
-function collectFromChain<V>(
-  cls: Function,
-  store: WeakMap<Function, Map<string, V>>,
-): Map<string, V> {
-  let storeCache = collectCache.get(store);
-  if (!storeCache) {
-    storeCache = new WeakMap();
-    collectCache.set(store, storeCache);
+/** Bun's internal key for decorator metadata on constructors. */
+const METADATA = Symbol.for("Symbol.metadata");
+
+function getOrCreateMeta(metadata: object): ClassMeta {
+  let meta = metadataMap.get(metadata);
+  if (!meta) {
+    meta = {
+      edges: new Map(),
+      methods: new Map(),
+      hidden: new Map(),
+    };
+    metadataMap.set(metadata, meta);
   }
-  const cached = storeCache.get(cls);
-  if (cached) return cached as Map<string, V>;
+  return meta;
+}
 
-  const result = new Map<string, V>();
-  let current: any = cls;
-  while (current && current !== Function.prototype) {
-    const own = store.get(current);
+/** Cache of collected (own + inherited) metadata per class. */
+const collectCache = new WeakMap<object, ClassMeta>();
+
+/**
+ * Walk the metadata prototype chain and merge own + inherited metadata.
+ * Child entries take precedence over parent entries with the same name.
+ */
+function collect(cls: Function): ClassMeta {
+  const metadata = (cls as any)[METADATA] as object | undefined;
+  if (!metadata)
+    return { edges: new Map(), methods: new Map(), hidden: new Map() };
+
+  const cached = collectCache.get(metadata);
+  if (cached) return cached;
+
+  const result: ClassMeta = {
+    edges: new Map(),
+    methods: new Map(),
+    hidden: new Map(),
+  };
+  let current: object | null = metadata;
+  while (current) {
+    const own = metadataMap.get(current);
     if (own) {
-      for (const [name, val] of own) {
-        if (!result.has(name)) result.set(name, val);
+      for (const [name, val] of own.edges) {
+        if (!result.edges.has(name)) result.edges.set(name, val);
+      }
+      for (const [name, val] of own.methods) {
+        if (!result.methods.has(name)) result.methods.set(name, val);
+      }
+      for (const [name, val] of own.hidden) {
+        if (!result.hidden.has(name)) result.hidden.set(name, val);
       }
     }
     current = Object.getPrototypeOf(current);
   }
-  storeCache.set(cls, result);
+
+  collectCache.set(metadata, result);
   return result;
 }
 
 export function getEdges(
   cls: new (...args: any[]) => any,
 ): Map<string, EdgeMeta> {
-  return collectFromChain(cls, edgesMap);
+  const edges = collect(cls).edges;
+  // Resolve any lazy target references (thunks from @edge(() => Class))
+  for (const meta of edges.values()) {
+    if (!(meta.targetType.prototype instanceof Node)) {
+      meta.targetType = (
+        meta.targetType as unknown as () => new (...args: any[]) => any
+      )();
+    }
+  }
+  return edges;
 }
 
 export function getMethods(
   cls: new (...args: any[]) => any,
 ): Map<string, MethodMeta> {
-  return collectFromChain(cls, methodsMap);
+  return collect(cls).methods;
 }
 
 // -- Helpers --
@@ -262,56 +294,49 @@ function isStandardSchema(v: unknown): v is StandardSchemaV1 {
 
 // -- @edge decorator --
 
-function applyEdge(
-  targetType: new (...args: any[]) => any,
-  schemas: StandardSchemaV1[],
-  target: object,
-  propertyKey: string,
-  descriptor: PropertyDescriptor,
-) {
-  const ctor = target.constructor;
-  const edges = getOrCreate(ctor, edgesMap);
-  const isGetter = !!descriptor.get;
-  const fn = isGetter ? descriptor.get! : descriptor.value;
-  const paramNames = isGetter ? [] : extractParamNames(fn);
-
-  edges.set(propertyKey, {
-    name: propertyKey,
-    kind: isGetter ? "getter" : "method",
-    targetType,
-    schemas,
-    paramNames,
-  });
-}
-
-function isConstructor(v: unknown): v is new (...args: any[]) => any {
-  return typeof v === "function" && !isStandardSchema(v);
-}
-
 /**
  * @edge(TargetClass) — marks a getter or method as an edge (returns a navigable node).
+ *
+ * The first argument is the target class (must extend Node), or a thunk returning
+ * one for self-referential / circular edges: @edge(() => NodeA).
  *
  * Usage:
  *   @edge(UsersService) get users(): UsersService { ... }
  *   @edge(User, z.string()) get(id: string): User { ... }
+ *   @edge(() => TreeNode) get children(): TreeNode[] { ... }
  */
 export function edge(
-  targetType: new (...args: any[]) => any,
+  target: (new (...args: any[]) => any) | (() => new (...args: any[]) => any),
   ...rest: any[]
 ): any {
-  if (!isConstructor(targetType)) {
+  if (typeof target !== "function" || isStandardSchema(target)) {
     throw new Error("@edge requires a target class as the first argument");
   }
-  if (!(targetType.prototype instanceof Node)) {
-    throw new Error(`@edge target ${targetType.name} must extend Node`);
+  // Validate eagerly when possible (direct class reference)
+  if (target.prototype instanceof Node) {
+    // Direct class — validated
+  } else if (target.prototype !== undefined) {
+    // Has a prototype but not a Node subclass — not a thunk either
+    throw new Error(
+      `@edge target ${target.name} must extend Node (or use a thunk: @edge(() => Class))`,
+    );
   }
+  // else: no .prototype (arrow function thunk) — deferred validation in getEdges()
   const schemas = rest.filter(isStandardSchema);
   return (
-    target: object,
-    propertyKey: string,
-    descriptor: PropertyDescriptor,
+    value: Function,
+    context: ClassGetterDecoratorContext | ClassMethodDecoratorContext,
   ) => {
-    applyEdge(targetType, schemas, target, propertyKey, descriptor);
+    const name = context.name as string;
+    const isGetter = context.kind === "getter";
+    const paramNames = isGetter ? [] : extractParamNames(value);
+    getOrCreateMeta(context.metadata).edges.set(name, {
+      name,
+      kind: isGetter ? "getter" : "method",
+      targetType: target as new (...args: any[]) => any,
+      schemas,
+      paramNames,
+    });
   };
 }
 
@@ -319,17 +344,13 @@ export function edge(
 
 function applyMethod(
   schemas: StandardSchemaV1[],
-  target: object,
-  propertyKey: string,
-  descriptor: PropertyDescriptor,
+  value: Function,
+  context: ClassMethodDecoratorContext,
 ) {
-  const ctor = target.constructor;
-  const methods = getOrCreate(ctor, methodsMap);
-  const fn = descriptor.value;
-  const paramNames = extractParamNames(fn);
-
-  methods.set(propertyKey, {
-    name: propertyKey,
+  const name = context.name as string;
+  const paramNames = extractParamNames(value);
+  getOrCreateMeta(context.metadata).methods.set(name, {
+    name,
     schemas,
     paramNames,
   });
@@ -343,38 +364,33 @@ function applyMethod(
  *   @method(z.string().email()) async updateEmail(email: string): Promise<void> { ... }
  */
 export function method(...args: any[]): any {
-  // Case 1: @method (no arguments)
+  // Case 1: @method (bare, no arguments) — TC39 calls method(value, context)
   if (
-    args.length === 3 &&
-    typeof args[1] === "string" &&
-    typeof args[2] === "object" &&
-    args[2] !== null &&
-    "value" in args[2]
+    args.length === 2 &&
+    typeof args[0] === "function" &&
+    typeof args[1] === "object" &&
+    args[1] !== null &&
+    "kind" in args[1] &&
+    args[1].kind === "method"
   ) {
-    applyMethod([], args[0], args[1], args[2]);
+    applyMethod([], args[0], args[1]);
     return;
   }
   // Case 2: @method(schema1, ...)
   const schemas = args.filter(isStandardSchema);
-  return (
-    target: object,
-    propertyKey: string,
-    descriptor: PropertyDescriptor,
-  ) => {
-    applyMethod(schemas, target, propertyKey, descriptor);
+  return (value: Function, context: ClassMethodDecoratorContext) => {
+    applyMethod(schemas, value, context);
   };
 }
 
 // -- @hidden decorator --
-
-const hiddenMap = new WeakMap<Function, Map<string, HiddenPredicate>>();
 
 export type HiddenPredicate = (this: void, ctx: Context) => boolean;
 
 export function getHidden(
   cls: new (...args: any[]) => any,
 ): Map<string, HiddenPredicate> {
-  return collectFromChain(cls, hiddenMap);
+  return collect(cls).hidden;
 }
 
 export function isHidden(
@@ -398,9 +414,15 @@ export function isHidden(
  *   get admin(): AdminPanel { ... }
  */
 export function hidden(predicate: HiddenPredicate) {
-  return (target: object, key: string, _descriptor?: PropertyDescriptor) => {
-    const ctor = target.constructor;
-    getOrCreate(ctor, hiddenMap).set(key, predicate);
+  return (
+    _value: Function | undefined,
+    context:
+      | ClassMethodDecoratorContext
+      | ClassGetterDecoratorContext
+      | ClassFieldDecoratorContext,
+  ) => {
+    const name = context.name as string;
+    getOrCreateMeta(context.metadata).hidden.set(name, predicate);
   };
 }
 
