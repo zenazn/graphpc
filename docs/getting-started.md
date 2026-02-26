@@ -2,8 +2,6 @@
 
 When to read this page: first, before any other GraphPC docs.
 
-> You are here: Getting Started -> Mental Model -> Decorators -> Auth -> Patterns.
-
 This page is the onboarding ramp for GraphPC:
 
 1. What GraphPC is and why the model is different
@@ -210,6 +208,6 @@ Recommended next order:
 
 When you need runtime behavior details, continue with:
 
-- [Runtime Lifecycle](runtime-lifecycle.md)
+- [Runtime Lifecycle and Resilience](runtime.md)
 - [Epochs and Caching](caching.md)
 - [Reconnection](reconnection.md)

@@ -2,8 +2,6 @@
 
 When to read this page: immediately after [Getting Started](getting-started.md), before implementation details.
 
-> You are here: Getting Started -> Mental Model -> Decorators.
-
 GraphPC treats your API as a typed object graph.
 
 - Server: classes extending `Node`
@@ -16,8 +14,8 @@ Edge navigation is local. Data access is remote.
 
 ```typescript
 const post = client.root.posts.get("42"); // local path build, no network
-const { title } = await post;              // network
-await post.updateTitle("New");            // network
+const { title } = await post; // network
+await post.updateTitle("New"); // network
 ```
 
 ## Node Surfaces
@@ -108,4 +106,4 @@ For details, see:
 
 1. [Decorators](decorators.md): exact behavior of `@edge`, `@method`, and `@hidden`
 2. [Authentication and Authorization](auth.md): how graph reachability maps to access control
-3. [References](references.md): returning navigable objects from methods
+3. [Identity and References](identity.md): returning or passing node identity safely

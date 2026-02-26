@@ -87,9 +87,3 @@ Tradeoffs:
 - requires discipline for mutation ordering/idempotency
 - less suited to subscription-first workloads
 - path/epoch model adds concepts teams need to learn
-
-## Read This Next
-
-1. [Runtime Lifecycle](runtime-lifecycle.md): how SSR, hydration, live epochs, and reconnect phases fit together
-2. [Epochs and Caching](caching.md): exact coalescing and cache behavior
-3. [Production Guide](production.md): limits, timeouts, redaction, and observability

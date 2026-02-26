@@ -2,51 +2,18 @@
 
 When to read this page: after [Mental Model](mental-model.md), when you need exact cache/coalescing/read-after-write behavior.
 
-## Most Teams Only Need This
-
-- Caches are scoped to an [epoch](glossary.md#epoch), not global app state.
-- Edge navigation is cheap path building; reads and methods are remote.
-- Same-node and same-property reads coalesce within an epoch.
-- Method calls never coalesce.
-- A plain `await node` after a mutation can be stale due to same-epoch cache hits.
-- Return `ref()` from mutations when callers need fresh read-after-write behavior.
-- Hydration uses a short-lived hydration epoch, then transitions to live epochs.
-- If behavior feels surprising, check epoch boundaries first.
-
 ## Overview
 
-The client organizes activity into **epochs**. An epoch is a contiguous period of activity tied to a single WebSocket connection. All resolved data is cached within an epoch, and identical requests coalesce into a single wire message.
+This page focuses on cache semantics **inside an epoch**.
 
-An epoch starts when the client first needs data (opening a WebSocket), stays alive while there are in-flight or new requests, and ends after a configurable period of inactivity. When an epoch ends, the connection closes and all cached state is cleared. The next `await` opens a fresh connection, starting a new epoch.
+For the full runtime timeline (SSR -> hydration epoch -> live epoch -> reconnect), see [Runtime Lifecycle and Resilience](runtime.md).
 
-## Epoch Lifecycle
+An epoch is one connection-scoped cache window:
 
-An epoch has three phases:
-
-1. **Start** — the first `await` that needs the wire opens a WebSocket and begins the epoch
-2. **Active** — every request resets the inactivity timer; in-flight requests keep the epoch alive
-3. **End** — when no requests are outstanding for the configured `idleTimeout`, the server closes the WebSocket (clearing server-side tokens) and the client drops its cache
-
-The next `await` after an epoch ends opens a fresh connection — a new epoch with an empty cache.
-
-```typescript
-// --- Epoch 1 starts: first await opens the WebSocket ---
-
-const post = client.root.posts.get("1");
-const { title } = await post; // sends edge + data messages
-console.log(title); // "Hello World"
-
-// Cache hit: same node, same epoch — no wire message
-const { title: t2 } = await post;
-console.log(t2); // "Hello World" (from cache)
-
-// ... idleTimeout elapses, server closes connection, epoch 1 ends ...
-
-// --- Epoch 2 starts: next await opens a new WebSocket ---
-
-const { title: t3 } = await post; // fresh edge + data messages
-console.log(t3); // reflects current server state
-```
+- first transport-needed `await` starts it
+- requests keep it alive and reset inactivity timers
+- idle timeout/close ends it and drops epoch cache
+- next transport-needed `await` starts a fresh epoch
 
 ## Coalescing Rules
 
@@ -96,6 +63,8 @@ const [a, b] = await Promise.all([
   client.root.posts.get("1").addComment("Thanks!"), // independent message
 ]);
 ```
+
+Exception: during SSR and hydration, methods calls coalesce. See below.
 
 ## What Gets Cached
 
@@ -165,11 +134,11 @@ const { title: after } = await post; // "New Title" — cache was overwritten
 const t2 = await post.title; // "New Title" — get cache was invalidated
 ```
 
-This makes `ref()` the primary mechanism for keeping client-side state fresh after mutations. See [References](references.md) for the full `ref()` API.
+This makes `ref()` the primary mechanism for keeping client-side state fresh after mutations. See [Identity and References](identity.md) for the full `ref()` API.
 
 ## The Hydration Epoch
 
-SSR hydration uses a special kind of epoch. Its cache is pre-populated from the server-rendered payload rather than from wire responses, it uses a shorter inactivity timeout, and it requires no WebSocket. It also caches `@method` call results — matched by path and arguments — and replays them during client hydration. Live epochs never cache method calls.
+Hydration uses a special epoch backed by SSR payload data (not live wire responses). It has a shorter timeout, requires no WebSocket, and can replay SSR-recorded `@method` calls during hydration only.
 
 |                      | Hydration epoch              | Live epoch                           |
 | -------------------- | ---------------------------- | ------------------------------------ |

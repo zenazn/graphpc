@@ -102,7 +102,7 @@ class User extends Node {
 }
 ```
 
-Only functions annotated with `@method` can be called by the client. Note that undecorated methods still appear in `RpcStub<T>` autocomplete — use the [ESLint plugin](type-checking.md#eslint-plugin) to catch these at lint time.
+Only functions annotated with `@method` can be called by the client. Note that undecorated methods still appear in `RpcStub<T>` autocomplete — use the [ESLint plugin](types.md#eslint-plugin) to catch these at lint time.
 
 ## `@hidden`
 
@@ -227,7 +227,7 @@ async move(post: Path<Post>, cat: Path<Category>): Promise<void> {
 }
 ```
 
-`path(Class)` returns a standard `StandardSchemaV1`, so it works exactly like any other schema. On the client, `Path<T>` parameters appear as `PathArg` (see [Glossary](glossary.md)) — use `pathOf(stub)` to create one. See [Path References](paths.md) for full details.
+`path(Class)` returns a standard `StandardSchemaV1`, so it works exactly like any other schema. On the client, `Path<T>` parameters appear as `PathArg` (see [Glossary](glossary.md)) — use `pathOf(stub)` to create one. See [Path References](identity.md) for full details.
 
 ## Standard Schema
 
@@ -251,5 +251,5 @@ The only requirement is that the schema object has a `"~standard"` property with
 ## Read This Next
 
 1. [Authentication and Authorization](auth.md): using `@hidden` and context to shape per-connection schemas
-2. [References](references.md): returning navigable objects from `@method`
-3. [Path References](paths.md): passing node identity safely between client and server
+2. [Identity and References](identity.md): `ref()`, `path()`, `pathOf()`, and `pathTo()`
+3. [Types and Type Checking](types.md): lint and type-system guardrails

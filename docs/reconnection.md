@@ -2,22 +2,13 @@
 
 When to read this page: before shipping to unreliable networks, or whenever mutation replay behavior matters.
 
-## Most Teams Only Need This
-
-- Reconnection is enabled by default.
-- A reconnect creates a fresh [epoch](glossary.md#epoch) (new tokens/cache/context).
-- In-flight requests are queued and replayed after reconnect.
-- Idle disconnects reconnect lazily (on next operation), not immediately.
-- After retry exhaustion, operations fail with `ConnectionLostError`.
-- `client.reconnect()` resets retries and triggers a fresh attempt.
-- Delivery is at-least-once for in-flight operations.
-- Use idempotency keys for non-idempotent mutations.
-
 ## Overview
 
-The client auto-reconnects when the transport drops unexpectedly (server crash, network loss, WebSocket error). Each reconnection starts a new epoch with fresh tokens, fresh cache, and fresh server-side context. The client re-establishes state transparently, so callers usually don't need custom disconnect handling.
+This page focuses on behavior after an established client loses transport unexpectedly (server restart, network drop, WebSocket error).
 
-For hydration epoch behavior, see [SSR and Hydration](ssr-and-hydration.md) and [Epochs and Caching](caching.md#the-hydration-epoch).
+Each successful reconnect starts a fresh epoch (fresh tokens/cache/context).
+
+For the full lifecycle timeline, see [Runtime Lifecycle and Resilience](runtime.md). For hydration-epoch semantics, see [SSR and Hydration](ssr-and-hydration.md) and [Epochs and Caching](caching.md#the-hydration-epoch).
 
 ## Enabled by Default
 
@@ -108,22 +99,22 @@ This means:
 - **`'reconnect'` only fires** after an eager reconnect (in-flight operations were pending). An idle disconnect followed by a fresh connection does **not** emit `'reconnect'`.
 - **`'disconnect'` always fires** when the transport closes, regardless of whether operations were in-flight.
 
-## Request Queuing
+## Replay Behavior
 
 If the WebSocket drops while requests are in-flight, their promises do **not** reject. Instead, they're queued internally until the connection is restored.
 
-On successful reconnect, the client replays the necessary edges and re-sends the queued requests. Callers don't need to know a reconnection happened — promises resolve normally once the new connection is established.
+On successful reconnect, the client:
+
+- replays only the edges needed by queued/new work
+- re-sends queued requests
+- keeps prior promise contracts intact (callers usually do not need custom handling)
 
 ```typescript
 // This promise survives a disconnect + reconnect transparently
 const user = await client.root.users.get("42");
 ```
 
-## Lazy Path Replay
-
-After reconnecting, the client does **not** eagerly re-walk all previously resolved paths. The new connection starts a new epoch with a clean token space and empty cache.
-
-Paths are re-established lazily: only when a queued or new request needs to access an edge on the new connection does the client replay that edge. This keeps reconnection lightweight — a client that had traversed hundreds of paths only replays the ones actually needed by pending work.
+The client does **not** eagerly re-walk all previously resolved paths. Even if a prior session traversed hundreds of paths, replay is lazy and demand-driven.
 
 If the server-side state has changed (node deleted, edge now hidden), the lazy replay surfaces the error normally to the caller — the same error they'd get on a fresh connection.
 

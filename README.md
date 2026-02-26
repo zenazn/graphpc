@@ -51,13 +51,12 @@ await post.updateTitle("New"); // RPC method call
 
 ## Start Here
 
-Use this order for the fastest onboarding:
-
 1. [Getting Started](docs/getting-started.md)
 2. [Mental Model](docs/mental-model.md)
 3. [Decorators](docs/decorators.md)
 4. [Authentication and Authorization](docs/auth.md)
 5. [Common Patterns](docs/patterns.md)
+6. [Documentation Index](docs/index.md)
 
 ## Install
 
@@ -73,18 +72,6 @@ pnpm add graphpc zod
 ```
 
 GraphPC works with any [Standard Schema](https://standardschema.dev/) validator (zod, valibot, arktype, etc.).
-
-## Documentation
-
-- [Documentation Index](docs/index.md)
-- [Getting Started](docs/getting-started.md)
-- [Mental Model](docs/mental-model.md)
-- [Decorators](docs/decorators.md)
-- [Authentication and Authorization](docs/auth.md)
-- [Common Patterns](docs/patterns.md)
-- [Testing](docs/testing.md)
-- [Production Guide](docs/production.md)
-- [LLM Reference](docs/llm.md) (for LLM-oriented integration and prompting workflows)
 
 ## Human ideas, AI code
 

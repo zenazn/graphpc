@@ -59,23 +59,23 @@ See [Serialization](serialization.md) for the full reducer/reviver contract.
 
 Here's what the client receives for every failure mode:
 
-| Failure                                     | Client receives                   | `instanceof`          |
-| ------------------------------------------- | --------------------------------- | --------------------- |
-| `@edge`/`@method` argument fails validation | `ValidationError` with `.issues`  | `ValidationError`     |
-| Edge throws a registered custom error       | The custom error instance         | Custom class          |
-| Edge throws a non-registered custom error   | `RpcError` (message preserved)    | `RpcError` only       |
-| Edge throws any other value                 | `RpcError` with code `EDGE_ERROR` | `RpcError`            |
-| Method throws a registered custom error     | The custom error instance         | Custom class          |
-| Method throws a non-registered custom error | `RpcError` (message preserved)    | `RpcError` only       |
-| Method throws any other value               | `RpcError` with code `GET_ERROR`  | `RpcError`            |
-| Data op throws any other value              | `RpcError` with code `DATA_ERROR` | `RpcError`            |
-| `@hidden` edge via forced `edge` op         | `EdgeNotFoundError`               | `EdgeNotFoundError`   |
-| `@hidden` edge via normal proxy access      | Usually `MethodNotFoundError` (can be `RpcError` `INVALID_PATH` for deeper paths, e.g. `root.admin.secretData()`) | Varies |
-| `@hidden` method accessed                   | `MethodNotFoundError`             | `MethodNotFoundError` |
-| Operation on failed edge's token            | Original error (propagated)       | Varies                |
-| All reconnect attempts fail                 | `ConnectionLostError`             | `ConnectionLostError` |
+| Failure                                     | Client receives                                                                                                   | `instanceof`          |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `@edge`/`@method` argument fails validation | `ValidationError` with `.issues`                                                                                  | `ValidationError`     |
+| Edge throws a registered custom error       | The custom error instance                                                                                         | Custom class          |
+| Edge throws a non-registered custom error   | `RpcError` (message preserved)                                                                                    | `RpcError` only       |
+| Edge throws any other value                 | `RpcError` with code `EDGE_ERROR`                                                                                 | `RpcError`            |
+| Method throws a registered custom error     | The custom error instance                                                                                         | Custom class          |
+| Method throws a non-registered custom error | `RpcError` (message preserved)                                                                                    | `RpcError` only       |
+| Method throws any other value               | `RpcError` with code `GET_ERROR`                                                                                  | `RpcError`            |
+| Data op throws any other value              | `RpcError` with code `DATA_ERROR`                                                                                 | `RpcError`            |
+| `@hidden` edge via forced `edge` op         | `EdgeNotFoundError`                                                                                               | `EdgeNotFoundError`   |
+| `@hidden` edge via normal proxy access      | Usually `MethodNotFoundError` (can be `RpcError` `INVALID_PATH` for deeper paths, e.g. `root.admin.secretData()`) | Varies                |
+| `@hidden` method accessed                   | `MethodNotFoundError`                                                                                             | `MethodNotFoundError` |
+| Operation on failed edge's token            | Original error (propagated)                                                                                       | Varies                |
+| All reconnect attempts fail                 | `ConnectionLostError`                                                                                             | `ConnectionLostError` |
 
-### Hidden-member nuance (important)
+### Hidden-member nuance
 
 Hidden-member errors are operation-dependent:
 
@@ -86,16 +86,9 @@ In normal client proxy usage, hidden edges are absent from the schema, so access
 
 ## Error Redaction
 
-In production, unregistered errors are redacted to prevent leaking internal details. The message is replaced with `"Internal server error"` while the error code is preserved. Built-in errors, custom registered types, and directly thrown `RpcError` instances are never redacted.
+Redaction is an operational concern configured on the server (`redactErrors`) and documented in [Production Guide — Error Redaction](production.md#error-redaction).
 
-```typescript
-const server = createServer(
-  { redactErrors: true }, // auto-detected from NODE_ENV=production
-  (ctx) => new Api(),
-);
-```
-
-See [Production Guide — Error Redaction](production.md#error-redaction) for details.
+Quick rule: built-in errors, registered custom errors, and directly thrown `RpcError` are not redacted; other thrown values can be redacted in production.
 
 ## Error UUIDs (`getErrorUuid`)
 
@@ -112,4 +105,4 @@ try {
 }
 ```
 
-Use `server.on("operationError", ...)` to log errors with their UUIDs. See [Production Guide — Error Reporting](production.md#error-reporting).
+Use `server.on("operationError", ...)` to log the same UUID server-side. Full logging/correlation guidance: [Production Guide — Error Reporting](production.md#error-reporting).

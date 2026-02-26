@@ -36,25 +36,25 @@ The typed client-side proxy for a node. Stubs mirror server graph shape and supp
 
 The sequence of edge/property/method-call segments used to reach a node (for example: `root.posts.get("42")`).
 
-See also: [Mental Model](mental-model.md), [Path References](paths.md)
+See also: [Mental Model](mental-model.md), [Path References](identity.md)
 
 ### Canonical path
 
 A class-defined path (via `[canonicalPath]`) used as the stable identity route for `ref()` and `pathTo()`.
 
-See also: [References](references.md), [Path References](paths.md)
+See also: [Identity and References](identity.md), [Path References](identity.md)
 
 ### PathArg
 
 Client-side wire wrapper for path segments, typically created by `pathOf(stub)`.
 
-See also: [Path References](paths.md)
+See also: [Path References](identity.md)
 
 ### Path<T>
 
 Server-side thenable path reference. `await` resolves it to a live node after validation and graph walking.
 
-See also: [Path References](paths.md)
+See also: [Path References](identity.md)
 
 ## Freshness and Lifecycle Terms
 
@@ -62,7 +62,7 @@ See also: [Path References](paths.md)
 
 A connection-scoped activity window with its own cache and token space. Caches are dropped when an epoch ends.
 
-See also: [Epochs and Caching](caching.md), [Runtime Lifecycle](runtime-lifecycle.md)
+See also: [Epochs and Caching](caching.md), [Runtime Lifecycle and Resilience](runtime.md)
 
 ### Hydration epoch
 
@@ -80,7 +80,7 @@ See also: [Epochs and Caching](caching.md)
 
 A method-returnable value containing canonical path + data, so the client receives a navigable object with data already loaded.
 
-See also: [References](references.md)
+See also: [Identity and References](identity.md)
 
 ## Security and Context Terms
 

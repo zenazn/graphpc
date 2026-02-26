@@ -99,32 +99,7 @@ After hydration ends, the next cache miss that requires live data opens a WebSoc
 
 For exact cache and timeout behavior, see [Epochs and Caching](caching.md#the-hydration-epoch).
 
-### Lifecycle
-
-```
-SSR
-  1. createSSRClient<typeof server>(api, ctx) → SSR client (RpcClient-compatible)
-  2. Components render using client.root
-  3. Embed client.generateHydrationData() in HTML
-
-Hydration (hydration epoch)
-  4. createClient(opts, transportFactory) → client
-  5. client.hydrate(window.__rpc)  (or client.hydrateString(str))
-  6. Components re-render using client.root + cached data (instant, no network)
-  7. Cache entries are reusable during the hydration epoch
-
-Transition (hydration epoch ends)
-  8. endHydration() called or inactivity timeout fires
-  9. Hydration epoch ends — caches are dropped, client becomes a normal transport-backed client
-     If the transport is not yet connected, requests are queued until it is.
-     See [Reconnection](reconnection.md).
-
-Live (live epochs — one per WebSocket connection)
-  10. User interactions → requests go over the wire
-      Each WebSocket connection is a live epoch with its own cache
-```
-
-For how the client caches data after hydration ends, see [Epochs and Caching](caching.md).
+For the end-to-end runtime timeline (SSR -> hydration epoch -> live epochs -> reconnect), see [Runtime Lifecycle and Resilience](runtime.md).
 
 ## What Gets Tracked
 
@@ -187,72 +162,24 @@ Every framework integration follows the same steps, mapped to GraphPC primitives
 3. **Call `client.generateHydrationData()`** after rendering completes. This must happen after all async data fetches have resolved. Embed the resulting payload in the HTML response.
 4. **Initialize the client with hydration data** on the client side. The client serves cached data instantly, then transitions to the live transport.
 
-### Conceptual React/Next.js Example
-
-> This is a conceptual example showing how the primitives compose. GraphPC does not ship a React adapter — you'd build one using these primitives.
-
-**Server (inside a request handler):**
+### Minimal Adapter Sketch
 
 ```typescript
-import { createSSRClient } from "graphpc";
+// Server request path
+const ssrClient = createSSRClient<typeof server>(new Api(), ctx);
+const html = await renderApp({ client: ssrClient }); // framework render function
+const hydration = ssrClient.generateHydrationData();
+// Embed hydration into HTML as window.__rpc
 
-async function renderPage(req: Request): Promise<string> {
-  const session = await getSession(req);
-  const api = new Api();
-  const ctx = { userId: session.userId, isAdmin: session.isAdmin };
-
-  const client = createSSRClient<typeof server>(api, ctx);
-
-  // Components use `client.root` to traverse the graph during render.
-  const html = await renderToString(<App client={client} />);
-
-  const hydrationScript = `<script>
-    window.__rpc = ${client.generateHydrationData()};
-  </script>`;
-
-  return `<!DOCTYPE html>
-    <html><body>
-      <div id="root">${html}</div>
-      ${hydrationScript}
-      <script type="module" src="/client.js"></script>
-    </body></html>`;
-}
+// Client boot path
+const client = createClient<typeof server>({}, transportFactory);
+client.hydrate(window.__rpc);
+hydrateApp({ client }); // framework hydrate function
 ```
 
-**Client:**
+### Integration Notes
 
-```typescript
-import { createClient } from "graphpc/client";
-
-const client = createClient<typeof server>(
-  {},
-  () => new WebSocket("ws://localhost:3000"),
-);
-client.hydrate(window.__rpc); // hydration data from SSR
-
-// Components hydrate instantly from cache, then transition to live transport.
-hydrateRoot(document.getElementById("root")!, <App client={client} />);
-```
-
-**Component (works in both environments):**
-
-```typescript
-import type { RpcClient } from "graphpc";
-
-function App({ client }: { client: RpcClient<typeof server> }) {
-  const post = await client.root.posts.get("42");
-  return <div>{post.title}</div>;
-}
-```
-
-### Framework-Specific Considerations
-
-**React Server Components (RSC):** Server Components can use the SSR client directly since they run on the server. Client Components receive serialized data. The boundary between server and client aligns naturally with GraphPC's SSR → hydration transition.
-
-**Streaming SSR:** If your framework streams HTML (e.g., `renderToPipeableStream`), you need all data fetches to resolve before calling `client.generateHydrationData()`. The hydration script must appear in the HTML _after_ the components that depend on it. Consider using Suspense boundaries to control when data resolves.
-
-**Suspense:** Components that `await` on `client.root` during SSR block their Suspense boundary. This is the same behavior as any async data source. The proxy is synchronous for edge traversals and async for data fetches — Suspense boundaries should wrap the data-fetching parts.
-
-### Current Status
-
-No official framework adapters exist yet. The SSR primitives (`createSSRClient`, `client.generateHydrationData()`, `createClient` + `.hydrate()`) are stable and framework-agnostic. Building an adapter for your framework means wiring these primitives into your framework's server-rendering and hydration lifecycle.
+- Generate hydration data only after SSR data fetches complete.
+- Ensure hydration payload script is emitted before client code reads `window.__rpc`.
+- Call `hydrate()`/`hydrateString()` before client-side awaits.
+- Treat framework boundaries (RSC/Suspense/streaming) as framework concerns; GraphPC integration stays the same: `createSSRClient` -> `generateHydrationData` -> `createClient` + `hydrate`.

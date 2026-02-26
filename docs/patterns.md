@@ -2,8 +2,6 @@
 
 When to read this page: after [Authentication and Authorization](auth.md), when your API shape starts growing.
 
-> You are here: Getting Started -> Mental Model -> Decorators -> Auth -> Patterns.
-
 This page covers general patterns for structuring your graph. For access-control patterns, see [Authentication and Authorization](auth.md), which covers:
 
 - [Edge Getters as Authorization Boundaries](auth.md#edge-getters-as-authorization-boundaries) — use edge getters to gate access to subgraphs based on context
@@ -76,7 +74,7 @@ The client passes `nextCursor` back to get the next page. Each item is a referen
 
 ### Advanced: Pages as Graph Nodes
 
-> This pattern uses references (`ref()` and `[canonicalPath]`). If you haven't read the [References](references.md) docs yet, start with the simple pattern above.
+> This pattern uses references (`ref()` and `[canonicalPath]`). If you haven't read [Identity and References](identity.md) yet, start with the simple pattern above.
 
 For richer pagination — page metadata (total count, hasNext) and navigable next-page links — model pages as graph nodes:
 
@@ -302,10 +300,10 @@ When a method returns `Reference<Post>[]`, each reference arrives on the client 
 - **Call methods** — `.updateTitle()` goes over the wire as a normal method call.
 - **Navigate edges** — `.comments` starts a new edge traversal, triggering its own fetch.
 
-This means a `<PostCard>` that received a reference from `.list()` renders immediately — the data is already there. Only further edge navigation creates new fetches. See [References](references.md) for the full `ref()` API.
+This means a `<PostCard>` that received a reference from `.list()` renders immediately — the data is already there. Only further edge navigation creates new fetches. See [Identity and References](identity.md) for the full `ref()` API.
 
 ## Read This Next
 
-1. [References](references.md): full behavior of `ref()` and canonical paths
-2. [Path References](paths.md): passing graph identity between client and server
-3. [SSR and Hydration](ssr-and-hydration.md): carrying graph traversal and data across render/hydration boundaries
+1. [Identity and References](identity.md): full behavior of `ref()` and path-based identity tools
+2. [SSR and Hydration](ssr-and-hydration.md): carrying graph traversal and data across render/hydration boundaries
+3. [Runtime Lifecycle and Resilience](runtime.md): how epochs and reconnect affect UI behavior

@@ -2,8 +2,6 @@
 
 When to read this page: after [Decorators](decorators.md), when you are shaping what each connection can see and do.
 
-> You are here: Getting Started -> Mental Model -> Decorators -> Auth.
-
 GraphPC separates authentication and authorization:
 
 - **Authentication** (verifying identity) starts at context creation time. When a connection is established via `server.handle()`, you extract credentials from cookies, headers, or tokens and populate the context. For fully-authenticated APIs, reject the connection if credentials are invalid. For APIs with public portions, you can choose to defer authentication to the edge that requires it.
@@ -208,7 +206,7 @@ This makes `@hidden` a defense-in-depth mechanism, not just a schema filter. The
 
 ### Path references and `@hidden`
 
-When a client sends a `Path<T>` argument (see [Path References](paths.md)), the `path()` schema validates it against the connection's schema — which excludes `@hidden` edges. A path like `root.secret.get("1")` where `secret` is hidden will be rejected before any graph walk happens. When the `Path<T>` is later awaited, it walks the real graph through `resolveEdge`, which re-checks `@hidden` at each step — the same defense-in-depth.
+When a client sends a `Path<T>` argument (see [Path References](identity.md)), the `path()` schema validates it against the connection's schema — which excludes `@hidden` edges. A path like `root.secret.get("1")` where `secret` is hidden will be rejected before any graph walk happens. When the `Path<T>` is later awaited, it walks the real graph through `resolveEdge`, which re-checks `@hidden` at each step — the same defense-in-depth.
 
 ## Read-Only vs Writable Surfaces
 
@@ -359,5 +357,5 @@ For reconnection configuration and behavior details, see [Reconnection & Connect
 ## Read This Next
 
 1. [Common Patterns](patterns.md): structuring resource hierarchies and pagination with the auth model in place
-2. [Path References](paths.md): safe identity passing and how `path()` interacts with visibility checks
+2. [Identity and References](identity.md): safe identity passing and `ref()` behavior under auth boundaries
 3. [Production Guide](production.md): revocation, logging, and operational guardrails for auth-sensitive systems
