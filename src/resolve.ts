@@ -113,7 +113,7 @@ export function resolveData(
 /**
  * Resolve a `get` operation on a node.
  *
- * Handles three kinds of access through a single op:
+ * Handles four kinds of access through a single op:
  *   1. `@method` invocation — validated args, called as a function
  *   2. Own property read — no args, returns the data value
  *   3. Getter invocation — no args, walks prototype chain (stops before Object.prototype)

@@ -111,6 +111,11 @@ export function getEdges(
       meta.targetType = (
         meta.targetType as unknown as () => new (...args: any[]) => any
       )();
+      if (!(meta.targetType.prototype instanceof Node)) {
+        throw new Error(
+          `@edge thunk for "${meta.name}" did not return a Node subclass`,
+        );
+      }
     }
   }
   return edges;

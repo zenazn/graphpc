@@ -524,7 +524,7 @@ export function createClient<S extends ServerInstance<any>>(
       }
       // Evict cached descendant edges so subsequent traversals
       // re-resolve from the fresh node instead of reusing stale tokens.
-      for (const [edgeKey, _] of resolvedEdges) {
+      for (const edgeKey of resolvedEdges.keys()) {
         if (isDescendantPathKey(refPathKey, edgeKey)) {
           resolvedEdges.delete(edgeKey);
           const tok = pathToTokenSync.get(edgeKey);

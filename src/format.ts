@@ -88,13 +88,11 @@ function fmtSegment(
   const fmtArgs = args
     .map((a) => fmt(a, seen, reducers, reducerEntries))
     .join(", ");
-  return (
-    (IS_IDENT.test(name) ? "." : "[" + JSON.stringify(name) + "].") +
-    name +
-    "(" +
-    fmtArgs +
-    ")"
-  );
+  if (IS_IDENT.test(name)) {
+    return "." + name + "(" + fmtArgs + ")";
+  }
+  const quoted = JSON.stringify(name);
+  return "[" + quoted + "](" + fmtArgs + ")";
 }
 
 function fmt(

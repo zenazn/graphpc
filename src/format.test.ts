@@ -355,7 +355,7 @@ describe("formatPath", () => {
   });
 
   test("non-identifier call segment name", () => {
-    expect(formatPath([["weird-fn", 1]])).toBe('root["weird-fn"].weird-fn(1)');
+    expect(formatPath([["weird-fn", 1]])).toBe('root["weird-fn"](1)');
   });
 
   test("empty path", () => {
