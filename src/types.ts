@@ -11,11 +11,11 @@
  * - await on a stub → fetches data, returns data props + stubs
  */
 
-import type { OperationInfo, OperationResult } from "./hooks.ts";
-import type { Transport } from "./protocol.ts";
-import type { Reference } from "./ref.ts";
-import type { PathArg } from "./path-arg.ts";
-import type { SerializerOptions } from "./serialization.ts";
+import type { OperationInfo, OperationResult } from "./hooks";
+import type { Transport } from "./protocol";
+import type { Reference } from "./ref";
+import type { PathArg } from "./path-arg";
+import type { SerializerOptions } from "./serialization";
 
 // -- Timer abstraction --
 

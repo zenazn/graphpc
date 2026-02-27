@@ -9,10 +9,10 @@ import {
   EdgeNotFoundError,
   MethodNotFoundError,
   ConnectionLostError,
-} from "./errors.ts";
-import { Reference } from "./reference.ts";
-import { PathArg } from "./path-arg.ts";
-import type { PathSegments } from "./path.ts";
+} from "./errors";
+import { Reference } from "./reference";
+import { PathArg } from "./path-arg";
+import type { PathSegments } from "./path";
 
 export interface Serializer {
   stringify(value: unknown): string;

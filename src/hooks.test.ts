@@ -1,13 +1,13 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { createClient } from "./client.ts";
-import { getContext } from "./context.ts";
-import { edge, method } from "./decorators.ts";
-import type { OperationInfo, OperationResult } from "./hooks.ts";
-import { createMockTransportPair } from "./protocol.ts";
-import { createServer } from "./server.ts";
-import { flush, mockConnect } from "./test-utils.ts";
-import { Node } from "./types.ts";
+import { createClient } from "./client";
+import { getContext } from "./context";
+import { edge, method } from "./decorators";
+import type { OperationInfo, OperationResult } from "./hooks";
+import { createMockTransportPair } from "./protocol";
+import { createServer } from "./server";
+import { flush, mockConnect } from "./test-utils";
+import { Node } from "./types";
 
 // -- Test API --
 

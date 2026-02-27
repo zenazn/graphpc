@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, hidden } from "./decorators.ts";
+import { edge, hidden } from "./decorators";
 import {
   Reference,
   ref,
@@ -9,16 +9,16 @@ import {
   getRecordedPath,
   walkPath,
   pathTo,
-} from "./ref.ts";
-import { resolveData } from "./resolve.ts";
-import { EdgeNotFoundError } from "./errors.ts";
-import { canonicalPath, Node } from "./types.ts";
+} from "./ref";
+import { resolveData } from "./resolve";
+import { EdgeNotFoundError } from "./errors";
+import { canonicalPath, Node } from "./types";
 import {
   runWithSession,
   getNode,
   type Session,
   type CacheEntry,
-} from "./context.ts";
+} from "./context";
 
 class Tweet extends Node {
   id: string;

@@ -3,9 +3,9 @@
  * Walks @edge targetType recursively — no instance probing needed.
  */
 
-import { getEdges, isHidden } from "./decorators.ts";
-import type { Schema } from "./protocol.ts";
-import type { Context } from "./types.ts";
+import { getEdges, isHidden } from "./decorators";
+import type { Schema } from "./protocol";
+import type { Context } from "./types";
 
 type Constructor = new (...args: any[]) => any;
 

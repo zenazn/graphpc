@@ -17,21 +17,21 @@
  * disconnections. Pending operations are replayed on the new connection.
  */
 
-import { eventDataToString, parseServerMessage } from "./protocol.ts";
+import { eventDataToString, parseServerMessage } from "./protocol";
 import type {
   Transport,
   ClientMessage,
   ServerMessage,
   Schema,
   HelloMessage,
-} from "./protocol.ts";
+} from "./protocol";
 import {
   createSerializer,
   createClientSerializer,
   type Serializer,
-} from "./serialization.ts";
-import { RpcError, ConnectionLostError } from "./errors.ts";
-import { setErrorUuid } from "./error-uuid.ts";
+} from "./serialization";
+import { RpcError, ConnectionLostError } from "./errors";
+import { setErrorUuid } from "./error-uuid";
 import type {
   RpcStub,
   ClientOptions,
@@ -41,14 +41,14 @@ import type {
   RpcClient,
   ClientEvent,
   ClientEventMap,
-} from "./types.ts";
-import { formatPath, isDescendantPathKey } from "./format.ts";
-import type { PathSegments, PathSegment } from "./path.ts";
-import { createStub, createDataProxy, classifyPath } from "./proxy.ts";
-import type { ProxyBackend } from "./proxy.ts";
-import type { HydrationData } from "./ssr.ts";
-import { HydrationCache, validateHydrationData } from "./hydration.ts";
-import { ReconnectScheduler } from "./reconnect-scheduler.ts";
+} from "./types";
+import { formatPath, isDescendantPathKey } from "./format";
+import type { PathSegments, PathSegment } from "./path";
+import { createStub, createDataProxy, classifyPath } from "./proxy";
+import type { ProxyBackend } from "./proxy";
+import type { HydrationData } from "./ssr";
+import { HydrationCache, validateHydrationData } from "./hydration";
+import { ReconnectScheduler } from "./reconnect-scheduler";
 
 /** Internal sentinel — never exposed to callers. */
 class ReconnectingError extends Error {}

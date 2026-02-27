@@ -1,12 +1,12 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { createClient } from "./client.ts";
-import { edge, method } from "./decorators.ts";
-import { eventDataToString } from "./protocol.ts";
-import { createServer } from "./server.ts";
-import { flush, mockConnect } from "./test-utils.ts";
-import { Node } from "./types.ts";
-import type { WsLike } from "./types.ts";
+import { createClient } from "./client";
+import { edge, method } from "./decorators";
+import { eventDataToString } from "./protocol";
+import { createServer } from "./server";
+import { flush, mockConnect } from "./test-utils";
+import { Node } from "./types";
+import type { WsLike } from "./types";
 
 // -- Test API --
 
@@ -135,7 +135,7 @@ test("wsHandlers: message and response flow", async () => {
   ws.sent.shift();
 
   // Import serializer to create proper wire messages
-  const { createSerializer } = await import("./serialization.ts");
+  const { createSerializer } = await import("./serialization");
   const serializer = createSerializer();
 
   // Send a data request for root (token 0)
@@ -159,7 +159,7 @@ test("wsHandlers: handles ArrayBuffer messages", async () => {
   handlers.open(ws);
   ws.sent.shift(); // clear schema
 
-  const { createSerializer } = await import("./serialization.ts");
+  const { createSerializer } = await import("./serialization");
   const serializer = createSerializer();
 
   // Send message as ArrayBuffer (like Bun might deliver binary frames)
@@ -213,7 +213,7 @@ test("wsHandlers: multiple concurrent connections", async () => {
   expect(ws1.sent.length).toBe(1);
   expect(ws2.sent.length).toBe(1);
 
-  const { createSerializer } = await import("./serialization.ts");
+  const { createSerializer } = await import("./serialization");
   const serializer = createSerializer();
 
   // Send data request on ws1 only

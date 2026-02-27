@@ -1,15 +1,15 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, method } from "./decorators.ts";
-import { Node, canonicalPath, type RpcClient } from "./types.ts";
-import { ref, pathTo, type Reference } from "./ref.ts";
-import type { Path } from "./node-path.ts";
-import { createSSRClient } from "./ssr.ts";
-import { createSerializer } from "./serialization.ts";
-import { createServer } from "./server.ts";
-import { createClient } from "./client.ts";
-import { createMockTransportPair } from "./protocol.ts";
-import type { Transport } from "./protocol.ts";
+import { edge, method } from "./decorators";
+import { Node, canonicalPath, type RpcClient } from "./types";
+import { ref, pathTo, type Reference } from "./ref";
+import type { Path } from "./node-path";
+import { createSSRClient } from "./ssr";
+import { createSerializer } from "./serialization";
+import { createServer } from "./server";
+import { createClient } from "./client";
+import { createMockTransportPair } from "./protocol";
+import type { Transport } from "./protocol";
 
 // -- Test graph --
 
@@ -280,7 +280,7 @@ test("generateHydrationData includes schema", () => {
 
 // -- getContext() in SSR --
 
-import { getContext } from "./context.ts";
+import { getContext } from "./context";
 
 class AuthUser extends Node {
   constructor(public name: string) {
@@ -326,7 +326,7 @@ test("SSR: getContext() works inside method calls", async () => {
 
 // -- SSR @hidden visibility tests --
 
-import { hidden } from "./decorators.ts";
+import { hidden } from "./decorators";
 
 class AdminPanel extends Node {
   @method

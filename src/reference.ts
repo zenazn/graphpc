@@ -4,7 +4,7 @@
  * without pulling in the server-only AsyncLocalStorage dependency.
  */
 
-import type { PathSegments } from "./path.ts";
+import type { PathSegments } from "./path";
 
 export class Reference<T> {
   constructor(

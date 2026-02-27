@@ -2,9 +2,9 @@
  * Server-side resolution: navigate edges, invoke methods, extract data.
  */
 
-import { getEdges, getMethods, isHidden, validateArgs } from "./decorators.ts";
-import { EdgeNotFoundError, MethodNotFoundError } from "./errors.ts";
-import type { Context } from "./types.ts";
+import { getEdges, getMethods, isHidden, validateArgs } from "./decorators";
+import { EdgeNotFoundError, MethodNotFoundError } from "./errors";
+import type { Context } from "./types";
 
 const BLOCKED_NAMES = new Set(["constructor", "__proto__", "prototype"]);
 

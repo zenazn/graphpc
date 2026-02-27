@@ -5,7 +5,7 @@
  * On the server, `Path<T>` extends this class, so `instanceof PathArg` catches both.
  */
 
-import type { PathSegments } from "./path.ts";
+import type { PathSegments } from "./path";
 
 export class PathArg {
   constructor(readonly segments: PathSegments) {}

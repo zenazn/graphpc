@@ -5,8 +5,8 @@
  * that can be sent to the server as a method argument.
  */
 
-import { PathArg } from "./path-arg.ts";
-import { STUB_PATH } from "./proxy.ts";
+import { PathArg } from "./path-arg";
+import { STUB_PATH } from "./proxy";
 
 export function pathOf(stub: any): PathArg {
   const segments = stub?.[STUB_PATH];

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { parseClientMessage, parseServerMessage } from "./protocol.ts";
+import { parseClientMessage, parseServerMessage } from "./protocol";
 
 // ---------------------------------------------------------------------------
 // parseClientMessage

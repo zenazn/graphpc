@@ -6,26 +6,26 @@
  * Hydration is handled by createClient (see client.ts).
  */
 
-import { runWithSession, type Session, type CacheEntry } from "./context.ts";
-import { resolveEdge, resolveData, resolveGet } from "./resolve.ts";
-import { buildSchema } from "./schema.ts";
-import type { Schema } from "./protocol.ts";
+import { runWithSession, type Session, type CacheEntry } from "./context";
+import { resolveEdge, resolveData, resolveGet } from "./resolve";
+import { buildSchema } from "./schema";
+import type { Schema } from "./protocol";
 import type {
   Context,
   RpcClient,
   RpcStub,
   RootOf,
   ServerInstance,
-} from "./types.ts";
-import type { PathSegments } from "./path.ts";
-import { createStub, createDataProxy, classifyPath } from "./proxy.ts";
-import type { ProxyBackend } from "./proxy.ts";
-import { formatPath, formatValue } from "./format.ts";
+} from "./types";
+import type { PathSegments } from "./path";
+import { createStub, createDataProxy, classifyPath } from "./proxy";
+import type { ProxyBackend } from "./proxy";
+import { formatPath, formatValue } from "./format";
 import {
   createSerializer,
   createClientSerializer,
   type SerializerOptions,
-} from "./serialization.ts";
+} from "./serialization";
 
 interface SSRRef {
   parentToken: number;

@@ -1,20 +1,20 @@
 import { expect, test } from "bun:test";
 import { z } from "zod";
-import { createClient } from "./client.ts";
-import { abortSignal } from "./context.ts";
-import { edge, hidden, method } from "./decorators.ts";
-import { getErrorUuid } from "./error-uuid.ts";
-import { RpcError, ValidationError } from "./errors.ts";
-import { Path, path } from "./node-path.ts";
-import { PathArg } from "./path-arg.ts";
-import { pathOf } from "./path-of.ts";
-import { createMockTransportPair } from "./protocol.ts";
-import type { Transport } from "./protocol.ts";
-import { ref, Reference, pathTo } from "./ref.ts";
-import { createSerializer } from "./serialization.ts";
-import { createServer } from "./server.ts";
-import { fakeTimers, flush, mockConnect } from "./test-utils.ts";
-import { canonicalPath, Node } from "./types.ts";
+import { createClient } from "./client";
+import { abortSignal } from "./context";
+import { edge, hidden, method } from "./decorators";
+import { getErrorUuid } from "./error-uuid";
+import { RpcError, ValidationError } from "./errors";
+import { Path, path } from "./node-path";
+import { PathArg } from "./path-arg";
+import { pathOf } from "./path-of";
+import { createMockTransportPair } from "./protocol";
+import type { Transport } from "./protocol";
+import { ref, Reference, pathTo } from "./ref";
+import { createSerializer } from "./serialization";
+import { createServer } from "./server";
+import { fakeTimers, flush, mockConnect } from "./test-utils";
+import { canonicalPath, Node } from "./types";
 
 const serializer = createSerializer();
 

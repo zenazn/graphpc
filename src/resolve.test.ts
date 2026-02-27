@@ -1,13 +1,13 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, method, hidden } from "./decorators.ts";
-import { resolveEdge, resolveData, resolveGet } from "./resolve.ts";
+import { edge, method, hidden } from "./decorators";
+import { resolveEdge, resolveData, resolveGet } from "./resolve";
 import {
   EdgeNotFoundError,
   MethodNotFoundError,
   ValidationError,
-} from "./errors.ts";
-import { Node } from "./types.ts";
+} from "./errors";
+import { Node } from "./types";
 
 class User extends Node {
   name: string;

@@ -1,14 +1,14 @@
 import { test, expect } from "bun:test";
-import { edge, method } from "./decorators.ts";
-import { getContext, abortSignal, abortThisConn } from "./context.ts";
-import { createServer } from "./server.ts";
-import { createClient } from "./client.ts";
-import { createMockTransportPair } from "./protocol.ts";
-import { RpcError } from "./errors.ts";
-import type { Transport } from "./protocol.ts";
-import { Node } from "./types.ts";
-import type { ServerInstance } from "./types.ts";
-import { flush } from "./test-utils.ts";
+import { edge, method } from "./decorators";
+import { getContext, abortSignal, abortThisConn } from "./context";
+import { createServer } from "./server";
+import { createClient } from "./client";
+import { createMockTransportPair } from "./protocol";
+import { RpcError } from "./errors";
+import type { Transport } from "./protocol";
+import { Node } from "./types";
+import type { ServerInstance } from "./types";
+import { flush } from "./test-utils";
 
 test("context functions throw outside of a request", () => {
   expect(() => getContext()).toThrow(

@@ -5,8 +5,8 @@
  */
 
 import { stringify } from "devalue";
-import { formatPath, formatValue } from "./format.ts";
-import type { PathSegments } from "./path.ts";
+import { formatPath, formatValue } from "./format";
+import type { PathSegments } from "./path";
 
 function bench(name: string, fn: () => void, iterations = 100_000) {
   // Warmup

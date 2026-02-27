@@ -4,18 +4,18 @@
  */
 
 // Reference system (class + type guard only; ref() requires server context)
-export { Reference, isReference } from "./reference.ts";
+export { Reference, isReference } from "./reference";
 
 // Path references (PathArg + pathOf for client; Path type-only — no server deps)
-export type { Path } from "./node-path.ts";
-export { PathArg } from "./path-arg.ts";
-export { pathOf } from "./path-of.ts";
+export type { Path } from "./node-path";
+export { PathArg } from "./path-arg";
+export { pathOf } from "./path-of";
 
 // Path utilities
-export { type PathSegments, type PathSegment } from "./path.ts";
+export { type PathSegments, type PathSegment } from "./path";
 
 // Formatting
-export { formatPath, formatSegment, formatValue } from "./format.ts";
+export { formatPath, formatSegment, formatValue } from "./format";
 
 // Protocol types
 export type {
@@ -23,7 +23,7 @@ export type {
   TransportEventMap,
   ClientMessage,
   ServerMessage,
-} from "./protocol.ts";
+} from "./protocol";
 // Errors
 export {
   RpcError,
@@ -31,16 +31,16 @@ export {
   EdgeNotFoundError,
   MethodNotFoundError,
   ConnectionLostError,
-} from "./errors.ts";
+} from "./errors";
 
 // Error UUID
-export { getErrorUuid } from "./error-uuid.ts";
+export { getErrorUuid } from "./error-uuid";
 
 // Client
-export { createClient } from "./client.ts";
+export { createClient } from "./client";
 
 // SSR (types only — createSSRClient is server-only)
-export type { SSRClient, HydrationData } from "./ssr.ts";
+export type { SSRClient, HydrationData } from "./ssr";
 
 // Types
 export type {
@@ -53,4 +53,4 @@ export type {
   RpcClient,
   ClientEventMap,
   ClientEvent,
-} from "./types.ts";
+} from "./types";

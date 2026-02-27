@@ -1,6 +1,6 @@
 import { RuleTester } from "@typescript-eslint/rule-tester";
 import { describe, expect, test } from "bun:test";
-import { requireDecorator } from "./require-decorator.ts";
+import { requireDecorator } from "./require-decorator";
 
 // Wire RuleTester to bun:test
 RuleTester.afterAll = () => {};

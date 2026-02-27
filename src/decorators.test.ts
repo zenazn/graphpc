@@ -8,8 +8,8 @@ import {
   getMethods,
   getHidden,
   isHidden,
-} from "./decorators.ts";
-import { Node } from "./types.ts";
+} from "./decorators";
+import { Node } from "./types";
 
 class UsersStub extends Node {}
 
@@ -352,8 +352,8 @@ test("paramNames handles strings/templates with brackets in defaults", () => {
 
 // -- validateArgs excess arguments tests --
 
-import { validateArgs } from "./decorators.ts";
-import { ValidationError } from "./errors.ts";
+import { validateArgs } from "./decorators";
+import { ValidationError } from "./errors";
 
 test("validateArgs throws ValidationError when args exceed schemas", async () => {
   const schema = z.string();

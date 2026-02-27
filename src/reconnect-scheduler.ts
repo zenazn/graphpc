@@ -6,7 +6,7 @@
  * exponential backoff capped at maxDelay.
  */
 
-import { type Timers, defaultTimers } from "./types.ts";
+import { type Timers, defaultTimers } from "./types";
 
 interface ReconnectConfig {
   maxRetries: number;

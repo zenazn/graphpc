@@ -6,8 +6,8 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Schema } from "./protocol.ts";
-import type { Context } from "./types.ts";
+import type { Schema } from "./protocol";
+import type { Context } from "./types";
 
 export interface CacheEntry {
   promise: Promise<object> | null;

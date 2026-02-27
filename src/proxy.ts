@@ -7,10 +7,10 @@
  * SSR: walk real graph).
  */
 
-import { formatPath } from "./format.ts";
-import type { PathSegments } from "./path.ts";
-import type { Schema } from "./protocol.ts";
-import { RpcError } from "./errors.ts";
+import { formatPath } from "./format";
+import type { PathSegments } from "./path";
+import type { Schema } from "./protocol";
+import { RpcError } from "./errors";
 
 export const STUB_PATH: unique symbol = Symbol("graphpc.stubPath");
 

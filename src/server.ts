@@ -2,11 +2,11 @@
  * Server-side handler: token machine + message dispatch.
  */
 
-import { runWithSession, getNode, type CacheEntry } from "./context.ts";
-import { RpcError } from "./errors.ts";
-import { formatSegment } from "./format.ts";
-import type { OperationResult } from "./hooks.ts";
-import type { PathSegment } from "./path.ts";
+import { runWithSession, getNode, type CacheEntry } from "./context";
+import { RpcError } from "./errors";
+import { formatSegment } from "./format";
+import type { OperationResult } from "./hooks";
+import type { PathSegment } from "./path";
 import type {
   ClientMessage,
   DataResult,
@@ -14,11 +14,11 @@ import type {
   GetResult,
   ServerMessage,
   Transport,
-} from "./protocol.ts";
-import { eventDataToString, parseClientMessage } from "./protocol.ts";
-import { resolveData, resolveEdge, resolveGet } from "./resolve.ts";
-import { buildSchema } from "./schema.ts";
-import { createSerializer, type SerializerOptions } from "./serialization.ts";
+} from "./protocol";
+import { eventDataToString, parseClientMessage } from "./protocol";
+import { resolveData, resolveEdge, resolveGet } from "./resolve";
+import { buildSchema } from "./schema";
+import { createSerializer, type SerializerOptions } from "./serialization";
 import {
   type Timers,
   defaultTimers,
@@ -28,7 +28,7 @@ import {
   type ServerInstance,
   type WebSocketHandlers,
   type WsLike,
-} from "./types.ts";
+} from "./types";
 
 export interface ServerOptions extends SerializerOptions {
   idleTimeout?: number; // ms before closing idle connection

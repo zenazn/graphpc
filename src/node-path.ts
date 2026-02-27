@@ -7,12 +7,12 @@
  */
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
-import { PathArg } from "./path-arg.ts";
-import type { PathSegments } from "./path.ts";
-import { getSession, tryGetSession } from "./context.ts";
-import { walkPath } from "./ref.ts";
-import { ValidationError } from "./errors.ts";
-import { Node, type pathTag } from "./types.ts";
+import { PathArg } from "./path-arg";
+import type { PathSegments } from "./path";
+import { getSession, tryGetSession } from "./context";
+import { walkPath } from "./ref";
+import { ValidationError } from "./errors";
+import { Node, type pathTag } from "./types";
 
 const MAX_PATH_DEPTH = 64;
 

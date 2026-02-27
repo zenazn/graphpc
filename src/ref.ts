@@ -2,24 +2,24 @@
  * async ref(), recording proxy, and walkPath.
  */
 
-import { formatSegment, isDescendantPathKey } from "./format.ts";
-import type { PathSegments, PathSegment } from "./path.ts";
+import { formatSegment, isDescendantPathKey } from "./format";
+import type { PathSegments, PathSegment } from "./path";
 import {
   canonicalPath,
   Node,
   type CanonicalArgs,
   type Context,
-} from "./types.ts";
+} from "./types";
 import {
   getSession,
   getNode,
   invalidateEntry,
   type CacheEntry,
-} from "./context.ts";
-import { resolveEdge, resolveData } from "./resolve.ts";
-import { Reference } from "./reference.ts";
-import { Path } from "./node-path.ts";
-export { Reference, isReference } from "./reference.ts";
+} from "./context";
+import { resolveEdge, resolveData } from "./resolve";
+import { Reference } from "./reference";
+import { Path } from "./node-path";
+export { Reference, isReference } from "./reference";
 
 const RECORDED_PATH = Symbol("graphpc.recordedPath");
 

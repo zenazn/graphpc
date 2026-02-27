@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { classifyPath } from "./proxy.ts";
-import type { Schema } from "./protocol.ts";
+import { classifyPath } from "./proxy";
+import type { Schema } from "./protocol";
 
 // Schema: Root --child--> Child (no edges on Child)
 const schema: Schema = [

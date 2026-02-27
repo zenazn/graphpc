@@ -7,11 +7,11 @@
  * after the last lookup's microtask resolves.
  */
 
-import { formatPath, formatValue } from "./format.ts";
-import type { Schema } from "./protocol.ts";
-import type { PathSegments, PathSegment } from "./path.ts";
-import type { HydrationData } from "./ssr.ts";
-import { type Timers, defaultTimers } from "./types.ts";
+import { formatPath, formatValue } from "./format";
+import type { Schema } from "./protocol";
+import type { PathSegments, PathSegment } from "./path";
+import type { HydrationData } from "./ssr";
+import { type Timers, defaultTimers } from "./types";
 
 type Reducers = Record<string, (value: unknown) => false | unknown[]>;
 

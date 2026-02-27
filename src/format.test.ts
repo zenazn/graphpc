@@ -4,7 +4,7 @@ import {
   formatPath,
   formatSegment,
   isDescendantPathKey,
-} from "./format.ts";
+} from "./format";
 
 // -- Primitives --
 

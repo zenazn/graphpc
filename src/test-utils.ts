@@ -6,15 +6,15 @@
  * boundary) is enough to drain all pending microtasks.
  */
 
-import type { Transport } from "./protocol.ts";
-import { createMockTransportPair } from "./protocol.ts";
+import type { Transport } from "./protocol";
+import { createMockTransportPair } from "./protocol";
 import type {
   RpcClient,
   ClientEvent,
   Context,
   ServerInstance,
   Timers,
-} from "./types.ts";
+} from "./types";
 
 export interface FakeTimers extends Timers {
   /** Number of pending timers. */

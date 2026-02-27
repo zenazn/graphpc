@@ -1,14 +1,14 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, method } from "./decorators.ts";
-import { createServer } from "./server.ts";
-import { createClient } from "./client.ts";
-import { createMockTransportPair } from "./protocol.ts";
-import { createSerializer } from "./serialization.ts";
-import { RpcError, ConnectionLostError } from "./errors.ts";
-import { Node } from "./types.ts";
-import type { Transport } from "./protocol.ts";
-import { flush, waitForEvent } from "./test-utils.ts";
+import { edge, method } from "./decorators";
+import { createServer } from "./server";
+import { createClient } from "./client";
+import { createMockTransportPair } from "./protocol";
+import { createSerializer } from "./serialization";
+import { RpcError, ConnectionLostError } from "./errors";
+import { Node } from "./types";
+import type { Transport } from "./protocol";
+import { flush, waitForEvent } from "./test-utils";
 
 /** Yields to the microtask queue so deferred .then() calls can fire. */
 const tick = () => Promise.resolve();

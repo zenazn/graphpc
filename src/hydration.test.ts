@@ -1,8 +1,8 @@
 import { test, expect } from "bun:test";
-import { HydrationCache, validateHydrationData } from "./hydration.ts";
-import { formatPath } from "./format.ts";
-import type { HydrationData } from "./ssr.ts";
-import { fakeTimers } from "./test-utils.ts";
+import { HydrationCache, validateHydrationData } from "./hydration";
+import { formatPath } from "./format";
+import type { HydrationData } from "./ssr";
+import { fakeTimers } from "./test-utils";
 
 function makeCache(opts?: { timeout?: number; timers?: any }) {
   return new HydrationCache({

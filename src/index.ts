@@ -1,21 +1,21 @@
 // Decorators
-export { edge, method, hidden } from "./decorators.ts";
-export type { HiddenPredicate } from "./decorators.ts";
+export { edge, method, hidden } from "./decorators";
+export type { HiddenPredicate } from "./decorators";
 
 // Reference system
-export { Reference, isReference } from "./reference.ts";
-export { ref, pathTo } from "./ref.ts";
+export { Reference, isReference } from "./reference";
+export { ref, pathTo } from "./ref";
 
 // Path references
-export { Path, path } from "./node-path.ts";
-export { PathArg } from "./path-arg.ts";
-export { pathOf } from "./path-of.ts";
+export { Path, path } from "./node-path";
+export { PathArg } from "./path-arg";
+export { pathOf } from "./path-of";
 
 // Path utilities
-export { type PathSegments, type PathSegment } from "./path.ts";
+export { type PathSegments, type PathSegment } from "./path";
 
 // Formatting
-export { formatPath, formatSegment, formatValue } from "./format.ts";
+export { formatPath, formatSegment, formatValue } from "./format";
 
 // Protocol types
 export type {
@@ -23,11 +23,11 @@ export type {
   TransportEventMap,
   ClientMessage,
   ServerMessage,
-} from "./protocol.ts";
-export { createMockTransportPair } from "./protocol.ts";
+} from "./protocol";
+export { createMockTransportPair } from "./protocol";
 
 // Test utilities
-export { mockConnect } from "./test-utils.ts";
+export { mockConnect } from "./test-utils";
 
 // Errors
 export {
@@ -36,27 +36,27 @@ export {
   EdgeNotFoundError,
   MethodNotFoundError,
   ConnectionLostError,
-} from "./errors.ts";
+} from "./errors";
 
 // Context
-export { getContext, abortThisConn, abortSignal } from "./context.ts";
+export { getContext, abortThisConn, abortSignal } from "./context";
 
 // Error UUID
-export { getErrorUuid } from "./error-uuid.ts";
+export { getErrorUuid } from "./error-uuid";
 
 // Hooks
-export type { OperationInfo, OperationResult } from "./hooks.ts";
+export type { OperationInfo, OperationResult } from "./hooks";
 
 // Server
-export { createServer } from "./server.ts";
-export type { ServerOptions } from "./server.ts";
+export { createServer } from "./server";
+export type { ServerOptions } from "./server";
 
 // Client
-export { createClient } from "./client.ts";
+export { createClient } from "./client";
 
 // SSR
-export { createSSRClient } from "./ssr.ts";
-export type { SSRClient, HydrationData } from "./ssr.ts";
+export { createSSRClient } from "./ssr";
+export type { SSRClient, HydrationData } from "./ssr";
 
 // Types
 export type {
@@ -78,5 +78,5 @@ export type {
   OperationErrorInfo,
   ServerEventMap,
   ServerEvent,
-} from "./types.ts";
-export { Node, nodeTag, canonicalPath, pathTag } from "./types.ts";
+} from "./types";
+export { Node, nodeTag, canonicalPath, pathTag } from "./types";

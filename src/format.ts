@@ -8,7 +8,7 @@
  * Supports the same `reducers` interface as devalue's `stringify()`.
  */
 
-import type { PathSegments, PathSegment } from "./path.ts";
+import type { PathSegments, PathSegment } from "./path";
 
 type Reducers = Record<string, (value: unknown) => false | unknown[]>;
 

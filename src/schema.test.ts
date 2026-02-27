@@ -1,8 +1,8 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, method, hidden } from "./decorators.ts";
-import { buildSchema } from "./schema.ts";
-import { Node } from "./types.ts";
+import { edge, method, hidden } from "./decorators";
+import { buildSchema } from "./schema";
+import { Node } from "./types";
 
 class Post extends Node {
   title = "Hello";

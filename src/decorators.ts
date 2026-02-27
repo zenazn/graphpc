@@ -10,9 +10,9 @@
  */
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
-import type { Context } from "./types.ts";
-import { Node } from "./types.ts";
-import { ValidationError } from "./errors.ts";
+import type { Context } from "./types";
+import { Node } from "./types";
+import { ValidationError } from "./errors";
 
 export interface EdgeMeta {
   name: string;

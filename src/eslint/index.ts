@@ -10,7 +10,7 @@
  *   export default [graphpc.configs.recommended];
  */
 
-import { requireDecorator } from "./require-decorator.ts";
+import { requireDecorator } from "./require-decorator";
 
 const plugin = {
   meta: {

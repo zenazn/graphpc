@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { ReconnectScheduler } from "./reconnect-scheduler.ts";
-import { fakeTimers } from "./test-utils.ts";
+import { ReconnectScheduler } from "./reconnect-scheduler";
+import { fakeTimers } from "./test-utils";
 
 const defaultConfig = {
   maxRetries: 5,

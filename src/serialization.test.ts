@@ -1,12 +1,12 @@
 import { test, expect } from "bun:test";
-import { createSerializer } from "./serialization.ts";
+import { createSerializer } from "./serialization";
 import {
   RpcError,
   ValidationError,
   EdgeNotFoundError,
   ConnectionLostError,
-} from "./errors.ts";
-import { Reference } from "./ref.ts";
+} from "./errors";
+import { Reference } from "./ref";
 
 test("roundtrip arrays and objects", () => {
   const s = createSerializer();

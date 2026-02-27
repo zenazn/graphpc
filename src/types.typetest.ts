@@ -6,12 +6,12 @@
  * @ts-expect-error directives as errors, so each one doubles as a negative assertion.
  */
 
-import type { Reference } from "./ref.ts";
-import { ref } from "./ref.ts";
-import type { Path } from "./node-path.ts";
-import type { PathArg } from "./path-arg.ts";
-import type { RpcStub, RpcDataOf } from "./types.ts";
-import { Node, canonicalPath } from "./types.ts";
+import type { Reference } from "./ref";
+import { ref } from "./ref";
+import type { Path } from "./node-path";
+import type { PathArg } from "./path-arg";
+import type { RpcStub, RpcDataOf } from "./types";
+import { Node, canonicalPath } from "./types";
 
 // ---------------------------------------------------------------------------
 // Test graph (type-only — no runtime code)
