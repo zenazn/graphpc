@@ -3,8 +3,9 @@ import { HydrationCache, validateHydrationData } from "./hydration";
 import { formatPath } from "./format";
 import type { HydrationData } from "./ssr";
 import { fakeTimers } from "./test-utils";
+import type { Timers } from "./types";
 
-function makeCache(opts?: { timeout?: number; timers?: any }) {
+function makeCache(opts?: { timeout?: number; timers?: Timers }) {
   return new HydrationCache({
     timeout: opts?.timeout ?? 1000,
     ...opts,
@@ -44,7 +45,10 @@ test("activate + data lookup hit", () => {
   const key = formatPath(["posts", ["get", "1"]]);
   const result = cache.lookup(key, null);
   expect(result.hit).toBe(true);
-  expect((result as any).value).toEqual({ id: "1", title: "Hello" });
+  expect((result as { value: unknown }).value).toEqual({
+    id: "1",
+    title: "Hello",
+  });
 });
 
 test("activate + method call lookup hit", () => {
@@ -55,7 +59,7 @@ test("activate + method call lookup hit", () => {
   const key = formatPath(["posts"]);
   const result = cache.lookup(key, { name: "count", args: [] });
   expect(result.hit).toBe(true);
-  expect((result as any).value).toBe(42);
+  expect((result as { value: unknown }).value).toBe(42);
 });
 
 test("lookup returns { hit: false } for data cache miss", () => {
@@ -76,7 +80,7 @@ test("property read hits data cache when no call entry exists", () => {
   const key = formatPath(["posts", ["get", "1"]]);
   const result = cache.lookup(key, { name: "title", args: [] });
   expect(result.hit).toBe(true);
-  expect((result as any).value).toBe("Hello");
+  expect((result as { value: unknown }).value).toBe("Hello");
 });
 
 test("property read from data cache misses for absent properties", () => {
@@ -146,8 +150,12 @@ test("multiple lookups don't consume entries", () => {
   expect(r1.hit).toBe(true);
   expect(r2.hit).toBe(true);
   expect(r3.hit).toBe(true);
-  expect((r1 as any).value).toEqual((r2 as any).value);
-  expect((r2 as any).value).toEqual((r3 as any).value);
+  expect((r1 as { value: unknown }).value).toEqual(
+    (r2 as { value: unknown }).value,
+  );
+  expect((r2 as { value: unknown }).value).toEqual(
+    (r3 as { value: unknown }).value,
+  );
 });
 
 test("inactivity timer starts after last lookup's microtask resolves", async () => {
@@ -260,7 +268,7 @@ test("root path lookup (edgePath=[]) works", () => {
   const key = formatPath([]);
   const result = cache.lookup(key, null);
   expect(result.hit).toBe(true);
-  expect((result as any).value).toEqual({ name: "root" });
+  expect((result as { value: unknown }).value).toEqual({ name: "root" });
 });
 
 // --- Regression tests: rich types in cache keys ---
@@ -295,7 +303,7 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
   });
   const hitKey = formatPath([["lookup", new Map([["a", 1]])]]);
   expect(cache2.lookup(hitKey, null).hit).toBe(true);
-  expect((cache2.lookup(hitKey, null) as any).value).toEqual({
+  expect((cache2.lookup(hitKey, null) as { value: unknown }).value).toEqual({
     result: "map-hit",
   });
   expect(
@@ -325,7 +333,7 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
     args: [new Date("2024-06-15"), new Map([["x", 10]])],
   });
   expect(result.hit).toBe(true);
-  expect((result as any).value).toBe("rich-result");
+  expect((result as { value: unknown }).value).toBe("rich-result");
   expect(
     cache3.lookup(pathKey, {
       name: "query",
@@ -350,7 +358,7 @@ test("method call cached with undefined result is a hit, not a miss", () => {
   const key = formatPath(["svc"]);
   const result = cache.lookup(key, { name: "doSomething", args: [] });
   expect(result.hit).toBe(true);
-  expect((result as any).value).toBeUndefined();
+  expect((result as { value: unknown }).value).toBeUndefined();
 });
 
 // --- validateHydrationData ---

@@ -56,6 +56,9 @@ export type { ServerOptions } from "./server";
 // Client
 export { createClient, invalidate, evict, subscribe } from "./client";
 
+// Observable stubs
+export { toObservable, toStub } from "./observable";
+
 // SSR
 export { createSSRClient } from "./ssr";
 export type { SSRClient, HydrationData } from "./ssr";
@@ -64,6 +67,7 @@ export type { SSRClient, HydrationData } from "./ssr";
 export type {
   Timers,
   RpcStub,
+  RpcObservable,
   RpcStream,
   RpcDataOf,
   ClientOptions,

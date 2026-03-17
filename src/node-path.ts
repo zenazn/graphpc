@@ -33,7 +33,7 @@ export class Path<T extends Node> extends PathArg implements PromiseLike<T> {
 
   then<R1 = T, R2 = never>(
     onfulfilled?: ((v: T) => R1 | PromiseLike<R1>) | null,
-    onrejected?: ((e: any) => R2 | PromiseLike<R2>) | null,
+    onrejected?: ((e: unknown) => R2 | PromiseLike<R2>) | null,
   ): Promise<R1 | R2> {
     this.#resolved ??= this.#walk();
     return this.#resolved.then(onfulfilled, onrejected);

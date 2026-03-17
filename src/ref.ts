@@ -76,11 +76,11 @@ export async function ref<
   },
 >(cls: T, ...args: CanonicalArgs<T>): Promise<Reference<InstanceType<T>>> {
   // 1. Capture path via recording proxy
-  if (typeof (cls as any)[canonicalPath] !== "function") {
+  if (typeof cls[canonicalPath] !== "function") {
     throw new Error(`Class ${cls.name} does not have a [canonicalPath] method`);
   }
   const proxy = createRecordingProxy();
-  const result = (cls as any)[canonicalPath](proxy, ...args);
+  const result = cls[canonicalPath](proxy, ...args);
   const path = getRecordedPath(result);
 
   if (!path) {
@@ -168,8 +168,13 @@ export function createRecordingProxy(basePath: PathSegments = []): any {
   return makeProxy(basePath);
 }
 
-export function getRecordedPath(proxy: any): PathSegments | undefined {
-  return proxy?.[RECORDED_PATH];
+export function getRecordedPath(proxy: unknown): PathSegments | undefined {
+  if (
+    proxy == null ||
+    (typeof proxy !== "object" && typeof proxy !== "function")
+  )
+    return undefined;
+  return (proxy as { [RECORDED_PATH]?: PathSegments })[RECORDED_PATH];
 }
 
 /**
@@ -208,11 +213,11 @@ export function pathTo<
     new (...args: any[]): Node;
   },
 >(cls: T, ...args: CanonicalArgs<T>): Path<InstanceType<T>> {
-  if (typeof (cls as any)[canonicalPath] !== "function") {
+  if (typeof cls[canonicalPath] !== "function") {
     throw new Error(`Class ${cls.name} does not have a [canonicalPath] method`);
   }
   const proxy = createRecordingProxy();
-  const result = (cls as any)[canonicalPath](proxy, ...args);
+  const result = cls[canonicalPath](proxy, ...args);
   const segments = getRecordedPath(result);
 
   if (!segments) {

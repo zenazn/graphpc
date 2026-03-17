@@ -3,7 +3,7 @@ import { z } from "zod";
 import { edge, method } from "./decorators";
 import { eventDataToString } from "./protocol";
 import { createServer } from "./server";
-import { flush } from "./test-utils";
+import { flush, type WireMessage } from "./test-utils";
 import { Node } from "./types";
 import type { WsLike } from "./types";
 
@@ -125,7 +125,7 @@ test("wsHandlers: message and response flow", async () => {
 
   // Should have received a data response
   expect(ws.sent.length).toBe(1);
-  const response = serializer.parse(ws.sent[0]!) as any;
+  const response = serializer.parse(ws.sent[0]!) as WireMessage;
   expect(response.op).toBe("data");
   expect(response.re).toBe(1);
 
@@ -150,7 +150,7 @@ test("wsHandlers: handles ArrayBuffer messages", async () => {
   await flush();
 
   expect(ws.sent.length).toBe(1);
-  const response = serializer.parse(ws.sent[0]!) as any;
+  const response = serializer.parse(ws.sent[0]!) as WireMessage;
   expect(response.op).toBe("data");
 });
 

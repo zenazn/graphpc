@@ -51,13 +51,18 @@ export interface StreamCancelMessage {
   sid: number; // stream ID (negative integer)
 }
 
+export interface PongMessage {
+  op: "pong";
+}
+
 export type ClientMessage =
   | EdgeMessage
   | GetMessage
   | DataMessage
   | StreamStartMessage
   | StreamCreditMessage
-  | StreamCancelMessage;
+  | StreamCancelMessage
+  | PongMessage;
 
 // -- Server → Client messages --
 //
@@ -153,6 +158,10 @@ export interface StreamEndMessage {
   errorId?: string;
 }
 
+export interface PingMessage {
+  op: "ping";
+}
+
 export type ServerMessage =
   | EdgeResult
   | GetResult
@@ -160,7 +169,8 @@ export type ServerMessage =
   | HelloMessage
   | StreamStartResult
   | StreamDataMessage
-  | StreamEndMessage;
+  | StreamEndMessage
+  | PingMessage;
 
 // -- Message validation --
 
@@ -336,6 +346,15 @@ export function parseClientMessage(value: unknown): ClientMessage {
       return value as unknown as StreamCancelMessage;
     }
 
+    case "pong": {
+      if (!hasExactKeys(value, ["op"], [])) {
+        throw new Error(
+          `Invalid "pong" message keys: ${JSON.stringify(Object.keys(value))}`,
+        );
+      }
+      return value as unknown as PongMessage;
+    }
+
     default:
       throw new Error(`Unknown client message op: ${JSON.stringify(value.op)}`);
   }
@@ -362,6 +381,7 @@ export function parseServerMessage(value: unknown): ServerMessage {
     case "stream_start":
     case "stream_data":
     case "stream_end":
+    case "ping":
       return msg as unknown as ServerMessage;
     default:
       throw new Error(`Unknown server message op: ${JSON.stringify(msg.op)}`);
@@ -393,7 +413,7 @@ export interface Transport {
 export function eventDataToString(data: unknown): string {
   return typeof data === "string"
     ? data
-    : new TextDecoder().decode(data as any);
+    : new TextDecoder().decode(data as ArrayBufferLike);
 }
 
 /** Test-only mock transport pair. Messages are delivered asynchronously via queueMicrotask. Buffers messages sent before any 'message' listener is registered. close() fires 'close' listeners synchronously on both sides. */
@@ -433,8 +453,8 @@ export function createMockTransportPair(): [Transport, Transport] {
           for (const listener of listeners[s].close) listener({});
         }
       },
-      addEventListener(type: string, listener: any) {
-        (listeners[side] as any)[type].add(listener);
+      addEventListener(type: string, listener: Function) {
+        listeners[side][type as keyof TransportEventMap].add(listener as never);
         // Flush buffered messages on first 'message' listener
         if (type === "message" && buffers[side].length > 0) {
           const msgs = buffers[side].splice(0);
@@ -443,8 +463,10 @@ export function createMockTransportPair(): [Transport, Transport] {
           }
         }
       },
-      removeEventListener(type: string, listener: any) {
-        (listeners[side] as any)[type].delete(listener);
+      removeEventListener(type: string, listener: Function) {
+        listeners[side][type as keyof TransportEventMap].delete(
+          listener as never,
+        );
       },
     };
     return transport;

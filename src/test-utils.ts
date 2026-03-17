@@ -16,6 +16,9 @@ import type {
   Timers,
 } from "./types";
 
+/** Loosely-typed wire message for test assertions. */
+export type WireMessage = { op: string; [key: string]: unknown };
+
 export interface FakeTimers extends Timers {
   /** Number of pending timers. */
   pending(): number;

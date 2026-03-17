@@ -41,6 +41,9 @@ export { getErrorUuid } from "./error-uuid";
 // Client
 export { createClient, invalidate, evict, subscribe } from "./client";
 
+// Observable stubs
+export { toObservable, toStub } from "./observable";
+
 // SSR (types only — createSSRClient is server-only)
 export type { SSRClient, HydrationData } from "./ssr";
 
@@ -48,6 +51,7 @@ export type { SSRClient, HydrationData } from "./ssr";
 export type {
   Timers,
   RpcStub,
+  RpcObservable,
   RpcStream,
   RpcDataOf,
   ClientOptions,

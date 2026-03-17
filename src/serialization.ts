@@ -40,22 +40,39 @@ const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   NodePath: (v) => v instanceof PathArg && [v.segments],
 };
 
-const builtinRevivers: Record<string, (value: any) => unknown> = {
-  ResolvedRef: ([path, data]: [PathSegments, Record<string, unknown>]) =>
-    new Reference(path, data),
-  RpcError: ([code, message]: [string, string]) => new RpcError(code, message),
-  ValidationError: ([issues]: [any[]]) => new ValidationError(issues),
-  EdgeNotFoundError: ([edge]: [string]) => new EdgeNotFoundError(edge),
-  MethodNotFoundError: ([method]: [string]) => new MethodNotFoundError(method),
+const builtinRevivers: Record<string, (value: unknown) => unknown> = {
+  ResolvedRef: (v) => {
+    const [path, data] = v as [PathSegments, Record<string, unknown>];
+    return new Reference(path, data);
+  },
+  RpcError: (v) => {
+    const [code, message] = v as [string, string];
+    return new RpcError(code, message);
+  },
+  ValidationError: (v) => {
+    const [issues] = v as [{ message: string; path?: PropertyKey[] }[]];
+    return new ValidationError(issues);
+  },
+  EdgeNotFoundError: (v) => {
+    const [edge] = v as [string];
+    return new EdgeNotFoundError(edge);
+  },
+  MethodNotFoundError: (v) => {
+    const [method] = v as [string];
+    return new MethodNotFoundError(method);
+  },
   ConnectionLostError: () => new ConnectionLostError(),
   TokenExpiredError: () => new TokenExpiredError(),
   StreamLimitExceededError: () => new StreamLimitExceededError(),
-  NodePath: ([segments]: [PathSegments]) => new PathArg(segments),
+  NodePath: (v) => {
+    const [segments] = v as [PathSegments];
+    return new PathArg(segments);
+  },
 };
 
 function buildSerializer(
   reducers: Record<string, (value: unknown) => false | unknown[]>,
-  revivers: Record<string, (value: any) => unknown>,
+  revivers: Record<string, (value: unknown) => unknown>,
 ) {
   return {
     stringify(value: unknown): string {

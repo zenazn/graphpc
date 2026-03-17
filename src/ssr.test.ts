@@ -12,6 +12,13 @@ import { fakeTimers, flush } from "./test-utils";
 import { createMockTransportPair } from "./protocol";
 import type { Transport } from "./protocol";
 
+/** Parsed hydration data shape for test assertions. */
+type HydrationWire = {
+  schema: { edges: Record<string, number>; streams: string[] }[];
+  refs: unknown[][];
+  data: unknown[][];
+};
+
 // -- Test graph --
 
 class Comment extends Node {
@@ -115,7 +122,9 @@ test("SSR tracking proxy records getter edge traversal", async () => {
   // Await to trigger data fetch
   await postsProxy;
 
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
 
   // Should have one ref for the "posts" edge
   expect(data.refs.length).toBe(1);
@@ -136,7 +145,9 @@ test("SSR tracking proxy records method edge traversal with args", async () => {
   expect(postData.id).toBe("1");
   expect(postData.title).toBe("Hello World");
 
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
 
   // Should have refs for posts (getter) and get("1") (method with arg)
   expect(data.refs.length).toBe(2);
@@ -150,13 +161,15 @@ test("SSR tracking proxy records method calls", async () => {
   const count = await client.root.posts.count();
   expect(count).toBe(2);
 
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
 
   // Should have one ref for "posts" edge, and one call entry for "count"
   expect(data.refs.length).toBe(1);
 
   // Data should contain the call entry: [token, method, args, result]
-  const callEntries = data.data.filter((d: any) => d.length === 4);
+  const callEntries = data.data.filter((d) => d.length === 4);
   expect(callEntries.length).toBe(1);
   expect(callEntries[0]![0]).toBe(1); // token 1 (posts)
   expect(callEntries[0]![1]).toBe("count");
@@ -172,9 +185,11 @@ test("SSR tracking proxy deduplicates data, calls, and edge refs", async () => {
   await client.root.posts;
   await client.root.posts;
 
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
   expect(data.refs.length).toBe(1);
-  const dataOnly = data.data.filter((d: any) => d.length === 2);
+  const dataOnly = data.data.filter((d) => d.length === 2);
   expect(dataOnly.length).toBe(1);
 
   // Call the same method multiple times → one call entry
@@ -183,8 +198,8 @@ test("SSR tracking proxy deduplicates data, calls, and edge refs", async () => {
   await client2.root.posts.count();
   const data2 = createSerializer().parse(
     client2.generateHydrationData(),
-  ) as any;
-  const callEntries = data2.data.filter((d: any) => d.length === 4);
+  ) as HydrationWire;
+  const callEntries = data2.data.filter((d) => d.length === 4);
   expect(callEntries.length).toBe(1);
 
   // Navigate same edge twice → one ref
@@ -195,7 +210,7 @@ test("SSR tracking proxy deduplicates data, calls, and edge refs", async () => {
   await p2;
   const data3 = createSerializer().parse(
     client3.generateHydrationData(),
-  ) as any;
+  ) as HydrationWire;
   expect(data3.refs.length).toBe(1);
 });
 
@@ -207,7 +222,9 @@ test("SSR tracking proxy records deep traversals", async () => {
   expect(comment.id).toBe("c1");
   expect(comment.text).toBe("Great post!");
 
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
 
   // Should have 4 refs: posts, get("1"), comments, get("c1")
   expect(data.refs.length).toBe(4);
@@ -269,7 +286,9 @@ test("SSR: method returning paths produces navigable stubs", async () => {
 
 test("generateHydrationData includes schema", () => {
   const client = createSSRClient<typeof gpc>(new Api(), {});
-  const data = createSerializer().parse(client.generateHydrationData()) as any;
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
 
   // Schema should be a non-empty array
   expect(Array.isArray(data.schema)).toBe(true);
@@ -293,8 +312,9 @@ class AuthApi extends Node {
   @edge(AuthUser)
   get me(): AuthUser {
     const ctx = getContext();
-    if (!(ctx as any).userId) throw new Error("Unauthorized");
-    return new AuthUser((ctx as any).userId);
+    if (!(ctx as Record<string, unknown>).userId)
+      throw new Error("Unauthorized");
+    return new AuthUser((ctx as { userId: string }).userId);
   }
 }
 
@@ -313,7 +333,7 @@ test("SSR: getContext() works inside method calls", async () => {
     @method
     async whoami(): Promise<string> {
       const ctx = getContext();
-      return (ctx as any).userId ?? "anonymous";
+      return (ctx as { userId?: string }).userId ?? "anonymous";
     }
   }
 
@@ -342,13 +362,13 @@ class HiddenApi extends Node {
     return new PostsService();
   }
 
-  @hidden((ctx: any) => !ctx.isAdmin)
+  @hidden((ctx) => !(ctx as Record<string, boolean>).isAdmin)
   @edge(AdminPanel)
   get admin(): AdminPanel {
     return new AdminPanel();
   }
 
-  @hidden((ctx: any) => !ctx.isAdmin)
+  @hidden((ctx) => !(ctx as Record<string, boolean>).isAdmin)
   secretProp = "top-secret";
 }
 
@@ -382,8 +402,8 @@ test("SSR @hidden: hidden edge rejected during SSR traversal", async () => {
   try {
     await client.root.admin.secretData();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err.message).toContain("admin");
+  } catch (err: unknown) {
+    expect((err as Error).message).toContain("admin");
   }
 });
 

@@ -70,7 +70,13 @@ See also: [Caching and Invalidation](caching.md)
 
 ### Subscribe
 
-A reactive subscription to a stub's cached data, following the Svelte store contract. Call `subscribe(stub, callback)` to receive updates when data changes; returns an unsubscribe function.
+A reactive subscription to a stub's cached data. Call `subscribe(stub, callback)` to receive updates when data changes; returns an unsubscribe function.
+
+See also: [Caching and Invalidation](caching.md)
+
+### Observable
+
+An observable stub created by `toObservable(stub)`. Adds `.subscribe()` (Svelte store contract) and `Symbol.observable` (RxJS/TC39 interop). Child navigation propagates the observable wrapper. Convert back with `toStub()`.
 
 See also: [Caching and Invalidation](caching.md)
 

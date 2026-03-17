@@ -15,7 +15,6 @@ import type { RpcStream } from "./types";
 
 export const STUB_PATH: unique symbol = Symbol("graphpc.stubPath");
 export const STUB_BACKEND: unique symbol = Symbol("graphpc.stubBackend");
-export const STUB_SUBSCRIBE: unique symbol = Symbol("graphpc.stubSubscribe");
 
 export interface ProxyBackend {
   resolve(path: PathSegments): Promise<unknown>;
@@ -110,10 +109,10 @@ export function classifyPath(
 }
 
 export function createStub(backend: ProxyBackend, path: PathSegments): any {
-  const edgeCache = new Map<string, any>();
+  const edgeCache = new Map<string, object>();
   // For stubs that represent stream calls on cold clients, lazily create
   // the underlying RpcStream and forward resume/cancel/asyncIterator to it.
-  let lazyStream: any = null;
+  let lazyStream: RpcStream<unknown> | null = null;
   function getLazyStream() {
     if (lazyStream) return lazyStream;
     const lastSeg = path[path.length - 1];
@@ -132,12 +131,6 @@ export function createStub(backend: ProxyBackend, path: PathSegments): any {
     get(_target, prop) {
       if (prop === STUB_PATH) return path;
       if (prop === STUB_BACKEND) return backend;
-      if (prop === STUB_SUBSCRIBE) {
-        if (!backend.subscribe) return undefined;
-        return (callback: () => void) => {
-          return backend.subscribe!(path, callback);
-        };
-      }
       if (prop === "then") {
         return (
           onFulfilled?: (v: any) => any,
@@ -161,12 +154,11 @@ export function createStub(backend: ProxyBackend, path: PathSegments): any {
       }
       if (typeof prop === "symbol") return undefined;
       const propName = String(prop);
-      let cached = edgeCache.get(propName);
-      if (cached === undefined) {
-        cached = createEdgeAccessor(backend, path, propName);
-        edgeCache.set(propName, cached);
-      }
-      return cached;
+      const cached = edgeCache.get(propName);
+      if (cached !== undefined) return cached;
+      const accessor = createEdgeAccessor(backend, path, propName);
+      edgeCache.set(propName, accessor);
+      return accessor;
     },
     set(_target, prop, value) {
       // Forward resume assignment to lazy stream
@@ -189,25 +181,24 @@ export function createEdgeAccessor(
   name: string,
 ): any {
   const getterPath: PathSegments = [...parentPath, name];
-  let childStub: any = null;
+  let childStub: object | null = null;
   function getChild() {
     return (childStub ??= createStub(backend, getterPath));
   }
 
-  const callCache = new Map<string, any>();
+  const callCache = new Map<string, object>();
 
   function callable(...args: unknown[]) {
     if (backend.isStream?.(name, parentPath)) {
       return backend.openStream!(parentPath, name, args);
     }
     const key = args.map((a) => formatValue(a)).join(",");
-    let cached = callCache.get(key);
-    if (!cached) {
-      const callPath: PathSegments = [...parentPath, [name, ...args]];
-      cached = createStub(backend, callPath);
-      callCache.set(key, cached);
-    }
-    return cached;
+    const cached = callCache.get(key);
+    if (cached) return cached;
+    const callPath: PathSegments = [...parentPath, [name, ...args]];
+    const stub = createStub(backend, callPath);
+    callCache.set(key, stub);
+    return stub;
   }
 
   return new Proxy(callable, {
@@ -232,12 +223,6 @@ export function createDataProxy(
     get(target, prop) {
       if (prop === STUB_PATH) return path;
       if (prop === STUB_BACKEND) return backend;
-      if (prop === STUB_SUBSCRIBE) {
-        if (!backend.subscribe) return undefined;
-        return (callback: () => void) => {
-          return backend.subscribe!(path, callback);
-        };
-      }
       if (typeof prop === "symbol") return undefined;
       if (Object.hasOwn(target, prop)) return target[prop];
       // Prevent infinite thenable loop — resolved data is not a promise

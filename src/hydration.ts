@@ -26,9 +26,9 @@ export function validateHydrationData(value: unknown): HydrationData {
   if (
     value == null ||
     typeof value !== "object" ||
-    !Array.isArray((value as any).refs) ||
-    !Array.isArray((value as any).data) ||
-    !Array.isArray((value as any).schema)
+    !Array.isArray((value as Record<string, unknown>).refs) ||
+    !Array.isArray((value as Record<string, unknown>).data) ||
+    !Array.isArray((value as Record<string, unknown>).schema)
   ) {
     throw new TypeError(
       `Expected hydration data with refs, data, and schema arrays, got ${typeof value}`,

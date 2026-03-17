@@ -27,7 +27,7 @@ export async function resolveEdge(
     throw new EdgeNotFoundError(edgeName);
   }
 
-  const cls = parent.constructor as new (...args: any[]) => any;
+  const cls = parent.constructor as new (...args: any[]) => object;
 
   if (isHidden(cls, edgeName, ctx)) {
     throw new EdgeNotFoundError(edgeName);
@@ -60,7 +60,7 @@ export async function resolveEdge(
   }
 
   // Method edge: call with validated args
-  const fn = (parent as any)[edgeName];
+  const fn = (parent as Record<string, unknown>)[edgeName];
   if (typeof fn !== "function") {
     throw new EdgeNotFoundError(edgeName);
   }
@@ -78,7 +78,7 @@ export function resolveData(
   node: object,
   ctx: Context,
 ): Record<string, unknown> {
-  const cls = node.constructor as new (...args: any[]) => any;
+  const cls = node.constructor as new (...args: any[]) => object;
   const edges = getEdges(cls);
   const methods = getMethods(cls);
   const streams = getStreams(cls);
@@ -88,7 +88,7 @@ export function resolveData(
   for (const key of Object.keys(node)) {
     if (BLOCKED_NAMES.has(key)) continue;
     if (isHidden(cls, key, ctx)) continue;
-    const value = (node as any)[key];
+    const value = (node as Record<string, unknown>)[key];
     if (typeof value === "function") continue;
     data[key] = value;
   }
@@ -147,7 +147,7 @@ export async function resolveGet(
     throw new MethodNotFoundError(name);
   }
 
-  const cls = node.constructor as new (...args: any[]) => any;
+  const cls = node.constructor as new (...args: any[]) => object;
 
   // 2. Hidden check
   if (isHidden(cls, name, ctx)) {
@@ -170,7 +170,7 @@ export async function resolveGet(
       args,
       meta.paramNames,
     );
-    const fn = (node as any)[name];
+    const fn = (node as Record<string, unknown>)[name];
     if (typeof fn !== "function") {
       throw new MethodNotFoundError(name);
     }
@@ -184,7 +184,7 @@ export async function resolveGet(
 
   // 6. Own property check
   if (Object.hasOwn(node, name)) {
-    const value = (node as any)[name];
+    const value = (node as Record<string, unknown>)[name];
     if (typeof value === "function") {
       throw new MethodNotFoundError(name);
     }
@@ -234,7 +234,7 @@ export async function resolveStream(
     throw new MethodNotFoundError(name);
   }
 
-  const cls = node.constructor as new (...args: any[]) => any;
+  const cls = node.constructor as new (...args: any[]) => object;
 
   if (isHidden(cls, name, ctx)) {
     throw new MethodNotFoundError(name);
@@ -249,7 +249,7 @@ export async function resolveStream(
 
   const validatedArgs = await validateArgs(meta.schemas, args, meta.paramNames);
 
-  const fn = (node as any)[name];
+  const fn = (node as Record<string, unknown>)[name];
   if (typeof fn !== "function") {
     throw new MethodNotFoundError(name);
   }

@@ -13,7 +13,7 @@
  *   each token's birth count and replays paths on TOKEN_EXPIRED.
  * - Invalidation: path-based invalidation marks cache entries stale and
  *   notifies subscribers.
- * - Reactivity: subscribe() satisfies the Svelte store contract.
+ * - Reactivity: subscribe() for framework-agnostic reactivity.
  * - Streams: server-push via async iteration with credit-based backpressure.
  */
 
@@ -62,8 +62,8 @@ import { ReconnectScheduler } from "./reconnect-scheduler";
 class ReconnectingError extends Error {}
 
 interface PendingTerminal {
-  resolve: (v: any) => void;
-  reject: (e: any) => void;
+  resolve: (v: unknown) => void;
+  reject: (e: unknown) => void;
   path: PathSegments;
 }
 
@@ -77,8 +77,10 @@ const backendEvictors = new WeakMap<
   (path: PathSegments) => void
 >();
 
-function getBackend(stub: any): ProxyBackend | undefined {
-  return stub?.[STUB_BACKEND];
+function getBackend(stub: unknown): ProxyBackend | undefined {
+  if (stub == null || (typeof stub !== "object" && typeof stub !== "function"))
+    return undefined;
+  return (stub as { [STUB_BACKEND]?: ProxyBackend })[STUB_BACKEND];
 }
 
 /**
@@ -86,8 +88,12 @@ function getBackend(stub: any): ProxyBackend | undefined {
  * Marks all cache entries at that path and below as stale,
  * and notifies subscribers on the path, all descendants, and all ancestors up to root.
  */
-export function invalidate(stub: any): void {
-  const path: PathSegments | undefined = stub?.[STUB_PATH];
+export function invalidate(stub: unknown): void {
+  if (stub == null || (typeof stub !== "object" && typeof stub !== "function"))
+    return;
+  const path: PathSegments | undefined = (
+    stub as { [STUB_PATH]?: PathSegments }
+  )[STUB_PATH];
   if (!path) return;
   const backend = getBackend(stub);
   if (!backend) return;
@@ -99,8 +105,12 @@ export function invalidate(stub: any): void {
  * Evict a path from the client cache.
  * Drops proxy instances, cached data, and subscriptions for the path and its entire subtree.
  */
-export function evict(stub: any): void {
-  const path: PathSegments | undefined = stub?.[STUB_PATH];
+export function evict(stub: unknown): void {
+  if (stub == null || (typeof stub !== "object" && typeof stub !== "function"))
+    return;
+  const path: PathSegments | undefined = (
+    stub as { [STUB_PATH]?: PathSegments }
+  )[STUB_PATH];
   if (!path) return;
   const backend = getBackend(stub);
   if (!backend) return;
@@ -110,14 +120,23 @@ export function evict(stub: any): void {
 
 /**
  * Subscribe to a path for reactivity.
- * Satisfies the Svelte store contract: calls callback synchronously with current value (the stub),
+ * Calls callback synchronously with current value (the stub),
  * then again on invalidation. Returns an unsubscribe function.
  */
 export function subscribe(
-  stub: any,
-  callback: (value: any) => void,
+  stub: unknown,
+  callback: (value: unknown) => void,
 ): () => void {
-  const path: PathSegments | undefined = stub?.[STUB_PATH];
+  if (
+    stub == null ||
+    (typeof stub !== "object" && typeof stub !== "function")
+  ) {
+    callback(stub);
+    return () => {};
+  }
+  const path: PathSegments | undefined = (
+    stub as { [STUB_PATH]?: PathSegments }
+  )[STUB_PATH];
   if (!path) {
     callback(stub);
     return () => {};
@@ -127,9 +146,7 @@ export function subscribe(
     callback(stub);
     return () => {};
   }
-  // Svelte store contract: synchronous initial call with the stub
   callback(stub);
-  // Register for invalidation notifications — callback with the SAME stub
   return backend.subscribe(path, () => callback(stub));
 }
 
@@ -185,7 +202,7 @@ export function createClient<S extends ServerInstance<any>>(
   // --- Persistent cache (survives reconnects) ---
   // These caches are NEVER reset on reconnect — that's the key difference from v1.
   let liveDataCache = new Map<string, Record<string, unknown>>(); // pathKey → data
-  let dataProxyCache = new Map<string, any>(); // pathKey → data proxy (referential identity)
+  let dataProxyCache = new Map<string, object>(); // pathKey → data proxy (referential identity)
   let getCache = new Map<string, Promise<unknown>>(); // pathKey:name → promise
   let dataLoadCache = new Map<string, Promise<unknown>>(); // pathKey → promise
 
@@ -198,7 +215,7 @@ export function createClient<S extends ServerInstance<any>>(
   let nextMessageId = 1;
   let pending = new Map<
     number,
-    { resolve: (v: any) => void; reject: (e: any) => void }
+    { resolve: (v: unknown) => void; reject: (e: unknown) => void }
   >();
   let pathToTokenSync = new Map<string, number>();
   pathToTokenSync.set(emptyPathKey, 0);
@@ -376,7 +393,7 @@ export function createClient<S extends ServerInstance<any>>(
     lastGrantSize: number; // size of the most recent credit grant
     pending: {
       resolve: (v: IteratorResult<unknown>) => void;
-      reject: (e: any) => void;
+      reject: (e: unknown) => void;
     } | null;
     buffer: unknown[];
     done: boolean;
@@ -401,6 +418,14 @@ export function createClient<S extends ServerInstance<any>>(
         } catch {}
         return;
       }
+      // Respond to server ping — liveness check, not app traffic
+      if (msg.op === "ping") {
+        try {
+          t.send(serializer.stringify({ op: "pong" }));
+        } catch {}
+        return;
+      }
+
       if (msg.op === "hello") {
         const hello = msg as HelloMessage;
         schema = hello.schema;
@@ -463,7 +488,7 @@ export function createClient<S extends ServerInstance<any>>(
         if (!handler) return;
         pending.delete(msg.re);
         if ("error" in msg) {
-          const errorId = (msg as any).errorId as string | undefined;
+          const errorId = (msg as { errorId?: string }).errorId;
           if (errorId) setErrorUuid(msg.error, errorId);
           // Also fail the stream state
           const streamState = pendingStreamStarts.get(msg.re);
@@ -507,13 +532,13 @@ export function createClient<S extends ServerInstance<any>>(
       pending.delete(msg.re as number);
 
       if ("error" in msg) {
-        const errorId = (msg as any).errorId as string | undefined;
+        const errorId = (msg as { errorId?: string }).errorId;
         if (errorId) setErrorUuid(msg.error, errorId);
         handler.reject(msg.error);
       } else if (msg.op === "edge") {
         handler.resolve(msg);
       } else {
-        handler.resolve((msg as any).data);
+        handler.resolve((msg as { data: unknown }).data);
       }
     });
 
@@ -878,11 +903,13 @@ export function createClient<S extends ServerInstance<any>>(
         // Data load
         const cached = liveDataCache.get(edgeKey);
         if (cached) {
-          let proxy = dataProxyCache.get(edgeKey);
-          if (!proxy) {
-            proxy = createDataProxy(backend, edgePath, cached);
-            dataProxyCache.set(edgeKey, proxy);
-          }
+          const proxy =
+            dataProxyCache.get(edgeKey) ??
+            (() => {
+              const p = createDataProxy(backend, edgePath, cached);
+              dataProxyCache.set(edgeKey, p);
+              return p;
+            })();
           return proxy;
         }
 
@@ -895,9 +922,10 @@ export function createClient<S extends ServerInstance<any>>(
         const promise = new Promise((resolve, reject) => {
           rejectPending = reject;
           pending.set(msgId, {
-            resolve: (data: any) => {
-              liveDataCache.set(edgeKey, data);
-              const proxy = createDataProxy(backend, edgePath, data);
+            resolve: (data: unknown) => {
+              const record = data as Record<string, unknown>;
+              liveDataCache.set(edgeKey, record);
+              const proxy = createDataProxy(backend, edgePath, record);
               dataProxyCache.set(edgeKey, proxy);
               resolve(proxy);
             },
@@ -989,15 +1017,17 @@ export function createClient<S extends ServerInstance<any>>(
                 result.value as Record<string, unknown>,
               );
             }
-            let proxy = dataProxyCache.get(edgePathKey);
-            if (!proxy) {
-              proxy = createDataProxy(
-                backend,
-                edgePath,
-                result.value as Record<string, unknown>,
-              );
-              dataProxyCache.set(edgePathKey, proxy);
-            }
+            const proxy =
+              dataProxyCache.get(edgePathKey) ??
+              (() => {
+                const p = createDataProxy(
+                  backend,
+                  edgePath,
+                  result.value as Record<string, unknown>,
+                );
+                dataProxyCache.set(edgePathKey, p);
+                return p;
+              })();
             return Promise.resolve(proxy);
           }
         }

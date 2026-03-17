@@ -110,6 +110,11 @@ describe("parseClientMessage", () => {
       const msg = parseClientMessage({ op: "get", tok: 0, name: "" });
       expect(msg).toEqual({ op: "get", tok: 0, name: "" });
     });
+
+    it("accepts pong", () => {
+      const msg = parseClientMessage({ op: "pong" });
+      expect(msg).toEqual({ op: "pong" });
+    });
   });
 
   describe("rejects non-object inputs", () => {
@@ -211,6 +216,12 @@ describe("parseClientMessage", () => {
       expect(() =>
         parseClientMessage({ op: "data", tok: 0, foo: "bar" }),
       ).toThrow('Invalid "data" message keys');
+    });
+
+    it("pong: extra key", () => {
+      expect(() => parseClientMessage({ op: "pong", extra: 1 })).toThrow(
+        'Invalid "pong" message keys',
+      );
     });
   });
 
@@ -406,7 +417,7 @@ describe("parseServerMessage", () => {
         error: "limit exceeded",
       });
       expect(msg.op).toBe("stream_start");
-      expect((msg as any).error).toBe("limit exceeded");
+      expect((msg as { error?: unknown }).error).toBe("limit exceeded");
     });
 
     it("accepts stream_data", () => {
@@ -416,7 +427,7 @@ describe("parseServerMessage", () => {
         data: { value: 42 },
       });
       expect(msg.op).toBe("stream_data");
-      expect((msg as any).data).toEqual({ value: 42 });
+      expect((msg as { data?: unknown }).data).toEqual({ value: 42 });
     });
 
     it("accepts stream_end without error", () => {
@@ -431,7 +442,12 @@ describe("parseServerMessage", () => {
         error: "boom",
       });
       expect(msg.op).toBe("stream_end");
-      expect((msg as any).error).toBe("boom");
+      expect((msg as { error?: unknown }).error).toBe("boom");
+    });
+
+    it("accepts ping", () => {
+      const msg = parseServerMessage({ op: "ping" });
+      expect(msg).toEqual({ op: "ping" });
     });
   });
 

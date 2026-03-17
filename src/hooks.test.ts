@@ -365,8 +365,8 @@ test("off('operation') removes handler from future operations", async () => {
 
   const server = createServer({}, () => new Api());
   const handler = async (
-    _ctx: any,
-    _info: any,
+    _ctx: unknown,
+    _info: unknown,
     execute: () => Promise<OperationResult>,
   ) => {
     calls.push("handler");
@@ -453,7 +453,7 @@ test("getContext() works in deeply nested edge traversals", async () => {
   class CtxLeaf extends Node {
     @method
     async check(): Promise<string> {
-      return (getContext() as any).deep;
+      return (getContext() as { deep: string }).deep;
     }
   }
 
@@ -485,7 +485,7 @@ test("getContext() survives across await boundary", async () => {
     @method
     async delayedWhoAmI(): Promise<string> {
       await new Promise((r) => setTimeout(r, 10));
-      return (getContext() as any).userId;
+      return (getContext() as { userId: string }).userId;
     }
   }
 

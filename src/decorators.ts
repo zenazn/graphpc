@@ -17,7 +17,7 @@ import { ValidationError } from "./errors";
 export interface EdgeMeta {
   name: string;
   kind: "getter" | "method";
-  targetType: new (...args: any[]) => any;
+  targetType: new (...args: any[]) => object;
   schemas: StandardSchemaV1[];
   paramNames: string[];
 }
@@ -76,7 +76,9 @@ const collectCache = new WeakMap<object, ClassMeta>();
  * Child entries take precedence over parent entries with the same name.
  */
 function collect(cls: Function): ClassMeta {
-  const metadata = (cls as any)[METADATA] as object | undefined;
+  const metadata = (cls as unknown as Record<symbol, object | undefined>)[
+    METADATA
+  ];
   if (!metadata)
     return {
       edges: new Map(),
@@ -119,14 +121,14 @@ function collect(cls: Function): ClassMeta {
 }
 
 export function getEdges(
-  cls: new (...args: any[]) => any,
+  cls: new (...args: any[]) => object,
 ): Map<string, EdgeMeta> {
   const edges = collect(cls).edges;
   // Resolve any lazy target references (thunks from @edge(() => Class))
   for (const meta of edges.values()) {
     if (!(meta.targetType.prototype instanceof Node)) {
       meta.targetType = (
-        meta.targetType as unknown as () => new (...args: any[]) => any
+        meta.targetType as unknown as () => new (...args: any[]) => object
       )();
       if (!(meta.targetType.prototype instanceof Node)) {
         throw new Error(
@@ -139,13 +141,13 @@ export function getEdges(
 }
 
 export function getMethods(
-  cls: new (...args: any[]) => any,
+  cls: new (...args: any[]) => object,
 ): Map<string, MethodMeta> {
   return collect(cls).methods;
 }
 
 export function getStreams(
-  cls: new (...args: any[]) => any,
+  cls: new (...args: any[]) => object,
 ): Map<string, StreamMeta> {
   return collect(cls).streams;
 }
@@ -316,7 +318,7 @@ function isStandardSchema(v: unknown): v is StandardSchemaV1 {
     typeof v === "object" &&
     v !== null &&
     "~standard" in v &&
-    typeof (v as any)["~standard"] === "object"
+    typeof (v as Record<string, unknown>)["~standard"] === "object"
   );
 }
 
@@ -334,8 +336,10 @@ function isStandardSchema(v: unknown): v is StandardSchemaV1 {
  *   @edge(() => TreeNode) get children(): TreeNode[] { ... }
  */
 export function edge(
-  target: (new (...args: any[]) => any) | (() => new (...args: any[]) => any),
-  ...rest: any[]
+  target:
+    | (new (...args: any[]) => object)
+    | (() => new (...args: any[]) => object),
+  ...rest: unknown[]
 ): any {
   if (typeof target !== "function" || isStandardSchema(target)) {
     throw new Error("@edge requires a target class as the first argument");
@@ -361,7 +365,7 @@ export function edge(
     getOrCreateMeta(context.metadata).edges.set(name, {
       name,
       kind: isGetter ? "getter" : "method",
-      targetType: target as new (...args: any[]) => any,
+      targetType: target as new (...args: any[]) => object,
       schemas,
       paramNames,
     });
@@ -416,13 +420,13 @@ export function method(...args: any[]): any {
 export type HiddenPredicate = (this: void, ctx: Context) => boolean;
 
 export function getHidden(
-  cls: new (...args: any[]) => any,
+  cls: new (...args: any[]) => object,
 ): Map<string, HiddenPredicate> {
   return collect(cls).hidden;
 }
 
 export function isHidden(
-  cls: new (...args: any[]) => any,
+  cls: new (...args: any[]) => object,
   propertyName: string,
   ctx: Context,
 ): boolean {

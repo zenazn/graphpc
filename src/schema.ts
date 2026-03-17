@@ -7,7 +7,7 @@ import { getEdges, getStreams, isHidden } from "./decorators";
 import type { Schema } from "./protocol";
 import type { Context } from "./types";
 
-type Constructor = new (...args: any[]) => any;
+type Constructor = new (...args: any[]) => object;
 
 export interface SchemaResult {
   schema: Schema;

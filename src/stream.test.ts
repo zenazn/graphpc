@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { z } from "zod";
 import { edge, stream, getStreams } from "./decorators";
-import { createMockTransportPair } from "./protocol";
+import { createMockTransportPair, type Transport } from "./protocol";
 import { buildSchema } from "./schema";
 import { createSerializer } from "./serialization";
 import { createServer } from "./server";
-import { flush } from "./test-utils";
+import { flush, type WireMessage } from "./test-utils";
 import { Node } from "./types";
 
 const serializer = createSerializer();
@@ -94,21 +94,21 @@ test("basic stream: yields values and completes", async () => {
   );
   await flush();
 
-  const messages = received.map((r) => serializer.parse(r) as any);
+  const messages = received.map((r) => serializer.parse(r) as WireMessage);
 
   // First message: stream_start success
-  const startMsg = messages.find((m: any) => m.op === "stream_start");
+  const startMsg = messages.find((m) => m.op === "stream_start")!;
   expect(startMsg).toBeDefined();
   expect(startMsg.error).toBeUndefined();
   expect(startMsg.sid).toBeLessThan(0);
 
   // Data messages
-  const dataMessages = messages.filter((m: any) => m.op === "stream_data");
+  const dataMessages = messages.filter((m) => m.op === "stream_data");
   expect(dataMessages.length).toBe(3);
-  expect(dataMessages.map((m: any) => m.data)).toEqual([0, 1, 2]);
+  expect(dataMessages.map((m) => m.data)).toEqual([0, 1, 2]);
 
   // End message
-  const endMsg = messages.find((m: any) => m.op === "stream_end");
+  const endMsg = messages.find((m) => m.op === "stream_end")!;
   expect(endMsg).toBeDefined();
   expect(endMsg.error).toBeUndefined();
 });
@@ -129,8 +129,8 @@ test("stream cancellation: cancel() stops the server generator", async () => {
   await flush();
 
   const startMsg = received
-    .map((r) => serializer.parse(r) as any)
-    .find((m: any) => m.op === "stream_start");
+    .map((r) => serializer.parse(r) as WireMessage)
+    .find((m) => m.op === "stream_start")!;
   expect(startMsg).toBeDefined();
   expect(startMsg.error).toBeUndefined();
   const sid = startMsg.sid;
@@ -144,14 +144,14 @@ test("stream cancellation: cancel() stops the server generator", async () => {
 
   // After cancel, no more data should arrive
   const countBefore = received.filter(
-    (r) => (serializer.parse(r) as any).op === "stream_data",
+    (r) => (serializer.parse(r) as WireMessage).op === "stream_data",
   ).length;
 
   await flush();
   await flush();
 
   const countAfter = received.filter(
-    (r) => (serializer.parse(r) as any).op === "stream_data",
+    (r) => (serializer.parse(r) as WireMessage).op === "stream_data",
   ).length;
   expect(countAfter).toBe(countBefore);
 });
@@ -173,8 +173,8 @@ test("stream limit exceeded returns STREAM_LIMIT_EXCEEDED", async () => {
   await flush();
 
   const firstStart = received
-    .map((r) => serializer.parse(r) as any)
-    .find((m: any) => m.op === "stream_start");
+    .map((r) => serializer.parse(r) as WireMessage)
+    .find((m) => m.op === "stream_start")!;
   expect(firstStart).toBeDefined();
   expect(firstStart.error).toBeUndefined();
 
@@ -191,13 +191,13 @@ test("stream limit exceeded returns STREAM_LIMIT_EXCEEDED", async () => {
   await flush();
 
   const allStarts = received
-    .map((r) => serializer.parse(r) as any)
-    .filter((m: any) => m.op === "stream_start");
+    .map((r) => serializer.parse(r) as WireMessage)
+    .filter((m) => m.op === "stream_start");
   expect(allStarts.length).toBe(2);
 
-  const secondStart = allStarts[1];
+  const secondStart = allStarts[1]!;
   expect(secondStart.error).toBeDefined();
-  expect(secondStart.error.code).toBe("STREAM_LIMIT_EXCEEDED");
+  expect((secondStart.error as WireMessage).code).toBe("STREAM_LIMIT_EXCEEDED");
 });
 
 test("@stream decorator stores metadata", () => {
@@ -244,20 +244,20 @@ test("stream end on error: generator throw propagates to client", async () => {
   );
   await flush();
 
-  const messages = received.map((r) => serializer.parse(r) as any);
+  const messages = received.map((r) => serializer.parse(r) as WireMessage);
 
   // Should get stream_start success
-  const startMsg = messages.find((m: any) => m.op === "stream_start");
+  const startMsg = messages.find((m) => m.op === "stream_start")!;
   expect(startMsg).toBeDefined();
   expect(startMsg.error).toBeUndefined();
 
   // Should get one data message (yield 1)
-  const dataMessages = messages.filter((m: any) => m.op === "stream_data");
+  const dataMessages = messages.filter((m) => m.op === "stream_data");
   expect(dataMessages.length).toBe(1);
-  expect(dataMessages[0].data).toBe(1);
+  expect(dataMessages[0]!.data).toBe(1);
 
   // Should get stream_end with error
-  const endMsg = messages.find((m: any) => m.op === "stream_end");
+  const endMsg = messages.find((m) => m.op === "stream_end")!;
   expect(endMsg).toBeDefined();
   expect(endMsg.error).toBeDefined();
 });
@@ -272,7 +272,7 @@ test("pumpStream does not produce unhandled rejection when transport.send throws
 
   // Wrap server transport so send() throws after we trigger it
   let failSend = false;
-  const serverTransport: any = {
+  const serverTransport: Transport = {
     send(data: string) {
       if (failSend) throw new Error("transport send failed");
       rawServer.send(data);
@@ -280,8 +280,11 @@ test("pumpStream does not produce unhandled rejection when transport.send throws
     close() {
       rawServer.close();
     },
-    addEventListener(type: string, listener: any) {
-      rawServer.addEventListener(type as any, listener);
+    addEventListener(type, listener) {
+      rawServer.addEventListener(type, listener);
+    },
+    removeEventListener(type, listener) {
+      rawServer.removeEventListener(type, listener);
     },
   };
 
@@ -310,8 +313,8 @@ test("pumpStream does not produce unhandled rejection when transport.send throws
   await flush();
 
   const startMsg = received
-    .map((r) => serializer.parse(r) as any)
-    .find((m: any) => m.op === "stream_start");
+    .map((r) => serializer.parse(r) as WireMessage)
+    .find((m) => m.op === "stream_start")!;
   expect(startMsg).toBeDefined();
   const sid = startMsg.sid;
 

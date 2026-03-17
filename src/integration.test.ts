@@ -13,8 +13,8 @@ import type { Transport } from "./protocol";
 import { ref, Reference, pathTo } from "./ref";
 import { createSerializer } from "./serialization";
 import { createServer } from "./server";
-import { fakeTimers, flush, mockConnect } from "./test-utils";
-import { canonicalPath, Node } from "./types";
+import { fakeTimers, flush, mockConnect, type WireMessage } from "./test-utils";
+import { canonicalPath, Node, type OperationErrorInfo } from "./types";
 
 const serializer = createSerializer();
 
@@ -139,15 +139,17 @@ function createSyncTransportPair(): [Transport, Transport] {
           for (const listener of listeners[s].close) listener({});
         }
       },
-      addEventListener(type: string, listener: any) {
-        (listeners[side] as any)[type].add(listener);
+      addEventListener(type: string, listener: Function) {
+        (listeners[side] as Record<string, Set<Function>>)[type]!.add(listener);
         if (type === "message" && buffers[side].length > 0) {
           const msgs = buffers[side].splice(0);
-          for (const msg of msgs) listener({ data: msg });
+          for (const msg of msgs) (listener as Listener)({ data: msg });
         }
       },
-      removeEventListener(type: string, listener: any) {
-        (listeners[side] as any)[type].delete(listener);
+      removeEventListener(type: string, listener: Function) {
+        (listeners[side] as Record<string, Set<Function>>)[type]!.delete(
+          listener,
+        );
       },
     };
     return transport;
@@ -254,17 +256,19 @@ test("non-RpcError wraps with error code (method → GET_ERROR, getter edge → 
   try {
     await client.root.fail();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("GET_ERROR");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("GET_ERROR");
   }
 
   try {
     await client.root.boom;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("EDGE_ERROR");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("EDGE_ERROR");
   }
 });
 
@@ -275,10 +279,11 @@ test("error propagation for missing edges", async () => {
     // Navigate to a post that doesn't exist
     await client.root.posts.get("999");
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("EDGE_ERROR");
-    expect(err.message).toContain("Post 999 not found");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("EDGE_ERROR");
+    expect(e.message).toContain("Post 999 not found");
   }
 });
 
@@ -292,9 +297,10 @@ test("operation middleware throwing yields INTERNAL_ERROR", async () => {
   try {
     await client.root.posts;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("INTERNAL_ERROR");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("INTERNAL_ERROR");
   }
 });
 
@@ -311,9 +317,10 @@ test("edge middleware failure cannot be bypassed by descendant operations", asyn
   try {
     await client.root.posts.count();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("INTERNAL_ERROR");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("INTERNAL_ERROR");
   }
 });
 
@@ -337,13 +344,13 @@ class HiddenApi extends Node {
     return new UsersService();
   }
 
-  @hidden((ctx: any) => !ctx.isAdmin)
+  @hidden((ctx) => !(ctx as Record<string, boolean>).isAdmin)
   @edge(AdminPanel)
   get admin(): AdminPanel {
     return new AdminPanel();
   }
 
-  @hidden((ctx: any) => !ctx.isAdmin)
+  @hidden((ctx) => !(ctx as Record<string, boolean>).isAdmin)
   @method
   async adminMethod(): Promise<string> {
     return "admin-secret";
@@ -368,25 +375,28 @@ test("hidden edge: excluded from schema for non-admin, visible for admin", async
   // Non-admin: admin edge hidden from schema, rejected on access
   {
     const { client, received } = setupHidden({ isAdmin: false });
-    const schemaMsg = serializer.parse(received[0]!) as any;
-    expect(schemaMsg.schema[0].edges).toHaveProperty("posts");
-    expect(schemaMsg.schema[0].edges).toHaveProperty("users");
-    expect(schemaMsg.schema[0].edges).not.toHaveProperty("admin");
+    const schemaMsg = serializer.parse(received[0]!) as WireMessage;
+    const schema = schemaMsg.schema as Record<string, unknown>[];
+    expect(schema[0]!.edges).toHaveProperty("posts");
+    expect(schema[0]!.edges).toHaveProperty("users");
+    expect(schema[0]!.edges).not.toHaveProperty("admin");
 
     try {
       await client.root.admin.secretData();
       expect.unreachable("should have thrown");
-    } catch (err: any) {
-      expect(err).toBeInstanceOf(RpcError);
-      expect(err.code).toBe("INVALID_PATH");
+    } catch (err: unknown) {
+      const e = err as RpcError;
+      expect(e).toBeInstanceOf(RpcError);
+      expect(e.code).toBe("INVALID_PATH");
     }
   }
 
   // Admin: admin edge visible and accessible
   {
     const { client, received } = setupHidden({ isAdmin: true });
-    const schemaMsg = serializer.parse(received[0]!) as any;
-    expect(schemaMsg.schema[0].edges).toHaveProperty("admin");
+    const schemaMsg = serializer.parse(received[0]!) as WireMessage;
+    const schema = schemaMsg.schema as Record<string, unknown>[];
+    expect(schema[0]!.edges).toHaveProperty("admin");
 
     const result = await client.root.admin.secretData();
     expect(result).toBe("admin-only");
@@ -399,9 +409,10 @@ test("hidden method rejected for one context, works for another", async () => {
     const { client: nonAdminClient } = setupHidden({ isAdmin: false });
     await nonAdminClient.root.adminMethod();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("METHOD_NOT_FOUND");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("METHOD_NOT_FOUND");
   }
 
   // Admin: method visible
@@ -414,12 +425,12 @@ test("unreachable types omitted from schema entirely", async () => {
   const { received: nonAdminReceived } = setupHidden({ isAdmin: false });
   const { received: adminReceived } = setupHidden({ isAdmin: true });
 
-  const nonAdminSchema = serializer.parse(nonAdminReceived[0]!) as any;
-  const adminSchema = serializer.parse(adminReceived[0]!) as any;
+  const nonAdminSchema = serializer.parse(nonAdminReceived[0]!) as WireMessage;
+  const adminSchema = serializer.parse(adminReceived[0]!) as WireMessage;
 
   // Admin schema should have more types (includes AdminPanel)
-  expect(adminSchema.schema.length).toBeGreaterThan(
-    nonAdminSchema.schema.length,
+  expect((adminSchema.schema as unknown[]).length).toBeGreaterThan(
+    (nonAdminSchema.schema as unknown[]).length,
   );
 });
 
@@ -437,7 +448,7 @@ function setupWithTimeout(
     originalClose();
   };
   const server = createServer(
-    { idleTimeout, lruTTL: 0, timers },
+    { idleTimeout, lruTTL: 0, pingInterval: 0, timers },
     () => new Api(),
   );
   server.handle(serverTransport, {});
@@ -540,9 +551,11 @@ test("invalid token in wire message returns INVALID_TOKEN error", async () => {
 
   await flush();
 
-  const response = serializer.parse(received[0]!) as any;
+  const response = serializer.parse(received[0]!) as WireMessage;
   expect(response.error).toBeDefined();
-  expect(response.error.code).toBe("INVALID_TOKEN");
+  expect((response.error as Record<string, unknown>).code).toBe(
+    "INVALID_TOKEN",
+  );
 });
 
 test("invalid parent token in edge message returns INVALID_TOKEN error", async () => {
@@ -568,9 +581,11 @@ test("invalid parent token in edge message returns INVALID_TOKEN error", async (
 
   await flush();
 
-  const response = serializer.parse(received[0]!) as any;
+  const response = serializer.parse(received[0]!) as WireMessage;
   expect(response.error).toBeDefined();
-  expect(response.error.code).toBe("INVALID_TOKEN");
+  expect((response.error as Record<string, unknown>).code).toBe(
+    "INVALID_TOKEN",
+  );
 });
 
 // -- tokenWindow tests --
@@ -626,12 +641,14 @@ test("tokenWindow: expired token returns TOKEN_EXPIRED", async () => {
   await flush();
 
   const dataResults = received
-    .map((r) => serializer.parse(r) as any)
-    .filter((m: any) => m.op === "data");
-  const lastData = dataResults[dataResults.length - 1];
+    .map((r) => serializer.parse(r) as WireMessage)
+    .filter((m) => m.op === "data");
+  const lastData = dataResults[dataResults.length - 1]!;
 
   expect(lastData.error).toBeDefined();
-  expect(lastData.error.code).toBe("TOKEN_EXPIRED");
+  expect((lastData.error as Record<string, unknown>).code).toBe(
+    "TOKEN_EXPIRED",
+  );
 });
 
 test("tokenWindow: root token always valid regardless of window", async () => {
@@ -655,9 +672,9 @@ test("tokenWindow: root token always valid regardless of window", async () => {
   await flush();
 
   const dataResults = received
-    .map((r) => serializer.parse(r) as any)
-    .filter((m: any) => m.op === "data");
-  const lastData = dataResults[dataResults.length - 1];
+    .map((r) => serializer.parse(r) as WireMessage)
+    .filter((m) => m.op === "data");
+  const lastData = dataResults[dataResults.length - 1]!;
 
   expect(lastData.error).toBeUndefined();
   expect(lastData.data).toBeDefined();
@@ -934,20 +951,22 @@ test("poisoned token propagates to child edges and method calls", async () => {
   try {
     await (client as any).root.posts.get("999").comments;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("EDGE_ERROR");
-    expect(err.message).toContain("Post 999 not found");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("EDGE_ERROR");
+    expect(e.message).toContain("Post 999 not found");
   }
 
   // Method call on poisoned token
   try {
     await client.root.posts.get("999").updateTitle("new title");
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("EDGE_ERROR");
-    expect(err.message).toContain("Post 999 not found");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("EDGE_ERROR");
+    expect(e.message).toContain("Post 999 not found");
   }
 });
 
@@ -979,10 +998,11 @@ test("poisoned token propagates through multiple levels", async () => {
     // getChild("bad") fails → poisoned, then .leaf should also fail
     await client.root.getChild("bad").leaf;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("EDGE_ERROR");
-    expect(err.message).toContain("Not found");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("EDGE_ERROR");
+    expect(e.message).toContain("Not found");
   }
 });
 
@@ -1009,8 +1029,8 @@ test("transient edge failure retries on next attempt", async () => {
   try {
     await client.root.child;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err.code).toBe("TRANSIENT");
+  } catch (err: unknown) {
+    expect((err as RpcError).code).toBe("TRANSIENT");
   }
 
   shouldFail = false;
@@ -1025,11 +1045,11 @@ test("transient edge failure retries on next attempt", async () => {
 
 test("concurrent operations on the same edge path are deduplicated", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const edgeMessages: any[] = [];
+  const edgeMessages: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    const parsed = serializer.parse(data) as any;
+    const parsed = serializer.parse(data) as WireMessage;
     if (parsed.op === "edge") {
       edgeMessages.push(parsed);
     }
@@ -1055,7 +1075,7 @@ test("concurrent operations on the same edge path are deduplicated", async () =>
 
   // The "get" edge with args ["1"] should only have been sent once
   const getEdges = edgeMessages.filter(
-    (m) => m.edge === "get" && m.args?.[0] === "1",
+    (m) => m.edge === "get" && (m.args as unknown[])?.[0] === "1",
   );
   expect(getEdges.length).toBe(1);
 });
@@ -1166,19 +1186,20 @@ test("classifyPath: non-existent segment on known node type becomes method call"
   try {
     await (client as any).root.posts.nonExistent();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("METHOD_NOT_FOUND");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("METHOD_NOT_FOUND");
   }
 });
 
 test("classifyPath: verifies wire messages for edge-then-method path", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1194,18 +1215,18 @@ test("classifyPath: verifies wire messages for edge-then-method path", async () 
   const edgeMsgs = sent.filter((m) => m.op === "edge");
   const getMsgs = sent.filter((m) => m.op === "get");
   expect(edgeMsgs.length).toBe(1);
-  expect(edgeMsgs[0].edge).toBe("posts");
+  expect(edgeMsgs[0]!.edge).toBe("posts");
   expect(getMsgs.length).toBe(1);
-  expect(getMsgs[0].name).toBe("count");
+  expect(getMsgs[0]!.name).toBe("count");
 });
 
 test("classifyPath: verifies wire messages for all-edges path (data fetch)", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1222,9 +1243,9 @@ test("classifyPath: verifies wire messages for all-edges path (data fetch)", asy
   const getMsgs = sent.filter((m) => m.op === "get");
   const dataMsgs = sent.filter((m) => m.op === "data");
   expect(edgeMsgs.length).toBe(2);
-  expect(edgeMsgs[0].edge).toBe("posts");
-  expect(edgeMsgs[1].edge).toBe("get");
-  expect(edgeMsgs[1].args).toEqual(["1"]);
+  expect(edgeMsgs[0]!.edge).toBe("posts");
+  expect(edgeMsgs[1]!.edge).toBe("get");
+  expect(edgeMsgs[1]!.args).toEqual(["1"]);
   expect(getMsgs.length).toBe(0);
   expect(dataMsgs.length).toBe(1);
 });
@@ -1296,11 +1317,11 @@ test("concurrent calls resolve independently (no head-of-line blocking)", async 
 
 test("server responses carry re field correlating to request order", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
 
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1311,24 +1332,24 @@ test("server responses carry re field correlating to request order", async () =>
   await client.root.posts.count();
 
   // Skip schema message (no re)
-  const responses = received.filter((m: any) => m.op !== "hello");
+  const responses = received.filter((m) => m.op !== "hello");
 
   // Message 1: edge(posts) → re: 1
   // Message 2: get(count) → re: 2
   expect(responses.length).toBe(2);
-  expect(responses[0].op).toBe("edge");
-  expect(responses[0].re).toBe(1);
-  expect(responses[1].op).toBe("get");
-  expect(responses[1].re).toBe(2);
+  expect(responses[0]!.op).toBe("edge");
+  expect(responses[0]!.re).toBe(1);
+  expect(responses[1]!.op).toBe("get");
+  expect(responses[1]!.re).toBe(2);
 });
 
 test("hello message (message 0) has no re field", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
 
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1337,20 +1358,20 @@ test("hello message (message 0) has no re field", async () => {
 
   // Hello is sent immediately on connection (message 0)
   expect(received.length).toBe(1);
-  expect(received[0].op).toBe("hello");
-  expect(received[0].version).toBe(2);
-  expect(received[0].re).toBeUndefined();
+  expect(received[0]!.op).toBe("hello");
+  expect(received[0]!.version).toBe(2);
+  expect(received[0]!.re).toBeUndefined();
 });
 
 // -- Live data cache tests --
 
 test("await node then await node.title served from cache (no wire message)", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1402,11 +1423,11 @@ test("live data cache does not treat Object.prototype names as property hits", a
 
 test("cold await node.title sends get message", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1419,18 +1440,18 @@ test("cold await node.title sends get message", async () => {
   expect(title).toBe("Hello World");
 
   // Should have sent edge messages + a get message (not just edges + data)
-  const getMsgs = sent.filter((m: any) => m.op === "get");
+  const getMsgs = sent.filter((m) => m.op === "get");
   expect(getMsgs.length).toBe(1);
-  expect(getMsgs[0].name).toBe("title");
+  expect(getMsgs[0]!.name).toBe("title");
 });
 
 test("await node then await node.count() still sends get message (methods never cached)", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1450,9 +1471,9 @@ test("await node then await node.count() still sends get message (methods never 
 
   // Should have sent at least one new get message for count()
   const newMessages = sent.slice(countAfterData);
-  const getMsgs = newMessages.filter((m: any) => m.op === "get");
+  const getMsgs = newMessages.filter((m) => m.op === "get");
   expect(getMsgs.length).toBe(1);
-  expect(getMsgs[0].name).toBe("count");
+  expect(getMsgs[0]!.name).toBe("count");
 });
 
 test("await node returns data proxy with navigable edge stubs", async () => {
@@ -1505,11 +1526,11 @@ test("await node includes getter values (integration)", async () => {
 
 test("concurrent cold property reads coalesce into one get message", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1529,17 +1550,17 @@ test("concurrent cold property reads coalesce into one get message", async () =>
   expect(t2).toBe("Hello World");
 
   // Should have sent only one get message for "title" (coalesced)
-  const getMsgs = sent.filter((m: any) => m.op === "get" && m.name === "title");
+  const getMsgs = sent.filter((m) => m.op === "get" && m.name === "title");
   expect(getMsgs.length).toBe(1);
 });
 
 test("sequential cold property reads coalesce (getCache hit)", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1563,11 +1584,11 @@ test("sequential cold property reads coalesce (getCache hit)", async () => {
 
 test("method calls never coalesce (two concurrent calls send two get messages)", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1584,7 +1605,7 @@ test("method calls never coalesce (two concurrent calls send two get messages)",
   expect(c2).toBe(2);
 
   // Should have sent two independent get messages
-  const getMsgs = sent.filter((m: any) => m.op === "get" && m.name === "count");
+  const getMsgs = sent.filter((m) => m.op === "get" && m.name === "count");
   expect(getMsgs.length).toBe(2);
 });
 
@@ -1632,10 +1653,10 @@ function rwSetup() {
   rwStore.set("1", { title: "Original" });
 
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1817,10 +1838,10 @@ test("ref invalidation does not evict sibling paths with shared prefixes", async
   }
 
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1832,9 +1853,7 @@ test("ref invalidation does not evict sibling paths with shared prefixes", async
   await client.root.post.touch();
   await client.root.posts.count();
 
-  const postsEdges = sent.filter(
-    (m: any) => m.op === "edge" && m.edge === "posts",
-  );
+  const postsEdges = sent.filter((m) => m.op === "edge" && m.edge === "posts");
   expect(postsEdges.length).toBe(1);
 });
 
@@ -1891,10 +1910,10 @@ test("node coalescing: two tokens for same path yield identical data", async () 
   }
 
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -1912,21 +1931,23 @@ test("node coalescing: two tokens for same path yield identical data", async () 
   await flush();
 
   // Both edges should succeed (no errors)
-  const edgeResults = received.filter((m: any) => m.op === "edge");
+  const edgeResults = received.filter((m) => m.op === "edge");
   expect(edgeResults.length).toBe(2);
-  expect(edgeResults[0].error).toBeUndefined();
-  expect(edgeResults[1].error).toBeUndefined();
+  expect(edgeResults[0]!.error).toBeUndefined();
+  expect(edgeResults[1]!.error).toBeUndefined();
 
   // Fetch data on both tokens
   clientTransport.send(serializer.stringify({ op: "data", tok: 1 }));
   clientTransport.send(serializer.stringify({ op: "data", tok: 2 }));
   await flush();
 
-  const dataResults = received.filter((m: any) => m.op === "data");
+  const dataResults = received.filter((m) => m.op === "data");
   expect(dataResults.length).toBe(2);
 
   // Both tokens should point to the same object (same id)
-  expect(dataResults[0].data.id).toBe(dataResults[1].data.id);
+  expect((dataResults[0]!.data as Record<string, unknown>).id).toBe(
+    (dataResults[1]!.data as Record<string, unknown>).id,
+  );
   // Only one instance was created
   expect(instanceId).toBe(1);
 });
@@ -2095,18 +2116,20 @@ test("close() rejects pending and post-close ops, is idempotent", async () => {
   try {
     await promise;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("CLIENT_CLOSED");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("CLIENT_CLOSED");
   }
 
   // Post-close operation rejected
   try {
     await client.root.posts.count();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("CLIENT_CLOSED");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("CLIENT_CLOSED");
   }
 
   // Idempotent — no throw on repeated close
@@ -2176,10 +2199,10 @@ test("node coalescing: failed edge is cached (no retry)", async () => {
   }
 
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2207,10 +2230,10 @@ test("node coalescing: failed edge is cached (no retry)", async () => {
   await flush();
 
   // Both should fail
-  const edgeResults = received.filter((m: any) => m.op === "edge");
+  const edgeResults = received.filter((m) => m.op === "edge");
   expect(edgeResults.length).toBe(2);
-  expect(edgeResults[0].error).toBeDefined();
-  expect(edgeResults[1].error).toBeDefined();
+  expect(edgeResults[0]!.error).toBeDefined();
+  expect(edgeResults[1]!.error).toBeDefined();
 
   // The edge getter should only have been called once (failed result cached)
   expect(resolveCount).toBe(1);
@@ -2261,10 +2284,11 @@ test("DATA_ERROR wraps getter throw on full-node load", async () => {
   try {
     await client.root;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("DATA_ERROR");
-    expect(err.message).toContain("getter exploded");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("DATA_ERROR");
+    expect(e.message).toContain("getter exploded");
   }
 });
 
@@ -2350,9 +2374,10 @@ test("zero-schema method rejects extra args with VALIDATION_ERROR", async () => 
   try {
     await (client as any).root.ping("unexpected", "args");
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("VALIDATION_ERROR");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("VALIDATION_ERROR");
   }
 });
 
@@ -2360,11 +2385,11 @@ test("zero-schema method rejects extra args with VALIDATION_ERROR", async () => 
 
 test("concurrent await node coalesces into one data message", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const sent: any[] = [];
+  const sent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    sent.push(serializer.parse(data));
+    sent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2379,13 +2404,13 @@ test("concurrent await node coalesces into one data message", async () => {
   expect(b.title).toBe("Hello World");
 
   // Edges should coalesce (1 "posts" edge, 1 "get" edge)
-  const edgeMsgs = sent.filter((m: any) => m.op === "edge");
+  const edgeMsgs = sent.filter((m) => m.op === "edge");
   expect(edgeMsgs.length).toBe(2); // posts + get("1")
-  const postsEdges = edgeMsgs.filter((m: any) => m.edge === "posts");
+  const postsEdges = edgeMsgs.filter((m) => m.edge === "posts");
   expect(postsEdges.length).toBe(1);
 
   // Concurrent data loads coalesce — only one data message sent
-  const dataMsgs = sent.filter((m: any) => m.op === "data");
+  const dataMsgs = sent.filter((m) => m.op === "data");
   expect(dataMsgs.length).toBe(1);
 });
 
@@ -2409,7 +2434,10 @@ test("registered custom error survives server round-trip", async () => {
       NotFound: (v: unknown) => v instanceof NotFound && [v.entity, v.id],
     },
     revivers: {
-      NotFound: ([entity, id]: any) => new NotFound(entity, id),
+      NotFound: (v: unknown) => {
+        const [entity, id] = v as [string, string];
+        return new NotFound(entity, id);
+      },
     },
   };
 
@@ -2428,11 +2456,12 @@ test("registered custom error survives server round-trip", async () => {
   try {
     await client.root.findItem("42");
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(NotFound);
-    expect(err.entity).toBe("Item");
-    expect(err.id).toBe("42");
-    expect(err.message).toBe("Item 42 not found");
+  } catch (err: unknown) {
+    const e = err as NotFound;
+    expect(e).toBeInstanceOf(NotFound);
+    expect(e.entity).toBe("Item");
+    expect(e.id).toBe("42");
+    expect(e.message).toBe("Item 42 not found");
   }
 });
 
@@ -2470,17 +2499,17 @@ test("custom type mismatch causes deserialization failure", () => {
 
 test("pipelining: dependent edges are sent before any server responses arrive", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const clientSent: any[] = [];
+  const clientSent: WireMessage[] = [];
   const queuedResponses: string[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    clientSent.push(serializer.parse(data));
+    clientSent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
   const originalServerSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    const msg = serializer.parse(data) as any;
+    const msg = serializer.parse(data) as WireMessage;
     if (msg.op === "hello") {
       originalServerSend(data);
       return;
@@ -2502,12 +2531,12 @@ test("pipelining: dependent edges are sent before any server responses arrive", 
   const edgeMsgs = clientSent.filter((m) => m.op === "edge");
   const dataMsgs = clientSent.filter((m) => m.op === "data");
   expect(edgeMsgs.length).toBe(2);
-  expect(edgeMsgs[0].edge).toBe("posts");
-  expect(edgeMsgs[0].tok).toBe(0);
-  expect(edgeMsgs[1].edge).toBe("get");
-  expect(edgeMsgs[1].tok).toBe(1); // references parent token before it's confirmed
+  expect(edgeMsgs[0]!.edge).toBe("posts");
+  expect(edgeMsgs[0]!.tok).toBe(0);
+  expect(edgeMsgs[1]!.edge).toBe("get");
+  expect(edgeMsgs[1]!.tok).toBe(1); // references parent token before it's confirmed
   expect(dataMsgs.length).toBe(1);
-  expect(dataMsgs[0].tok).toBe(2); // references child token before it's confirmed
+  expect(dataMsgs[0]!.tok).toBe(2); // references child token before it's confirmed
 
   while (queuedResponses.length > 0) {
     originalServerSend(queuedResponses.shift()!);
@@ -2553,11 +2582,11 @@ test("pipelining: sibling edges run in parallel on server", async () => {
 
 test("pipelining: failed parent edge poisons child edge", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
 
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2582,16 +2611,16 @@ test("pipelining: failed parent edge poisons child edge", async () => {
   await flush();
 
   // First edge should succeed
-  const edgeResults = received.filter((m: any) => m.op === "edge");
-  expect(edgeResults[0].error).toBeUndefined();
+  const edgeResults = received.filter((m) => m.op === "edge");
+  expect(edgeResults[0]!.error).toBeUndefined();
 
   // Second edge should fail
-  expect(edgeResults[1].error).toBeDefined();
+  expect(edgeResults[1]!.error).toBeDefined();
 
   // Data on the poisoned token should also fail
-  const dataResults = received.filter((m: any) => m.op === "data");
+  const dataResults = received.filter((m) => m.op === "data");
   expect(dataResults.length).toBe(1);
-  expect(dataResults[0].error).toBeDefined();
+  expect(dataResults[0]!.error).toBeDefined();
 });
 
 test("pipelining: dependent edge chain with data fetch (3 levels)", async () => {
@@ -2614,11 +2643,11 @@ test("pipelining: dependent edge chain with data fetch (3 levels)", async () => 
   }
 
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const clientSent: any[] = [];
+  const clientSent: WireMessage[] = [];
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    clientSent.push(serializer.parse(data));
+    clientSent.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2634,19 +2663,19 @@ test("pipelining: dependent edge chain with data fetch (3 levels)", async () => 
   const edgeMsgs = clientSent.filter((m) => m.op === "edge");
   const dataMsgs = clientSent.filter((m) => m.op === "data");
   expect(edgeMsgs.length).toBe(2);
-  expect(edgeMsgs[0].tok).toBe(0); // mid from root
-  expect(edgeMsgs[1].tok).toBe(1); // leaf from mid (pipelined)
+  expect(edgeMsgs[0]!.tok).toBe(0); // mid from root
+  expect(edgeMsgs[1]!.tok).toBe(1); // leaf from mid (pipelined)
   expect(dataMsgs.length).toBe(1);
-  expect(dataMsgs[0].tok).toBe(2); // data on leaf (pipelined)
+  expect(dataMsgs[0]!.tok).toBe(2); // data on leaf (pipelined)
 });
 
 test("pipelining: server processes pipelined get after dependent edge", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
 
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2665,14 +2694,14 @@ test("pipelining: server processes pipelined get after dependent edge", async ()
   await flush();
 
   // Edge should succeed
-  const edgeResults = received.filter((m: any) => m.op === "edge");
+  const edgeResults = received.filter((m) => m.op === "edge");
   expect(edgeResults.length).toBe(1);
-  expect(edgeResults[0].error).toBeUndefined();
+  expect(edgeResults[0]!.error).toBeUndefined();
 
   // Get should succeed with the correct result
-  const getResults = received.filter((m: any) => m.op === "get");
+  const getResults = received.filter((m) => m.op === "get");
   expect(getResults.length).toBe(1);
-  expect(getResults[0].data).toBe(2);
+  expect(getResults[0]!.data).toBe(2);
 });
 
 // -- abortSignal() tests --
@@ -2749,10 +2778,10 @@ test("maxOperationTimeout fires abort signal and returns OPERATION_TIMEOUT", asy
 
   const timers = fakeTimers();
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2776,10 +2805,12 @@ test("maxOperationTimeout fires abort signal and returns OPERATION_TIMEOUT", asy
 
   expect(capturedSignal!.aborted).toBe(true);
 
-  const getResults = received.filter((m: any) => m.op === "get");
+  const getResults = received.filter((m) => m.op === "get");
   expect(getResults.length).toBe(1);
-  expect(getResults[0].error).toBeDefined();
-  expect(getResults[0].error.code).toBe("OPERATION_TIMEOUT");
+  expect(getResults[0]!.error).toBeDefined();
+  expect((getResults[0]!.error as Record<string, unknown>).code).toBe(
+    "OPERATION_TIMEOUT",
+  );
 });
 
 test("maxOperationTimeout poisons edge tokens", async () => {
@@ -2797,10 +2828,10 @@ test("maxOperationTimeout poisons edge tokens", async () => {
 
   const timers = fakeTimers();
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2822,10 +2853,12 @@ test("maxOperationTimeout poisons edge tokens", async () => {
   timers.fireAll();
   await flush();
 
-  const edgeResults = received.filter((m: any) => m.op === "edge");
+  const edgeResults = received.filter((m) => m.op === "edge");
   expect(edgeResults.length).toBe(1);
-  expect(edgeResults[0].error).toBeDefined();
-  expect(edgeResults[0].error.code).toBe("OPERATION_TIMEOUT");
+  expect(edgeResults[0]!.error).toBeDefined();
+  expect((edgeResults[0]!.error as Record<string, unknown>).code).toBe(
+    "OPERATION_TIMEOUT",
+  );
 });
 
 test("maxOperationTimeout: queued timed-out ops never execute later", async () => {
@@ -2850,10 +2883,10 @@ test("maxOperationTimeout: queued timed-out ops never execute later", async () =
 
   const timers = fakeTimers();
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2879,10 +2912,12 @@ test("maxOperationTimeout: queued timed-out ops never execute later", async () =
   timers.fireAll();
   await flush();
 
-  const getResults = received.filter((m: any) => m.op === "get");
+  const getResults = received.filter((m) => m.op === "get");
   expect(getResults.length).toBe(2);
   for (const msg of getResults) {
-    expect(msg.error?.code).toBe("OPERATION_TIMEOUT");
+    expect((msg.error as Record<string, unknown> | undefined)?.code).toBe(
+      "OPERATION_TIMEOUT",
+    );
   }
 
   // Let the slow op finish and release the slot: queued mutate must not run.
@@ -2913,10 +2948,10 @@ test("maxOperationTimeout returns OPERATION_TIMEOUT for queued stream_start", as
 
   const timers = fakeTimers();
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -2943,10 +2978,12 @@ test("maxOperationTimeout returns OPERATION_TIMEOUT for queued stream_start", as
   timers.fireAll();
   await flush();
 
-  const starts = received.filter((m: any) => m.op === "stream_start");
+  const starts = received.filter((m) => m.op === "stream_start");
   expect(starts.length).toBe(1);
-  expect(starts[0].error).toBeDefined();
-  expect(starts[0].error.code).toBe("OPERATION_TIMEOUT");
+  expect(starts[0]!.error).toBeDefined();
+  expect((starts[0]!.error as Record<string, unknown>).code).toBe(
+    "OPERATION_TIMEOUT",
+  );
 
   releaseSlow?.();
 });
@@ -2970,11 +3007,12 @@ test("redactErrors: unregistered errors get generic message", async () => {
   try {
     await client.root.fail();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("GET_ERROR");
-    expect(err.message).toBe("Internal server error");
-    expect(err.message).not.toContain("secret internal details");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("GET_ERROR");
+    expect(e.message).toBe("Internal server error");
+    expect(e.message).not.toContain("secret internal details");
   }
 });
 
@@ -2994,7 +3032,10 @@ test("redactErrors: registered errors are never redacted", async () => {
       NotFound: (v: unknown) => v instanceof NotFound && [v.entity, v.id],
     },
     revivers: {
-      NotFound: ([entity, id]: any) => new NotFound(entity, id),
+      NotFound: (v: unknown) => {
+        const [entity, id] = v as [string, string];
+        return new NotFound(entity, id);
+      },
     },
   };
 
@@ -3021,11 +3062,12 @@ test("redactErrors: registered errors are never redacted", async () => {
   try {
     await client.root.findItem("42");
     expect.unreachable("should have thrown");
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Custom registered error should NOT be redacted
-    expect(err).toBeInstanceOf(NotFound);
-    expect(err.entity).toBe("Item");
-    expect(err.id).toBe("42");
+    const e = err as NotFound;
+    expect(e).toBeInstanceOf(NotFound);
+    expect(e.entity).toBe("Item");
+    expect(e.id).toBe("42");
   }
 });
 
@@ -3046,10 +3088,11 @@ test("redactErrors: RpcError thrown directly is never redacted", async () => {
   try {
     await client.root.fail();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
-    expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("CUSTOM_CODE");
-    expect(err.message).toBe("custom message");
+  } catch (err: unknown) {
+    const e = err as RpcError;
+    expect(e).toBeInstanceOf(RpcError);
+    expect(e.code).toBe("CUSTOM_CODE");
+    expect(e.message).toBe("custom message");
   }
 });
 
@@ -3059,10 +3102,10 @@ test("errorId present on get and edge error responses", async () => {
   // Get error
   {
     const [serverTransport, clientTransport] = createMockTransportPair();
-    const received: any[] = [];
+    const received: WireMessage[] = [];
     const originalSend = serverTransport.send.bind(serverTransport);
     serverTransport.send = (data: string) => {
-      received.push(serializer.parse(data));
+      received.push(serializer.parse(data) as WireMessage);
       originalSend(data);
     };
 
@@ -3085,20 +3128,20 @@ test("errorId present on get and edge error responses", async () => {
     );
     await flush();
 
-    const getResults = received.filter((m: any) => m.op === "get");
+    const getResults = received.filter((m) => m.op === "get");
     expect(getResults.length).toBe(1);
-    expect(getResults[0].error).toBeDefined();
-    expect(typeof getResults[0].errorId).toBe("string");
-    expect(getResults[0].errorId.length).toBeGreaterThan(0);
+    expect(getResults[0]!.error).toBeDefined();
+    expect(typeof getResults[0]!.errorId).toBe("string");
+    expect((getResults[0]!.errorId as string).length).toBeGreaterThan(0);
   }
 
   // Edge error
   {
     const [serverTransport, clientTransport] = createMockTransportPair();
-    const received: any[] = [];
+    const received: WireMessage[] = [];
     const originalSend = serverTransport.send.bind(serverTransport);
     serverTransport.send = (data: string) => {
-      received.push(serializer.parse(data));
+      received.push(serializer.parse(data) as WireMessage);
       originalSend(data);
     };
 
@@ -3122,10 +3165,10 @@ test("errorId present on get and edge error responses", async () => {
     );
     await flush();
 
-    const edgeResults = received.filter((m: any) => m.op === "edge");
-    const failedEdge = edgeResults.find((m: any) => m.error);
+    const edgeResults = received.filter((m) => m.op === "edge");
+    const failedEdge = edgeResults.find((m) => m.error);
     expect(failedEdge).toBeDefined();
-    expect(typeof failedEdge.errorId).toBe("string");
+    expect(typeof failedEdge!.errorId).toBe("string");
   }
 });
 
@@ -3148,7 +3191,7 @@ test("getErrorUuid() retrieves UUID from RPC errors, null otherwise", async () =
   try {
     await client.root.fail();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
+  } catch (err: unknown) {
     const uuid = getErrorUuid(err);
     expect(uuid).not.toBeNull();
     expect(typeof uuid).toBe("string");
@@ -3166,7 +3209,7 @@ test("getErrorUuid() retrieves UUID from RPC errors, null otherwise", async () =
 test("operationError event: redacted for unregistered, non-redacted for RpcError", async () => {
   // Unregistered error → redacted=true
   {
-    const events: any[] = [];
+    const events: OperationErrorInfo[] = [];
 
     class FailApi extends Node {
       @method
@@ -3193,15 +3236,15 @@ test("operationError event: redacted for unregistered, non-redacted for RpcError
     }
 
     expect(events.length).toBe(1);
-    expect(events[0].error).toBeInstanceOf(Error);
-    expect((events[0].error as Error).message).toBe("secret error");
-    expect(typeof events[0].errorId).toBe("string");
-    expect(events[0].redacted).toBe(true);
+    expect(events[0]!.error).toBeInstanceOf(Error);
+    expect((events[0]!.error as Error).message).toBe("secret error");
+    expect(typeof events[0]!.errorId).toBe("string");
+    expect(events[0]!.redacted).toBe(true);
   }
 
   // RpcError → redacted=false
   {
-    const events: any[] = [];
+    const events: OperationErrorInfo[] = [];
 
     class FailApi extends Node {
       @method
@@ -3228,7 +3271,7 @@ test("operationError event: redacted for unregistered, non-redacted for RpcError
     }
 
     expect(events.length).toBe(1);
-    expect(events[0].redacted).toBe(false);
+    expect(events[0]!.redacted).toBe(false);
   }
 });
 
@@ -3247,10 +3290,10 @@ test("slot queue drain on close: queued ops get CONNECTION_CLOSED error", async 
   }
 
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -3428,7 +3471,7 @@ test("path() rejects non-PathArg input", async () => {
 
   const p = Promise.resolve(
     (client.root.pathPosts as any).move("not-a-path", "also-not"),
-  ).then((v: any) => v);
+  ).then((v: unknown) => v);
   await expect(p).rejects.toBeInstanceOf(ValidationError);
 });
 
@@ -3439,7 +3482,7 @@ test("path() plausibility check catches wrong target type", async () => {
   const catStub = client.root.categories.get("tech");
   const p = Promise.resolve(
     (client.root.pathPosts as any).move(pathOf(catStub), pathOf(catStub)),
-  ).then((v: any) => v);
+  ).then((v: unknown) => v);
   await expect(p).rejects.toBeInstanceOf(ValidationError);
 });
 
@@ -3451,7 +3494,7 @@ test("path() plausibility check rejects hidden edges", async () => {
   const catStub = client.root.categories.get("tech");
   const p = Promise.resolve(
     (client.root.pathPosts as any).move(badPath, pathOf(catStub)),
-  ).then((v: any) => v);
+  ).then((v: unknown) => v);
   await expect(p).rejects.toBeInstanceOf(ValidationError);
 });
 
@@ -3462,7 +3505,7 @@ test("path depth limit rejects >64 segments", async () => {
   const catStub = client.root.categories.get("tech");
   const p = Promise.resolve(
     (client.root.pathPosts as any).move(longPath, pathOf(catStub)),
-  ).then((v: any) => v);
+  ).then((v: unknown) => v);
   await expect(p).rejects.toBeInstanceOf(ValidationError);
 });
 
@@ -3604,11 +3647,11 @@ class DeepApi extends Node {
 
 function deepSetup() {
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
 
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -3664,7 +3707,7 @@ test("descendant tokens usable after ref() eviction (data, method, edge)", async
   await navigateToChild(clientTransport);
 
   // Verify all 4 edges succeeded
-  const edges = received.filter((m: any) => m.op === "edge");
+  const edges = received.filter((m) => m.op === "edge");
   expect(edges.length).toBe(4);
   for (const e of edges) expect(e.error).toBeUndefined();
 
@@ -3685,11 +3728,13 @@ test("descendant tokens usable after ref() eviction (data, method, edge)", async
   rawSend(clientTransport, { op: "data", tok: 4 });
   await flush();
 
-  const dataResults = received.filter((m: any) => m.op === "data");
+  const dataResults = received.filter((m) => m.op === "data");
   expect(dataResults.length).toBe(1);
-  expect(dataResults[0].error).toBeUndefined();
-  expect(dataResults[0].data.id).toBe("5");
-  expect(dataResults[0].data.value).toBe("child-5");
+  expect(dataResults[0]!.error).toBeUndefined();
+  expect((dataResults[0]!.data as Record<string, unknown>).id).toBe("5");
+  expect((dataResults[0]!.data as Record<string, unknown>).value).toBe(
+    "child-5",
+  );
 
   received.length = 0;
 
@@ -3697,10 +3742,10 @@ test("descendant tokens usable after ref() eviction (data, method, edge)", async
   rawSend(clientTransport, { op: "get", tok: 4, name: "greet" });
   await flush();
 
-  const getResults = received.filter((m: any) => m.op === "get");
+  const getResults = received.filter((m) => m.op === "get");
   expect(getResults.length).toBe(1);
-  expect(getResults[0].error).toBeUndefined();
-  expect(getResults[0].data).toBe("Hello from child 5");
+  expect(getResults[0]!.error).toBeUndefined();
+  expect(getResults[0]!.data).toBe("Hello from child 5");
 
   received.length = 0;
 
@@ -3713,9 +3758,9 @@ test("descendant tokens usable after ref() eviction (data, method, edge)", async
   });
   await flush();
 
-  const edgeResults = received.filter((m: any) => m.op === "edge");
+  const edgeResults = received.filter((m) => m.op === "edge");
   expect(edgeResults.length).toBe(1);
-  expect(edgeResults[0].error).toBeUndefined();
+  expect(edgeResults[0]!.error).toBeUndefined();
 });
 
 test("concurrent edge resolution survives ref() eviction", async () => {
@@ -3724,7 +3769,7 @@ test("concurrent edge resolution survives ref() eviction", async () => {
   // Navigate to DeepItem (token 2)
   await navigateToItem(clientTransport);
 
-  const edges = received.filter((m: any) => m.op === "edge");
+  const edges = received.filter((m) => m.op === "edge");
   expect(edges.length).toBe(2);
   for (const e of edges) expect(e.error).toBeUndefined();
 
@@ -3751,9 +3796,9 @@ test("concurrent edge resolution survives ref() eviction", async () => {
   await flush();
 
   // The edge should have resolved successfully
-  const edgeResults = received.filter((m: any) => m.op === "edge");
+  const edgeResults = received.filter((m) => m.op === "edge");
   expect(edgeResults.length).toBe(1);
-  expect(edgeResults[0].error).toBeUndefined();
+  expect(edgeResults[0]!.error).toBeUndefined();
 
   received.length = 0;
 
@@ -3761,11 +3806,13 @@ test("concurrent edge resolution survives ref() eviction", async () => {
   rawSend(clientTransport, { op: "data", tok: 3 });
   await flush();
 
-  const dataResults = received.filter((m: any) => m.op === "data");
+  const dataResults = received.filter((m) => m.op === "data");
   expect(dataResults.length).toBe(1);
-  expect(dataResults[0].error).toBeUndefined();
-  expect(dataResults[0].data).toBeDefined();
-  expect(dataResults[0].data.value).toBe("slow-resolved");
+  expect(dataResults[0]!.error).toBeUndefined();
+  expect(dataResults[0]!.data).toBeDefined();
+  expect((dataResults[0]!.data as Record<string, unknown>).value).toBe(
+    "slow-resolved",
+  );
 });
 
 test("ref() deferred rejection does not cause unhandled rejection", async () => {
@@ -3803,10 +3850,10 @@ test("ref() deferred rejection does not cause unhandled rejection", async () => 
   }
 
   const [serverTransport, clientTransport] = createMockTransportPair();
-  const received: any[] = [];
+  const received: WireMessage[] = [];
   const originalSend = serverTransport.send.bind(serverTransport);
   serverTransport.send = (data: string) => {
-    received.push(serializer.parse(data));
+    received.push(serializer.parse(data) as WireMessage);
     originalSend(data);
   };
 
@@ -3840,9 +3887,9 @@ test("ref() deferred rejection does not cause unhandled rejection", async () => 
   await new Promise((r) => setTimeout(r, 50));
 
   // The method should have returned an error (expected — bad ref)
-  const getResults = received.filter((m: any) => m.op === "get");
+  const getResults = received.filter((m) => m.op === "get");
   expect(getResults.length).toBe(1);
-  expect(getResults[0].error).toBeDefined();
+  expect(getResults[0]!.error).toBeDefined();
 
   // If we got here without an unhandled rejection crashing the test, it passes.
 });
@@ -3866,16 +3913,16 @@ test("pipelined method (ref) + descendant data fetch both complete", async () =>
   await flush();
 
   // Method response should have data (the ref return value)
-  const getResults = received.filter((m: any) => m.op === "get");
+  const getResults = received.filter((m) => m.op === "get");
   expect(getResults.length).toBe(1);
-  expect(getResults[0].error).toBeUndefined();
+  expect(getResults[0]!.error).toBeUndefined();
 
   // Descendant data fetch should also succeed with stale data
-  const dataResults = received.filter((m: any) => m.op === "data");
+  const dataResults = received.filter((m) => m.op === "data");
   expect(dataResults.length).toBe(1);
-  expect(dataResults[0].error).toBeUndefined();
-  expect(dataResults[0].data).toBeDefined();
-  expect(dataResults[0].data.id).toBe("5");
+  expect(dataResults[0]!.error).toBeUndefined();
+  expect(dataResults[0]!.data).toBeDefined();
+  expect((dataResults[0]!.data as Record<string, unknown>).id).toBe("5");
 });
 
 // -- Persistent cache tests --
@@ -3973,7 +4020,7 @@ test("invalidate() notifies subscribers", async () => {
 
   let callCount = 0;
   // Subscribe via the root stub (which is registered for reactivity)
-  const unsub = subscribe(client.root, (value: any) => {
+  const unsub = subscribe(client.root, (value: unknown) => {
     callCount++;
   });
 
@@ -4018,8 +4065,8 @@ test("subscribe() calls callback synchronously on subscribe", async () => {
   const { client } = setup();
   await client.ready;
 
-  let receivedValue: any = null;
-  const unsub = subscribe(client.root.posts, (value: any) => {
+  let receivedValue: unknown = null;
+  const unsub = subscribe(client.root.posts, (value: unknown) => {
     receivedValue = value;
   });
 
@@ -4206,7 +4253,7 @@ test("cancel before stream_start response still sends stream_cancel", async () =
     }
   }
 
-  const clientToServer: any[] = [];
+  const clientToServer: WireMessage[] = [];
   const gpc = createServer({ idleTimeout: 0 }, () => new CancelTestRoot());
   const client = createClient<typeof gpc>({}, () => {
     const inner = mockConnect(gpc, {});
@@ -4214,7 +4261,7 @@ test("cancel before stream_start response still sends stream_cancel", async () =
     return {
       ...inner,
       send(data: string) {
-        clientToServer.push(serializer.parse(data));
+        clientToServer.push(serializer.parse(data) as WireMessage);
         originalSend(data);
       },
     } as Transport;
@@ -4261,9 +4308,9 @@ test("stream credit window doubles when the current window is exhausted", async 
 
   const originalSend = clientTransport.send.bind(clientTransport);
   clientTransport.send = (data: string) => {
-    const msg = serializer.parse(data) as any;
+    const msg = serializer.parse(data) as WireMessage;
     if (msg.op === "stream_credit") {
-      creditGrants.push(msg.credits);
+      creditGrants.push(msg.credits as number);
       setTimeout(() => originalSend(data), 25);
       return;
     }
@@ -4340,8 +4387,8 @@ test("stream resume error propagates to consumer, not orphan state (bug 2)", asy
   // Consumer should get the error, not hang forever
   const winner = await Promise.race([
     iter.next().then(
-      (v: any) => ({ type: "resolved" as const, v }),
-      (e: any) => ({ type: "rejected" as const, e }),
+      (v: unknown) => ({ type: "resolved" as const, v }),
+      (e: unknown) => ({ type: "rejected" as const, e }),
     ),
     new Promise<{ type: "timeout" }>((r) =>
       setTimeout(() => r({ type: "timeout" }), 500),

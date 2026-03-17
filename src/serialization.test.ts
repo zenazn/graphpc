@@ -43,9 +43,9 @@ test("roundtrip Reference inside a Map", () => {
   const s = createSerializer();
   const r = new Reference(["tweets", ["get", "1"]], { id: "1", text: "hi" });
   const map = new Map([["tweet", r]]);
-  const result = s.parse(s.stringify(map)) as Map<string, any>;
+  const result = s.parse(s.stringify(map)) as Map<string, Reference<unknown>>;
   expect(result).toBeInstanceOf(Map);
-  const val = result.get("tweet");
+  const val = result.get("tweet")!;
   expect(val).toBeInstanceOf(Reference);
   expect(val.data).toEqual({ id: "1", text: "hi" });
   expect(val.path).toEqual(["tweets", ["get", "1"]]);
@@ -55,21 +55,24 @@ test("roundtrip Reference inside a Set", () => {
   const s = createSerializer();
   const r = new Reference(["tweets", ["get", "2"]], { id: "2" });
   const set = new Set([r]);
-  const result = s.parse(s.stringify(set)) as Set<any>;
+  const result = s.parse(s.stringify(set)) as Set<Reference<unknown>>;
   expect(result).toBeInstanceOf(Set);
   const [val] = result;
   expect(val).toBeInstanceOf(Reference);
-  expect(val.data).toEqual({ id: "2" });
-  expect(val.path).toEqual(["tweets", ["get", "2"]]);
+  expect(val!.data).toEqual({ id: "2" });
+  expect(val!.path).toEqual(["tweets", ["get", "2"]]);
 });
 
 test("roundtrip Reference nested in objects and arrays", () => {
   const s = createSerializer();
   const r = new Reference(["users", ["get", "3"]], { name: "Bob" });
   const value = { items: [r], nested: { ref: r } };
-  const result = s.parse(s.stringify(value)) as any;
+  const result = s.parse(s.stringify(value)) as {
+    items: Reference<unknown>[];
+    nested: { ref: Reference<unknown> };
+  };
   expect(result.items[0]).toBeInstanceOf(Reference);
-  expect(result.items[0].data).toEqual({ name: "Bob" });
+  expect(result.items[0]!.data).toEqual({ name: "Bob" });
   expect(result.nested.ref).toBeInstanceOf(Reference);
   expect(result.nested.ref.path).toEqual(["users", ["get", "3"]]);
 });
@@ -100,18 +103,18 @@ test("roundtrip ConnectionLostError", () => {
 test("reducer returning falsy values is treated as not handled", () => {
   const s = createSerializer({
     reducers: {
-      ReturnZero: () => 0 as any,
-      ReturnEmpty: () => "" as any,
-      ReturnNull: () => null as any,
+      ReturnZero: () => 0 as unknown as false,
+      ReturnEmpty: () => "" as unknown as false,
+      ReturnNull: () => null as unknown as false,
       ReturnFalse: () => false,
-      ReturnUndefined: () => undefined as any,
+      ReturnUndefined: () => undefined as unknown as false,
     },
   });
 
   // All reducers return falsy values, so the value should pass through as a plain object
   const obj = { x: 1 };
 
-  const stringified = s.parse(s.stringify(obj)) as any;
+  const stringified = s.parse(s.stringify(obj));
   expect(stringified).toEqual(obj);
 });
 
@@ -164,7 +167,10 @@ test("RpcError subclass serializes as subclass, not as plain RpcError", () => {
       CustomRpcError: (v) => v instanceof CustomRpcError && [v.detail],
     },
     revivers: {
-      CustomRpcError: ([detail]: any) => new CustomRpcError(detail),
+      CustomRpcError: (v: unknown) => {
+        const [detail] = v as [string];
+        return new CustomRpcError(detail);
+      },
     },
   });
 
@@ -218,7 +224,10 @@ test("custom reducers/revivers", () => {
       Foo: (v) => v instanceof Foo && [v.x],
     },
     revivers: {
-      Foo: ([x]: any) => new Foo(x),
+      Foo: (v: unknown) => {
+        const [x] = v as [number];
+        return new Foo(x);
+      },
     },
   });
 

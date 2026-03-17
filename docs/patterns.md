@@ -288,6 +288,8 @@ Using `await` expressions (requires `experimental.async` in your Svelte config):
 
 > The [`experimental.async`](https://svelte.dev/docs/svelte/await-expressions) flag enables top-level `await` in component scripts and is expected to become stable in Svelte 6.
 
+For reactive Svelte patterns using `$derived`, wrap stubs with `toObservable()` — see [Observable stubs](caching.md#observable-stubs).
+
 The same pattern applies to Solid (`createResource` or `createAsync`), Vue (`async setup` + `<Suspense>`), and other component frameworks — any model that supports async data loading and component composition.
 
 ### Promise Stability

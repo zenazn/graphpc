@@ -8,7 +8,7 @@ import { createSerializer } from "./serialization";
 import { RpcError, ConnectionLostError } from "./errors";
 import { Node } from "./types";
 import type { Transport } from "./protocol";
-import { flush, waitForEvent } from "./test-utils";
+import { flush, waitForEvent, type WireMessage } from "./test-utils";
 
 /** Yields to the microtask queue so deferred .then() calls can fire. */
 const tick = () => Promise.resolve();
@@ -135,9 +135,9 @@ test("no reconnect — disconnect rejects pending with CONNECTION_CLOSED", async
   try {
     await promise;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
+  } catch (err: unknown) {
     expect(err).toBeInstanceOf(RpcError);
-    expect(err.code).toBe("CONNECTION_CLOSED");
+    expect((err as RpcError).code).toBe("CONNECTION_CLOSED");
   }
 });
 
@@ -210,7 +210,7 @@ test("deep path works after idle disconnect", async () => {
 test("edge deduplication — shared prefixes sent once on replay", async () => {
   const gpc = createServer({}, (_ctx: unknown) => new Api());
   let currentServerTransport: Transport | null = null;
-  let serverReceivedMessages: any[] = [];
+  let serverReceivedMessages: WireMessage[] = [];
 
   const transportFactory = () => {
     const [serverTransport, clientTransport] = createMockTransportPair();
@@ -220,14 +220,19 @@ test("edge deduplication — shared prefixes sent once on replay", async () => {
     serverReceivedMessages = [];
     const origAddEventListener =
       serverTransport.addEventListener.bind(serverTransport);
-    serverTransport.addEventListener = ((type: string, listener: any) => {
+    serverTransport.addEventListener = ((type: string, listener: Function) => {
       if (type === "message") {
         origAddEventListener("message", (event: { data: string }) => {
-          serverReceivedMessages.push(createSerializer().parse(event.data));
+          serverReceivedMessages.push(
+            createSerializer().parse(event.data) as WireMessage,
+          );
           listener(event);
         });
       } else {
-        origAddEventListener(type as any, listener);
+        origAddEventListener(
+          type as "message",
+          listener as (event: { data: string }) => void,
+        );
       }
     }) as typeof serverTransport.addEventListener;
 
@@ -246,7 +251,7 @@ test("edge deduplication — shared prefixes sent once on replay", async () => {
 
   // On first connection, "posts" edge should be sent only once
   const firstConnPostsEdges = serverReceivedMessages.filter(
-    (m: any) => m.op === "edge" && m.edge === "posts",
+    (m) => m.op === "edge" && m.edge === "posts",
   );
   expect(firstConnPostsEdges.length).toBe(1);
 
@@ -263,7 +268,7 @@ test("edge deduplication — shared prefixes sent once on replay", async () => {
 
   // On second connection, "posts" edge should also be sent once (deduplication)
   const secondConnPostsEdges = serverReceivedMessages.filter(
-    (m: any) => m.op === "edge" && m.edge === "posts",
+    (m) => m.op === "edge" && m.edge === "posts",
   );
   expect(secondConnPostsEdges.length).toBe(1);
 });
@@ -311,9 +316,9 @@ test("max retries exhausted — onReconnectFailed fires, pending rejected with C
   try {
     await promise;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
+  } catch (err: unknown) {
     expect(err).toBeInstanceOf(ConnectionLostError);
-    expect(err.code).toBe("CONNECTION_LOST");
+    expect((err as ConnectionLostError).code).toBe("CONNECTION_LOST");
   }
 
   expect(failedCalled).toBe(true);
@@ -469,7 +474,7 @@ test("edge replay failure — caller gets edge error", async () => {
   try {
     await promise;
     expect.unreachable("should have thrown");
-  } catch (err: any) {
+  } catch (err: unknown) {
     expect(err).toBeInstanceOf(RpcError);
   }
 });
@@ -646,7 +651,7 @@ test("new operations after exhaustion reject immediately", async () => {
   try {
     await client.root.ping();
     expect.unreachable("should have thrown");
-  } catch (err: any) {
+  } catch (err: unknown) {
     expect(err).toBeInstanceOf(ConnectionLostError);
   }
 });

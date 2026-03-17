@@ -125,7 +125,7 @@ evict(post); // remove from cache entirely
 
 ## Reactivity with `subscribe()`
 
-Use `subscribe(stub)` for reactive updates. It follows the Svelte store contract — call `subscribe()` with a callback, and it returns an unsubscribe function.
+Use `subscribe(stub, callback)` for reactive updates. The callback fires synchronously with the current stub, then again on each invalidation. Returns an unsubscribe function.
 
 ```typescript
 import { subscribe } from "graphpc/client";
@@ -154,16 +154,54 @@ Invalidating a path notifies:
 
 Root-level subscriptions are coarse -- they fire on any invalidation in the tree. Fine-grained subscriptions (e.g., on a specific post stub rather than the root) fire only when that specific subtree is invalidated. Prefer fine-grained subscriptions for performance.
 
-### Svelte example
+### Observable stubs
+
+`toObservable(stub)` wraps a stub so that it satisfies the [Svelte store contract](https://svelte.dev/docs/svelte/stores) and the [TC39 Observable](https://github.com/tc39/proposal-observable) / RxJS protocol. The wrapper adds:
+
+- `.subscribe(callback)` — calls `callback` synchronously with the observable stub, re-calls on invalidation. The return value is callable (Svelte convention) and has `.unsubscribe()` (RxJS convention).
+- `Symbol.observable` — returns self (RxJS `from()` interop).
+
+Observable behavior **propagates**: child stubs accessed from an observable are also observable, so you can pass subtrees to child components without re-wrapping.
+
+```typescript
+import { toObservable, toStub } from "graphpc/client";
+
+const obs = toObservable(client.root);
+obs.posts(4); // also observable — propagation
+
+toStub(obs); // back to raw stub
+```
+
+**Name collision**: the `.subscribe()` added by `toObservable` shadows any API edge or method named `subscribe`. If your graph has a `subscribe` member, call `toStub(obs)` first to unwrap back to the raw stub, then access it normally.
+
+### Framework examples
+
+**Svelte** — observable stubs work with Svelte 5's observable support:
 
 ```svelte
 <script lang="ts">
+  import { toObservable } from "graphpc/client";
   let { root }: { root: RpcStub<Api> } = $props();
-  const likes = $derived(await $root.posts(4).likes);
+  const oRoot = toObservable(root);
+  const likes = $derived(await $oRoot.posts(4).likes);
 </script>
 ```
 
-When `root.posts(4)` is invalidated, the `$root` subscription fires, `$derived` re-evaluates the async expression, and the `await` returns fresh data because the cache was marked stale.
+When `root.posts(4)` is invalidated, the `$oRoot` subscription fires, `$derived` re-evaluates the async expression, and the `await` returns fresh data because the cache was marked stale.
+
+**React** — use `subscribe()` directly with `useSyncExternalStore`:
+
+```tsx
+import { subscribe } from "graphpc/client";
+import { useSyncExternalStore } from "react";
+
+function useSubscribe(stub: RpcStub<any>) {
+  return useSyncExternalStore(
+    (cb) => subscribe(stub, cb),
+    () => stub,
+  );
+}
+```
 
 ## Read-After-Write
 

@@ -17,7 +17,13 @@ Use this as a cheatsheet. Canonical behavior lives in linked docs.
 
 ```ts
 import { Node, edge, method, stream, createServer } from "graphpc";
-import { createClient, invalidate, evict, subscribe } from "graphpc/client";
+import {
+  createClient,
+  invalidate,
+  evict,
+  subscribe,
+  toObservable,
+} from "graphpc/client";
 import { z } from "zod";
 
 class Post extends Node {
@@ -65,7 +71,7 @@ Use `ref()` for read-after-write freshness. Use path tools when you only need id
 - `@method` calls never coalesce.
 - Server uses a sliding token window for resource management.
 - Use `invalidate(stub)` to mark cached data stale, `evict(stub)` to remove it.
-- Use `subscribe(stub)` for reactivity (Svelte store contract).
+- Use `subscribe(stub, callback)` for reactivity; `toObservable(stub)` for Svelte store / RxJS observable contract.
 - Hydration seeds the persistent cache; method call results are dropped after hydration.
 
 Details: [Caching and Invalidation](caching.md), [SSR and Hydration](ssr-and-hydration.md), [Reconnection](reconnection.md).
@@ -90,9 +96,11 @@ Operational policy (redaction/reporting): [Production Guide](production.md).
 ## Production (`production.md`)
 
 - Set limits: `tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, payload size.
-- Set `maxOperationTimeout`; use `abortSignal()` in long-running work.
+- Set `maxOperationTimeout`; use `abortSignal()` in long-running work (timeout does not kill handlers that ignore it).
 - Log `operationError` with `errorId`.
 - Use `connection` / `disconnect` / `operation` events for observability.
+- `server.close({ gracePeriod })` for graceful shutdown (aborts connections, waits, then force-closes).
+- `pingInterval` / `pingTimeout` for half-open connection detection (does not reset idle timer).
 - Implementation-heavy observability/cancellation/rate-limit examples: [Production Operations (Advanced)](production-operations.md).
 
 ## SSR and Hydration (`ssr-and-hydration.md`)

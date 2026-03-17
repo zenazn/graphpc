@@ -49,6 +49,8 @@ export interface ServerOptions extends SerializerOptions {
   maxStreams?: number; // max concurrent streams per client (default: 32)
   maxCredits?: number; // max credits per stream the server will honor (default: 256)
   redactErrors?: boolean; // redact unregistered errors (default: auto-detect from NODE_ENV)
+  pingInterval?: number; // ms between pings for liveness (default: 30000, 0 = disabled)
+  pingTimeout?: number; // ms to wait for pong before closing (default: 10000)
   timers?: Timers;
 }
 
@@ -57,6 +59,11 @@ export interface ServerOptions extends SerializerOptions {
  * Each call to `handle()` invokes the factory with the connection's context
  * to produce a fresh root object for that connection.
  */
+interface ConnHandle {
+  abort: () => void;
+  forceClose: () => void;
+}
+
 export function createServer<TRoot extends object>(
   options: ServerOptions,
   factory: (ctx: Context) => TRoot,
@@ -66,6 +73,22 @@ export function createServer<TRoot extends object>(
   const connectionHandlers = new Set<ServerEventMap["connection"]>();
   const disconnectHandlers = new Set<ServerEventMap["disconnect"]>();
   const operationHandlers: Array<ServerEventMap["operation"]> = [];
+
+  // -- Connection tracking for graceful shutdown --
+  const activeConns = new Set<ConnHandle>();
+  let closing = false;
+  let closeResolve: (() => void) | null = null;
+
+  function onRegister(h: ConnHandle) {
+    activeConns.add(h);
+  }
+
+  function onDeregister(h: ConnHandle) {
+    activeConns.delete(h);
+    if (closing && activeConns.size === 0 && closeResolve) {
+      closeResolve();
+    }
+  }
 
   function emitError(err: unknown) {
     for (const handler of errorHandlers) handler(err);
@@ -77,6 +100,10 @@ export function createServer<TRoot extends object>(
 
   return {
     handle(transport: Transport, ctx: Context): void {
+      if (closing) {
+        transport.close();
+        return;
+      }
       try {
         const root = factory(ctx);
         const handler = createHandler(
@@ -87,6 +114,8 @@ export function createServer<TRoot extends object>(
           connectionHandlers,
           disconnectHandlers,
           operationHandlers,
+          onRegister,
+          onDeregister,
         );
         handler(transport, ctx);
       } catch (err) {
@@ -99,17 +128,35 @@ export function createServer<TRoot extends object>(
       }
     },
     wsHandlers<T>(getContext: (data: T) => Context): WebSocketHandlers<T> {
-      type Callbacks = { _message: (raw: string) => void; _close: () => void };
+      type Callbacks = {
+        _message: (raw: string) => void;
+        _close: () => void;
+        close: () => void;
+        closed: boolean;
+      };
       const wsMap = new WeakMap<object, Callbacks>();
 
       return {
         data: undefined as unknown as T,
         open(ws: WsLike<T>) {
+          if (closing) {
+            ws.close();
+            return;
+          }
           try {
             const callbacks: Callbacks = {
               _message: () => {},
               _close: () => {},
+              close: () => {},
+              closed: false,
             };
+            const finalizeClose = () => {
+              if (callbacks.closed) return;
+              callbacks.closed = true;
+              wsMap.delete(ws);
+              callbacks._close();
+            };
+            callbacks.close = finalizeClose;
             wsMap.set(ws, callbacks);
 
             const transport: Transport = {
@@ -117,9 +164,13 @@ export function createServer<TRoot extends object>(
                 ws.send(data);
               },
               close() {
-                ws.close();
+                try {
+                  ws.close();
+                } finally {
+                  finalizeClose();
+                }
               },
-              addEventListener(type: string, listener: any) {
+              addEventListener(type: string, listener: Function) {
                 if (type === "message")
                   callbacks._message = (raw: string) => listener({ data: raw });
                 else if (type === "close")
@@ -139,6 +190,8 @@ export function createServer<TRoot extends object>(
               connectionHandlers,
               disconnectHandlers,
               operationHandlers,
+              onRegister,
+              onDeregister,
             );
             handler(transport, ctx);
           } catch (err) {
@@ -156,11 +209,7 @@ export function createServer<TRoot extends object>(
           if (cb) cb._message(eventDataToString(message));
         },
         close(ws: WsLike<T>) {
-          const cb = wsMap.get(ws);
-          if (cb) {
-            cb._close();
-            wsMap.delete(ws);
-          }
+          wsMap.get(ws)?.close();
         },
         error(_ws: WsLike<T>, error: unknown) {
           emitError(error);
@@ -168,24 +217,80 @@ export function createServer<TRoot extends object>(
       };
     },
     on(event, handler) {
-      if (event === "error") errorHandlers.add(handler as any);
-      else if (event === "operationError") opErrorHandlers.add(handler as any);
-      else if (event === "connection") connectionHandlers.add(handler as any);
-      else if (event === "disconnect") disconnectHandlers.add(handler as any);
-      else if (event === "operation") operationHandlers.push(handler as any);
+      if (event === "error")
+        errorHandlers.add(handler as ServerEventMap["error"]);
+      else if (event === "operationError")
+        opErrorHandlers.add(handler as ServerEventMap["operationError"]);
+      else if (event === "connection")
+        connectionHandlers.add(handler as ServerEventMap["connection"]);
+      else if (event === "disconnect")
+        disconnectHandlers.add(handler as ServerEventMap["disconnect"]);
+      else if (event === "operation")
+        operationHandlers.push(handler as ServerEventMap["operation"]);
     },
     off(event, handler) {
-      if (event === "error") errorHandlers.delete(handler as any);
+      if (event === "error")
+        errorHandlers.delete(handler as ServerEventMap["error"]);
       else if (event === "operationError")
-        opErrorHandlers.delete(handler as any);
+        opErrorHandlers.delete(handler as ServerEventMap["operationError"]);
       else if (event === "connection")
-        connectionHandlers.delete(handler as any);
+        connectionHandlers.delete(handler as ServerEventMap["connection"]);
       else if (event === "disconnect")
-        disconnectHandlers.delete(handler as any);
+        disconnectHandlers.delete(handler as ServerEventMap["disconnect"]);
       else if (event === "operation") {
-        const idx = operationHandlers.indexOf(handler as any);
+        const idx = operationHandlers.indexOf(
+          handler as ServerEventMap["operation"],
+        );
         if (idx !== -1) operationHandlers.splice(idx, 1);
       }
+    },
+    async close(opts) {
+      if (closing) {
+        // Idempotent: wait for existing close to finish
+        if (closeResolve) {
+          return new Promise<void>((r) => {
+            const prev = closeResolve;
+            closeResolve = () => {
+              prev?.();
+              r();
+            };
+          });
+        }
+        return;
+      }
+      closing = true;
+
+      if (activeConns.size === 0) return;
+
+      const timers = options.timers ?? defaultTimers();
+      const grace = opts?.gracePeriod ?? 5000;
+
+      // Signal all connections to abort
+      for (const conn of activeConns) conn.abort();
+
+      return new Promise<void>((resolve) => {
+        closeResolve = resolve;
+
+        // Check if all connections already closed from abort
+        if (activeConns.size === 0) {
+          closeResolve = null;
+          resolve();
+          return;
+        }
+
+        // Force-close after grace period
+        const graceTimer = timers.setTimeout(() => {
+          for (const conn of activeConns) conn.forceClose();
+        }, grace);
+
+        // Chain: when resolved (either gracefully or after force), clear grace timer
+        const origResolve = closeResolve;
+        closeResolve = () => {
+          closeResolve = null;
+          timers.clearTimeout(graceTimer);
+          origResolve?.();
+        };
+      });
     },
   } as ServerInstance<TRoot>;
 }
@@ -222,6 +327,8 @@ function createHandler(
   connectionHandlers: ReadonlySet<ServerEventMap["connection"]> = new Set(),
   disconnectHandlers: ReadonlySet<ServerEventMap["disconnect"]> = new Set(),
   operationHandlers: readonly ServerEventMap["operation"][] = [],
+  onRegister: (h: ConnHandle) => void = () => {},
+  onDeregister: (h: ConnHandle) => void = () => {},
 ) {
   const serializer = createSerializer(options);
 
@@ -693,7 +800,7 @@ function createHandler(
 
     // Build schema for this connection's context
     const { schema, classIndex } = buildSchema(
-      root.constructor as new (...args: any[]) => any,
+      root.constructor as new (...args: any[]) => object,
       ctx,
     );
 
@@ -706,6 +813,13 @@ function createHandler(
       schema,
     };
     transport.send(serializer.stringify(initMsg));
+
+    // Register for graceful shutdown tracking
+    const connHandle: ConnHandle = {
+      abort: () => connAbort.abort(),
+      forceClose: () => transport.close(),
+    };
+    onRegister(connHandle);
 
     for (const handler of connectionHandlers) {
       try {
@@ -731,6 +845,50 @@ function createHandler(
 
     resetIdleTimer();
     resetLruTimer();
+
+    // -- Ping/pong for half-open connection detection --
+    const pingInterval = options.pingInterval ?? 30_000;
+    const pingTimeout = options.pingTimeout ?? 10_000;
+    let pingTimer: ReturnType<typeof setTimeout> | null = null;
+    let pongTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function startPingTimer() {
+      if (pingInterval <= 0) return;
+      pingTimer = timers.setTimeout(() => {
+        try {
+          transport.send(serializer.stringify({ op: "ping" }));
+        } catch {
+          transport.close();
+          return;
+        }
+        pongTimer = timers.setTimeout(() => {
+          transport.close();
+        }, pingTimeout);
+      }, pingInterval);
+    }
+
+    function resetPingTimer() {
+      if (pingInterval <= 0) return;
+      if (pongTimer) {
+        timers.clearTimeout(pongTimer);
+        pongTimer = null;
+      }
+      if (pingTimer) timers.clearTimeout(pingTimer);
+      startPingTimer();
+    }
+
+    startPingTimer();
+
+    function maybeCloseAbortedConnection() {
+      if (
+        connAbort.signal.aborted &&
+        pendingOps === 0 &&
+        activeStreamCount === 0
+      )
+        transport.close();
+    }
+
+    connAbort.signal.addEventListener("abort", maybeCloseAbortedConnection);
 
     function operationAbortError(): RpcError {
       return connAbort.signal.aborted
@@ -1085,6 +1243,7 @@ function createHandler(
       // Unpin the path
       unpinPath(stream.entry);
       resetIdleTimer();
+      maybeCloseAbortedConnection();
     }
 
     let nextClientMessageId = 1;
@@ -1100,6 +1259,17 @@ function createHandler(
       } catch (err) {
         emitError(err);
         transport.close();
+        return;
+      }
+
+      // Pong response — do NOT reset idle timer
+      if (msg.op === "pong") {
+        if (pongTimer) {
+          timers.clearTimeout(pongTimer);
+          pongTimer = null;
+        }
+        if (pingTimer) timers.clearTimeout(pingTimer);
+        startPingTimer();
         return;
       }
 
@@ -1138,6 +1308,7 @@ function createHandler(
       }
 
       resetIdleTimer();
+      resetPingTimer();
 
       const opAbort = new AbortController();
       const opSignal = AbortSignal.any([connAbort.signal, opAbort.signal]);
@@ -1351,7 +1522,7 @@ function createHandler(
               let execute: () => Promise<OperationResult> = async () => {
                 captured = await executeOp();
                 return "error" in captured
-                  ? { error: (captured as any).error }
+                  ? { error: (captured as { error: unknown }).error }
                   : {};
               };
               for (let i = handlers.length - 1; i >= 0; i--) {
@@ -1396,7 +1567,7 @@ function createHandler(
                     }
                   : ({
                       op: msg.op,
-                      tok: (msg as any).tok,
+                      tok: (msg as { tok: number }).tok,
                       re: messageId,
                       error: internalErr,
                       errorId: undefined as string | undefined,
@@ -1408,6 +1579,7 @@ function createHandler(
             if (opTimer) timers.clearTimeout(opTimer);
             pendingOps--;
             resetIdleTimer();
+            maybeCloseAbortedConnection();
           }
         },
       ).catch((err) => {
@@ -1418,6 +1590,11 @@ function createHandler(
     transport.addEventListener("close", () => {
       if (idleTimer) timers.clearTimeout(idleTimer);
       if (lruTimer) timers.clearTimeout(lruTimer);
+      if (pingTimer) timers.clearTimeout(pingTimer);
+      if (pongTimer) timers.clearTimeout(pongTimer);
+
+      // Deregister from graceful shutdown tracking
+      onDeregister(connHandle);
 
       // Clean up all active streams
       for (const stream of activeStreams.values()) {

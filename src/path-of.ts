@@ -8,8 +8,10 @@
 import { PathArg } from "./path-arg";
 import { STUB_PATH } from "./proxy";
 
-export function pathOf(stub: any): PathArg {
-  const segments = stub?.[STUB_PATH];
+export function pathOf(stub: unknown): PathArg {
+  const segments = (stub as { [STUB_PATH]?: unknown } | null | undefined)?.[
+    STUB_PATH
+  ];
   if (!Array.isArray(segments)) {
     throw new Error("pathOf() requires a stub or data proxy");
   }

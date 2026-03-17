@@ -155,9 +155,27 @@ class PostsService extends Node {
 
 Signal model:
 
-- connection-wide controller aborts when transport closes
+- connection-wide controller aborts when transport closes (including `server.close()`)
 - per-operation controller aborts when timeout triggers
 - `abortSignal()` is the combined signal
+
+**Handlers that ignore the signal keep running.** The timeout responds to the client and fires the signal, but cannot kill the handler. If a handler does CPU-bound work or calls an API that doesn't accept a signal, the handler continues consuming resources after the client has moved on:
+
+```typescript
+// BAD: timeout has no effect — handler keeps running
+@method(z.string())
+async search(query: string): Promise<Result[]> {
+  return db.query("SELECT * FROM huge_table WHERE ...", [query]);
+}
+
+// GOOD: passes signal — handler aborts cooperatively
+@method(z.string())
+async search(query: string): Promise<Result[]> {
+  return db.query("SELECT * FROM huge_table WHERE ...", [query], {
+    signal: abortSignal(),
+  });
+}
+```
 
 ## Rate Limiting
 

@@ -103,24 +103,50 @@ When it fires:
 1. operation abort signal fires
 2. `OPERATION_TIMEOUT` is sent to the client
 3. edge tokens involved are marked failed
-4. user handler may keep running unless it cooperatively aborts
+
+**Important:** The timeout does _not_ kill the server-side handler. It fires the abort signal and responds to the client, but the handler keeps running unless it cooperatively checks `abortSignal()`. Pass the signal to all I/O calls (`fetch`, database queries, etc.) so that timeout cancellation actually stops work:
+
+```typescript
+import { abortSignal } from "graphpc";
+
+// GOOD: handler aborts when timeout fires
+@method(z.string())
+async search(query: string): Promise<Result[]> {
+  return db.query("SELECT ...", [query], { signal: abortSignal() });
+}
+```
+
+Without `abortSignal()`, the handler will continue consuming server resources (memory, CPU, database connections) after the client has already received the timeout error.
 
 ```typescript
 createServer({ maxOperationTimeout: 10_000 }, factory);
 ```
 
-Use `abortSignal()` in I/O paths to make timeout cancellation effective.
-
 See deep usage patterns: [Production Operations — Abort Signals](production-operations.md#abort-signals).
 
 ## Message Size Limits
 
-GraphPC does not enforce payload size limits directly; configure them at transport level.
+GraphPC does not enforce payload size limits — configure them at the transport layer. If a message exceeds the limit, the transport drops the connection silently.
 
 - Bun: `maxPayloadLength` (default 16MB)
 - ws: `maxPayload` (default 100MB)
 
-Recommendation: set an explicit limit (for many APIs, around 1MB is a reasonable starting point).
+Always set an explicit limit. For many APIs, 1MB is a reasonable starting point:
+
+```typescript
+// Bun
+Bun.serve({
+  websocket: {
+    maxPayloadLength: 1024 * 1024, // 1 MB
+    ...server.wsHandlers((data) => data),
+  },
+});
+
+// ws
+const wss = new WebSocket.Server({ maxPayload: 1024 * 1024 });
+```
+
+If a method deterministically returns data larger than the limit, every call will drop the connection, trigger a reconnect, replay the call, and drop again — an infinite loop. Use `@stream` to chunk large payloads instead.
 
 ## Connection Limits
 
@@ -144,6 +170,43 @@ createServer(
   factory,
 );
 ```
+
+## Graceful Shutdown
+
+`server.close()` stops accepting new connections and shuts down existing ones.
+
+```typescript
+process.on("SIGTERM", async () => {
+  await server.close({ gracePeriod: 10_000 });
+  process.exit(0);
+});
+```
+
+Shutdown sequence:
+
+1. New connections are rejected (`handle()` closes them immediately).
+2. All active connections' abort signals fire.
+3. In-progress operations and streams clean up (handlers that use `abortSignal()` abort cooperatively).
+4. After `gracePeriod` ms (default 5000), remaining connections are force-closed.
+5. The returned promise resolves when all connections are gone.
+
+`close()` is idempotent — calling it again returns the same promise. Clients with reconnect enabled will reconnect to a new server instance.
+
+## Half-Open Connection Detection
+
+`pingInterval` (default `30_000`, `0` disables) sends protocol-level pings to detect half-open connections. If no pong is received within `pingTimeout` ms (default `10_000`), the connection is closed.
+
+```typescript
+createServer(
+  {
+    pingInterval: 30_000,
+    pingTimeout: 10_000,
+  },
+  factory,
+);
+```
+
+Pings do not count as application activity — a connection with no real traffic still times out via `idleTimeout` even if pings succeed. Real messages reset the ping timer, so active connections are not pinged unnecessarily.
 
 ## Rate Limiting
 

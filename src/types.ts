@@ -32,6 +32,12 @@ export function defaultTimers(): Timers {
   };
 }
 
+declare global {
+  interface SymbolConstructor {
+    readonly observable: symbol;
+  }
+}
+
 // -- Node base class --
 
 export declare const nodeTag: unique symbol;
@@ -127,6 +133,8 @@ export interface ServerInstance<TRoot extends object> {
   on<E extends ServerEvent>(event: E, handler: ServerEventMap[E]): void;
   /** Unsubscribe from server events. */
   off<E extends ServerEvent>(event: E, handler: ServerEventMap[E]): void;
+  /** Gracefully shut down: reject new connections, abort existing ones, force-close after grace period. */
+  close(opts?: { gracePeriod?: number }): Promise<void>;
   /** Phantom — use `RootOf<typeof server>` to extract. */
   readonly Root: TRoot;
 }
@@ -295,6 +303,50 @@ type RpcNav<T> = {
 
 /** The stub type for a server class T */
 export type RpcStub<T> = RpcNav<T> & PromiseLike<RpcDataOf<T> & RpcNav<T>>;
+
+type RpcObservableSubscription<T> = {
+  subscribe(
+    callbackOrObserver:
+      | ((value: RpcObservable<T>) => void)
+      | { next?: (value: RpcObservable<T>) => void },
+  ): (() => void) & { unsubscribe(): void };
+  [Symbol.observable](): RpcObservable<T>;
+};
+
+type RpcObservableNav<T> = {
+  [K in keyof T as T[K] extends Function ? K : never]: T[K] extends (
+    ...args: infer A
+  ) => infer R
+    ? IsAsyncGenerator<R> extends true
+      ? R extends AsyncGenerator<infer Y, any, any>
+        ? (
+            ...args: MapPathParams<StripAbortSignal<A>>
+          ) => RpcStream<UnwrapReferences<Y>>
+        : never
+      : IsNode<R> extends true
+        ? (...args: MapPathParams<A>) => RpcObservable<R>
+        : R extends Promise<infer U>
+          ? IsNode<U> extends true
+            ? (...args: MapPathParams<A>) => RpcObservable<U>
+            : ResolveMethodReturn<MapPathParams<A>, U>
+          : ResolveMethodReturn<MapPathParams<A>, R>
+    : never;
+} & {
+  [K in keyof T as T[K] extends Function
+    ? never
+    : IsNode<T[K]> extends true
+      ? K
+      : never]: RpcObservable<T[K]>;
+};
+
+type RpcObservableResolved<T> = RpcDataOf<T> &
+  RpcObservableNav<T> &
+  RpcObservableSubscription<T>;
+
+/** Observable wrapper around an RpcStub. Adds .subscribe() and Symbol.observable. */
+export type RpcObservable<T> = RpcObservableNav<T> &
+  PromiseLike<RpcObservableResolved<T>> &
+  RpcObservableSubscription<T>;
 
 // -- Client event types --
 

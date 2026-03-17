@@ -79,7 +79,7 @@ export function createSSRClient<S extends ServerInstance<any>>(
   const dataEntries: SSRDataEntry[] = [];
   const callEntries: SSRCallEntry[] = [];
   const { schema } = buildSchema(
-    (root as object).constructor as new (...args: any[]) => any,
+    (root as object).constructor as new (...args: any[]) => object,
     ctx,
   );
 

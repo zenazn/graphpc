@@ -212,7 +212,7 @@ class SecretNode extends Node {
 }
 
 class HiddenEdgeApi extends Node {
-  @hidden((ctx: any) => !ctx.isAdmin)
+  @hidden((ctx) => !(ctx as Record<string, boolean>).isAdmin)
   @edge(SecretNode)
   get secret(): SecretNode {
     return new SecretNode();
@@ -240,7 +240,7 @@ test("walkPath traverses @hidden edge when ctx has permission", async () => {
 
 class NodeWithHiddenProp extends Node {
   visible = "public";
-  @hidden((ctx: any) => !ctx.isAdmin)
+  @hidden((ctx) => !(ctx as Record<string, boolean>).isAdmin)
   get sensitiveData() {
     return "admin-only";
   }
@@ -459,10 +459,10 @@ test("ref() invalidates descendant cache entries (subtree invalidation)", async 
   // Manually add a fake descendant entry to simulate a cached child edge
   const leafKey = 'root.items.get("1")';
   const fakeChild: CacheEntry = {
-    promise: Promise.resolve({} as any),
+    promise: Promise.resolve({} as object),
     settled: true,
     rejected: false,
-    resolve: () => Promise.resolve({} as any),
+    resolve: () => Promise.resolve({} as object),
     version: 0,
   };
   session.nodeCache.set(leafKey + ".child", fakeChild);
