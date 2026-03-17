@@ -70,7 +70,22 @@ export function toObservable(input: unknown): unknown {
       if (prop === "subscribe") {
         const backend: ProxyBackend | undefined = raw[STUB_BACKEND];
         const path: PathSegments | undefined = raw[STUB_PATH];
-        if (!backend?.subscribe || !path) return undefined;
+        if (!backend?.subscribe || !path) {
+          return (
+            callbackOrObserver:
+              | ((value: any) => void)
+              | { next?: (value: any) => void },
+          ) => {
+            const cb =
+              typeof callbackOrObserver === "function"
+                ? callbackOrObserver
+                : callbackOrObserver?.next?.bind(callbackOrObserver);
+            cb?.(receiver);
+            const fn: any = () => {};
+            fn.unsubscribe = fn;
+            return fn;
+          };
+        }
         return (
           callbackOrObserver:
             | ((value: any) => void)

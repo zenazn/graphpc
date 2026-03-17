@@ -3,6 +3,7 @@ import { Node } from "./types";
 import { edge } from "./decorators";
 import { createServer } from "./server";
 import { createClient, subscribe } from "./client";
+import { createSSRClient } from "./ssr";
 import { toObservable, toStub } from "./observable";
 import { STUB_PATH, STUB_BACKEND } from "./proxy";
 
@@ -208,4 +209,30 @@ test("raw stub treats 'subscribe' as an edge name", () => {
   // Edge accessor: calling with a non-function arg should return a stub
   const child: unknown = sub("topic");
   expect((child as { [STUB_PATH]?: unknown })[STUB_PATH]).toBeTruthy();
+});
+
+// -- SSR (no backend.subscribe) --
+
+test("toObservable(ssrClient.root).subscribe is a function", () => {
+  const server = createServer({}, () => new Api());
+  const ssrClient = createSSRClient<typeof server>(new Api(), {});
+  const obs = toObservable(ssrClient.root);
+  expect(typeof obs.subscribe).toBe("function");
+});
+
+test("toObservable(ssrClient.root).subscribe(cb) calls cb and returns unsubscribe", () => {
+  const server = createServer({}, () => new Api());
+  const ssrClient = createSSRClient<typeof server>(new Api(), {});
+  const obs = toObservable(ssrClient.root);
+
+  let called = false;
+  let receivedValue: unknown;
+  const unsub = obs.subscribe((value: unknown) => {
+    called = true;
+    receivedValue = value;
+  });
+
+  expect(called).toBe(true);
+  expect(receivedValue).toBe(obs);
+  expect(typeof unsub).toBe("function");
 });
