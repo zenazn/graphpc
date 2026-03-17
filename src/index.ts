@@ -38,6 +38,8 @@ export {
   ConnectionLostError,
   TokenExpiredError,
   StreamLimitExceededError,
+  RateLimitError,
+  PathDepthExceededError,
 } from "./errors";
 
 // Context
@@ -47,11 +49,11 @@ export { getContext, abortThisConn, abortSignal } from "./context";
 export { getErrorUuid } from "./error-uuid";
 
 // Hooks
-export type { OperationInfo, OperationResult } from "./hooks";
+export type { OperationInfo, OperationResult, RateLimitInfo } from "./hooks";
 
 // Server
 export { createServer } from "./server";
-export type { ServerOptions } from "./server";
+export type { ServerOptions, RateLimitOptions } from "./server";
 
 // Client
 export { createClient, invalidate, evict, subscribe } from "./client";
@@ -72,6 +74,7 @@ export type {
   RpcDataOf,
   ClientOptions,
   ReconnectOptions,
+  LoopProtectionOptions,
   ServerInstance,
   WebSocketHandlers,
   WsLike,

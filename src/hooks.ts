@@ -28,3 +28,10 @@ export interface OperationResult {
   /** Present if the operation errored (pre-redaction). */
   error?: unknown;
 }
+
+export interface RateLimitInfo {
+  /** The operation type that was rejected. */
+  op: "edge" | "get" | "data" | "stream_start";
+  /** Tokens remaining (always 0 at time of event). */
+  tokens: number;
+}

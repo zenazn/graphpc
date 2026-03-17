@@ -15,10 +15,14 @@ GraphPC provides error classes that all extend `RpcError`:
 | `ConnectionLostError`      | `CONNECTION_LOST`       | All reconnect attempts exhausted                                          |
 | `TokenExpiredError`        | `TOKEN_EXPIRED`         | Auto-replay circuit breaker tripped (5 consecutive failures on same path) |
 | `StreamLimitExceededError` | `STREAM_LIMIT_EXCEEDED` | Too many concurrent streams on this connection                            |
+| `RateLimitError`           | `RATE_LIMITED`          | Per-connection token bucket exhausted                                     |
+| `PathDepthExceededError`   | `PATH_DEPTH_EXCEEDED`   | Edge traversal exceeded `maxDepth` limit                                  |
 
 When a token expires, the client automatically replays the path to obtain a fresh token — this is transparent to application code. `TokenExpiredError` only surfaces to the caller if the auto-replay circuit breaker trips (after 5 consecutive replay failures on the same path). See [Internals — Token Window](internals.md#token-window).
 
 When the stream limit is exceeded, the server returns a `StreamLimitExceededError` for the new stream request. Existing streams are unaffected.
+
+When the per-connection rate limit is exceeded, the server returns a `RateLimitError` for the rejected operation. The connection stays open and other operations are unaffected. See [Production — Rate Limiting](production.md#rate-limiting).
 
 All built-in errors are automatically serialized and deserialized — the client receives actual class instances with `instanceof` support.
 
@@ -80,6 +84,8 @@ Here's what the client receives for every failure mode:
 | All reconnect attempts fail                 | `ConnectionLostError`                                                                                             | `ConnectionLostError`      |
 | Token replay circuit breaker tripped        | `TokenExpiredError`                                                                                               | `TokenExpiredError`        |
 | Too many concurrent streams                 | `StreamLimitExceededError`                                                                                        | `StreamLimitExceededError` |
+| Per-connection rate limit exceeded          | `RateLimitError`                                                                                                  | `RateLimitError`           |
+| Edge traversal too deep                     | `PathDepthExceededError`                                                                                          | `PathDepthExceededError`   |
 
 ### Hidden-member nuance
 

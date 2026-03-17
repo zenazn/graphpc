@@ -179,9 +179,61 @@ async search(query: string): Promise<Result[]> {
 
 ## Rate Limiting
 
-### Upgrade-Level Enforcement (Recommended)
+### Built-in Per-Connection Rate Limiting
 
-Reject connections before opening WebSocket state.
+Every connection is protected by a token bucket rate limiter, enabled by default. It prevents runaway clients (e.g., infinite invalidation loops) from overwhelming the server.
+
+```typescript
+const server = createServer(
+  {
+    rateLimit: {
+      bucketSize: 200, // max burst capacity (default)
+      refillRate: 50, // tokens per second (default)
+    },
+  },
+  (ctx) => new Api(),
+);
+```
+
+When a connection exhausts its tokens, individual operations are rejected with a `RATE_LIMITED` error (code `"RATE_LIMITED"`). The connection stays open — other in-flight operations and subscriptions are unaffected.
+
+Disable with `rateLimit: false`.
+
+#### `rateLimit` Event
+
+Fires each time an operation is rejected. Use it for metrics and alerting.
+
+```typescript
+server.on("rateLimit", (ctx, info) => {
+  // info: { op: "edge" | "get" | "data" | "stream_start", tokens: number }
+  metrics.increment("graphpc.rate_limited", { userId: ctx.userId });
+});
+```
+
+### Client-Side Loop Protection
+
+The client protects subscribed paths with a per-path token bucket. Tokens are only consumed when a path would actually notify subscribers. Brief bursts are allowed, but sustained reactive loops (for example, a subscriber that writes and re-invalidates the same path over and over) eventually exhaust the bucket. When that happens, subscriber notifications for that path are suspended and a warning is logged.
+
+Enabled by default. Configure or disable:
+
+```typescript
+const client = createClient(
+  {
+    loopProtection: {
+      bucketSize: 20, // max notification burst per subscribed path (default)
+      refillRate: 3, // tokens per second per path (default)
+    },
+    // loopProtection: false  // disable
+  },
+  transportFactory,
+);
+```
+
+Loop protection resets on reconnect.
+
+### Upgrade-Level Enforcement
+
+For IP-based or connection-level rate limiting, reject before opening WebSocket state.
 
 ```typescript
 // Bun

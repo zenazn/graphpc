@@ -63,3 +63,15 @@ export class StreamLimitExceededError extends RpcError {
     super("STREAM_LIMIT_EXCEEDED", "Maximum concurrent streams exceeded");
   }
 }
+
+export class RateLimitError extends RpcError {
+  constructor() {
+    super("RATE_LIMITED", "Rate limit exceeded");
+  }
+}
+
+export class PathDepthExceededError extends RpcError {
+  constructor() {
+    super("PATH_DEPTH_EXCEEDED", "Maximum path depth exceeded");
+  }
+}

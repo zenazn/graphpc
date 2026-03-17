@@ -12,9 +12,12 @@ import {
   RpcError,
   TokenExpiredError,
   StreamLimitExceededError,
+  RateLimitError,
+  PathDepthExceededError,
+  EdgeNotFoundError,
 } from "./errors";
 import { formatSegment } from "./format";
-import type { OperationResult } from "./hooks";
+import type { OperationResult, RateLimitInfo } from "./hooks";
 import type { PathSegment } from "./path";
 import type {
   ClientMessage,
@@ -39,6 +42,11 @@ import {
   type WsLike,
 } from "./types";
 
+export interface RateLimitOptions {
+  bucketSize?: number; // max burst capacity (default: 200)
+  refillRate?: number; // tokens per second (default: 50)
+}
+
 export interface ServerOptions extends SerializerOptions {
   tokenWindow?: number; // sliding window size (default: 10000)
   lruTTL?: number; // ms before unpinned nodes are evicted from LRU (default: 60000)
@@ -48,9 +56,11 @@ export interface ServerOptions extends SerializerOptions {
   maxOperationTimeout?: number; // ms before aborting a single operation (0 = disabled)
   maxStreams?: number; // max concurrent streams per client (default: 32)
   maxCredits?: number; // max credits per stream the server will honor (default: 256)
+  maxDepth?: number; // max edge traversal depth per connection (default: 64)
   redactErrors?: boolean; // redact unregistered errors (default: auto-detect from NODE_ENV)
   pingInterval?: number; // ms between pings for liveness (default: 30000, 0 = disabled)
   pingTimeout?: number; // ms to wait for pong before closing (default: 10000)
+  rateLimit?: RateLimitOptions | false; // per-connection token bucket (default: enabled)
   timers?: Timers;
 }
 
@@ -73,6 +83,7 @@ export function createServer<TRoot extends object>(
   const connectionHandlers = new Set<ServerEventMap["connection"]>();
   const disconnectHandlers = new Set<ServerEventMap["disconnect"]>();
   const operationHandlers: Array<ServerEventMap["operation"]> = [];
+  const rateLimitHandlers = new Set<ServerEventMap["rateLimit"]>();
 
   // -- Connection tracking for graceful shutdown --
   const activeConns = new Set<ConnHandle>();
@@ -95,7 +106,23 @@ export function createServer<TRoot extends object>(
   }
 
   function emitOperationError(ctx: Context, info: OperationErrorInfo) {
-    for (const handler of opErrorHandlers) handler(ctx, info);
+    for (const handler of opErrorHandlers) {
+      try {
+        handler(ctx, info);
+      } catch (err) {
+        emitError(err);
+      }
+    }
+  }
+
+  function emitRateLimit(ctx: Context, info: RateLimitInfo) {
+    for (const handler of rateLimitHandlers) {
+      try {
+        handler(ctx, info);
+      } catch (err) {
+        emitError(err);
+      }
+    }
   }
 
   return {
@@ -111,6 +138,7 @@ export function createServer<TRoot extends object>(
           options,
           emitError,
           emitOperationError,
+          emitRateLimit,
           connectionHandlers,
           disconnectHandlers,
           operationHandlers,
@@ -187,6 +215,7 @@ export function createServer<TRoot extends object>(
               options,
               emitError,
               emitOperationError,
+              emitRateLimit,
               connectionHandlers,
               disconnectHandlers,
               operationHandlers,
@@ -227,6 +256,8 @@ export function createServer<TRoot extends object>(
         disconnectHandlers.add(handler as ServerEventMap["disconnect"]);
       else if (event === "operation")
         operationHandlers.push(handler as ServerEventMap["operation"]);
+      else if (event === "rateLimit")
+        rateLimitHandlers.add(handler as ServerEventMap["rateLimit"]);
     },
     off(event, handler) {
       if (event === "error")
@@ -242,7 +273,8 @@ export function createServer<TRoot extends object>(
           handler as ServerEventMap["operation"],
         );
         if (idx !== -1) operationHandlers.splice(idx, 1);
-      }
+      } else if (event === "rateLimit")
+        rateLimitHandlers.delete(handler as ServerEventMap["rateLimit"]);
     },
     async close(opts) {
       if (closing) {
@@ -313,7 +345,15 @@ interface NodeEntry {
   lruNext: NodeEntry | null;
   inLru: boolean;
   cacheVersion: number; // tracks sync with nodeCache version
-  segments: PathSegment[]; // full path segments from root for reconstruction
+  depth: number; // depth from root (root = 0)
+}
+
+// Parent-pointer storage for path reconstruction after LRU eviction.
+// Stores only the single edge segment + parent path, not the full path array.
+interface SegmentInfo {
+  parentPath: string;
+  segment: PathSegment;
+  depth: number;
 }
 
 function createHandler(
@@ -324,6 +364,7 @@ function createHandler(
     ctx: Context,
     info: OperationErrorInfo,
   ) => void = () => {},
+  emitRateLimit: (ctx: Context, info: RateLimitInfo) => void = () => {},
   connectionHandlers: ReadonlySet<ServerEventMap["connection"]> = new Set(),
   disconnectHandlers: ReadonlySet<ServerEventMap["disconnect"]> = new Set(),
   operationHandlers: readonly ServerEventMap["operation"][] = [],
@@ -345,6 +386,7 @@ function createHandler(
     const lruTTL = options.lruTTL ?? 60_000;
     const maxStreams = options.maxStreams ?? 32;
     const maxCredits = options.maxCredits ?? 256;
+    const maxDepth = options.maxDepth ?? 64;
 
     // -- Token ring buffer --
     // Slot index = tok % W. Each slot stores a path string (or null).
@@ -356,8 +398,8 @@ function createHandler(
     const pathIndex = new Map<string, NodeEntry>();
 
     // -- Path segments index (survives eviction, used for node reconstruction) --
-    const pathSegmentsIndex = new Map<string, PathSegment[]>();
-    pathSegmentsIndex.set("root", []);
+    // Stores parent-pointer + single segment instead of full path arrays (O(1) per entry).
+    const pathSegmentsIndex = new Map<string, SegmentInfo>();
 
     // -- LRU doubly-linked list --
     let lruHead: NodeEntry | null = null; // most recently accessed
@@ -452,7 +494,7 @@ function createHandler(
       lruNext: null,
       inLru: false,
       cacheVersion: 0,
-      segments: [],
+      depth: 0,
     };
     pathIndex.set("root", rootEntry);
 
@@ -496,6 +538,14 @@ function createHandler(
     const tokenPaths = new Map<number, string>();
     tokenPaths.set(0, "root");
 
+    // Fix 1: track depth per token for O(1) depth checks
+    const tokenDepths = new Map<number, number>();
+    tokenDepths.set(0, 0);
+
+    // Fix 3: track schema type index per token for synchronous edge validation
+    const tokenTypeIndex = new Map<number, number>();
+    tokenTypeIndex.set(0, 0); // root token → schema type 0
+
     function allocateToken(path: string): number {
       const tok = tokenCount++;
       const slot = tok % W;
@@ -511,6 +561,8 @@ function createHandler(
         } else {
           tokenStates.delete(oldTok);
           tokenPaths.delete(oldTok);
+          tokenDepths.delete(oldTok);
+          tokenTypeIndex.delete(oldTok);
         }
         const oldEntry = pathIndex.get(oldPath);
         if (oldEntry) {
@@ -522,6 +574,12 @@ function createHandler(
           ) {
             evictSubtree(oldEntry);
           }
+        } else if (oldPath !== "root") {
+          // Fix 2: entry was already LRU-evicted but pathSegmentsIndex/nodeCache
+          // were retained for the live token. Now that the token has expired,
+          // clean up the orphaned data.
+          pathSegmentsIndex.delete(oldPath);
+          nodeCache.delete(oldPath);
         }
       }
 
@@ -564,8 +622,6 @@ function createHandler(
         throw new RpcError("INVALID_TOKEN", "Parent node not cached");
       }
 
-      const seg: PathSegment =
-        edgeArgs.length > 0 ? [edgeName, ...edgeArgs] : edgeName;
       entry = {
         path,
         node: null,
@@ -584,7 +640,7 @@ function createHandler(
         lruNext: null,
         inLru: false,
         cacheVersion: 0,
-        segments: [...(parentEntry.segments ?? []), seg],
+        depth: parentEntry.depth + 1,
       };
 
       parentEntry.children.add(entry);
@@ -654,9 +710,9 @@ function createHandler(
       let entry = pathIndex.get(path);
       if (!entry) {
         // Token is valid but node was evicted (LRU). Rebuild the ancestor chain
-        // from stored segments so parent-closure invariant is maintained.
-        const segments = pathSegmentsIndex.get(path);
-        if (!segments) {
+        // from stored segment parent-pointers.
+        const leafInfo = pathSegmentsIndex.get(path);
+        if (!leafInfo) {
           // Fall back to nodeCache if segments aren't available
           const cacheEntry = nodeCache.get(path);
           if (!cacheEntry) {
@@ -681,7 +737,7 @@ function createHandler(
             lruNext: null,
             inLru: false,
             cacheVersion: cacheEntry.version,
-            segments: [],
+            depth: 0,
           };
           rootEntry.children.add(entry);
           pathIndex.set(path, entry);
@@ -689,18 +745,30 @@ function createHandler(
           return { entry, node };
         }
 
+        // Walk parent pointers to collect the ancestor chain, then rebuild root-to-leaf.
+        const chain: { path: string; info: SegmentInfo }[] = [];
+        let cur = path;
+        while (cur !== "root") {
+          const info = pathSegmentsIndex.get(cur);
+          if (!info) break;
+          chain.push({ path: cur, info });
+          cur = info.parentPath;
+        }
+        chain.reverse();
+
         // Rebuild entry chain by ensuring all ancestors exist
         let currentEntry = rootEntry;
-        let currentKey = "root";
-        for (const seg of segments) {
-          const segName = typeof seg === "string" ? seg : seg[0];
-          const segArgs =
-            typeof seg === "string" ? [] : (seg.slice(1) as unknown[]);
-          currentKey = currentKey + formatSegment(seg, options.reducers);
-          let nextEntry = pathIndex.get(currentKey);
+        for (const { path: entryPath, info } of chain) {
+          let nextEntry = pathIndex.get(entryPath);
           if (!nextEntry) {
+            const segName =
+              typeof info.segment === "string" ? info.segment : info.segment[0];
+            const segArgs =
+              typeof info.segment === "string"
+                ? []
+                : (info.segment.slice(1) as unknown[]);
             nextEntry = ensureEntry(
-              currentKey,
+              entryPath,
               currentEntry.path,
               segName,
               segArgs,
@@ -730,6 +798,18 @@ function createHandler(
       "root",
       createCacheEntry(() => Promise.resolve(root), root),
     );
+
+    // Fix 4: prune nodeCache entries not tracked by pathIndex (created by ref()).
+    // Bounded at W entries — entries beyond that are untracked ref() leftovers.
+    function pruneNodeCache() {
+      if (nodeCache.size <= W) return;
+      for (const key of nodeCache.keys()) {
+        if (key === "root") continue;
+        if (pathIndex.has(key)) continue;
+        nodeCache.delete(key);
+        if (nodeCache.size <= W) break;
+      }
+    }
 
     // -- Streams --
     let nextStreamId = -1;
@@ -797,6 +877,36 @@ function createHandler(
       settled: boolean;
       cleanup: () => void;
     }> = [];
+
+    // -- Token bucket rate limiting --
+    const rlOpts = options.rateLimit;
+    const rlEnabled = rlOpts !== false;
+    const rlBucketSize = rlEnabled
+      ? ((typeof rlOpts === "object" ? rlOpts?.bucketSize : undefined) ?? 200)
+      : 0;
+    const rlRefillRate = rlEnabled
+      ? ((typeof rlOpts === "object" ? rlOpts?.refillRate : undefined) ?? 50)
+      : 0;
+    let rlTokens = rlBucketSize;
+    let rlLastRefill = Date.now();
+
+    function consumeTokens(cost: number = 1): boolean {
+      if (!rlEnabled) return true;
+      const now = Date.now();
+      const elapsed = now - rlLastRefill;
+      if (elapsed > 0) {
+        rlTokens = Math.min(
+          rlBucketSize,
+          rlTokens + (elapsed / 1000) * rlRefillRate,
+        );
+        rlLastRefill = now;
+      }
+      if (rlTokens >= cost) {
+        rlTokens -= cost;
+        return true;
+      }
+      return false;
+    }
 
     // Build schema for this connection's context
     const { schema, classIndex } = buildSchema(
@@ -1262,37 +1372,42 @@ function createHandler(
         return;
       }
 
-      // Pong response — do NOT reset idle timer
+      // Pong response — only process if we're actually waiting for one.
+      // Spurious pongs (no pending pongTimer) are silently ignored.
       if (msg.op === "pong") {
         if (pongTimer) {
           timers.clearTimeout(pongTimer);
           pongTimer = null;
-        }
-        if (pingTimer) timers.clearTimeout(pingTimer);
-        startPingTimer();
-        return;
-      }
-
-      // Handle stream credit and cancel without pendingOps tracking
-      // These are fire-and-forget — no messageId, no response.
-      if (msg.op === "stream_credit") {
-        const stream = activeStreams.get(msg.sid);
-        if (stream && !stream.cancelled) {
-          stream.credits = Math.min(stream.credits + msg.credits, maxCredits);
-          pumpStream(stream).catch((err) => {
-            if (!stream.cancelled) {
-              emitError(err);
-              cleanupStream(stream);
-            }
-          });
+          if (pingTimer) timers.clearTimeout(pingTimer);
+          startPingTimer();
         }
         return;
       }
 
-      if (msg.op === "stream_cancel") {
-        const stream = activeStreams.get(msg.sid);
-        if (stream) {
-          cleanupStream(stream);
+      // Handle stream credit and cancel without pendingOps tracking.
+      // These are fire-and-forget — no messageId, no response — but they
+      // still consume rate-limit tokens to prevent message flooding.
+      if (msg.op === "stream_credit" || msg.op === "stream_cancel") {
+        if (!consumeTokens(0.1)) {
+          // Silently drop — fire-and-forget has no response channel.
+          return;
+        }
+        if (msg.op === "stream_credit") {
+          const stream = activeStreams.get(msg.sid);
+          if (stream && !stream.cancelled) {
+            stream.credits = Math.min(stream.credits + msg.credits, maxCredits);
+            pumpStream(stream).catch((err) => {
+              if (!stream.cancelled) {
+                emitError(err);
+                cleanupStream(stream);
+              }
+            });
+          }
+        } else {
+          const stream = activeStreams.get(msg.sid);
+          if (stream) {
+            cleanupStream(stream);
+          }
         }
         return;
       }
@@ -1304,6 +1419,50 @@ function createHandler(
 
       if (pendingOps > maxQueuedOps) {
         transport.close();
+        return;
+      }
+
+      // Token bucket rate limiting
+      if (!consumeTokens()) {
+        try {
+          const rlError = new RateLimitError();
+          emitRateLimit(ctx, {
+            op: msg.op as "edge" | "get" | "data" | "stream_start",
+            tokens: 0,
+          });
+          const errResponse =
+            msg.op === "edge"
+              ? {
+                  op: "edge" as const,
+                  tok: allocateToken(""),
+                  re: messageId,
+                  error: rlError,
+                  errorId: undefined as string | undefined,
+                }
+              : msg.op === "stream_start"
+                ? {
+                    op: "stream_start" as const,
+                    sid: nextStreamId--,
+                    re: messageId,
+                    error: rlError,
+                    errorId: undefined as string | undefined,
+                  }
+                : ({
+                    op: msg.op,
+                    tok: (msg as { tok: number }).tok,
+                    re: messageId,
+                    error: rlError,
+                    errorId: undefined as string | undefined,
+                  } as const);
+          processErrorResponse(errResponse);
+          transport.send(serializer.stringify(errResponse));
+        } catch (err) {
+          emitError(err);
+          transport.close();
+        } finally {
+          pendingOps--;
+          maybeCloseAbortedConnection();
+        }
         return;
       }
 
@@ -1319,50 +1478,94 @@ function createHandler(
       if (msg.op === "stream_start") {
         claimStreamId = nextStreamId--;
       }
+      // Fix 3: track schema type index per token for synchronous edge validation
+      let edgeEarlyReject: RpcError | null = null;
+
       if (msg.op === "edge") {
         // Compute cache key from parent's (already-known) key.
         const parentPath = getPathForToken(msg.tok);
         if (parentPath !== null) {
-          const seg: PathSegment =
-            msg.args && msg.args.length > 0
-              ? [msg.edge, ...msg.args]
-              : msg.edge;
-          const fullKey = parentPath + formatSegment(seg, options.reducers);
+          // Fix 1: depth limit check
+          const parentDepth = tokenDepths.get(msg.tok) ?? 0;
+          const newDepth = parentDepth + 1;
+          if (newDepth > maxDepth) {
+            const poisonKey = `__depth_${tokenCount}`;
+            claimToken = allocateToken(poisonKey);
+            const ts = createTokenState();
+            edgeEarlyReject = new PathDepthExceededError();
+            ts.reject(edgeEarlyReject);
+            tokenStates.set(claimToken, ts);
+          } else {
+            // Fix 3: validate edge name against schema before allocating entries
+            const parentType = tokenTypeIndex.get(msg.tok);
+            const childType =
+              parentType !== undefined
+                ? schema[parentType]?.edges[msg.edge]
+                : undefined;
 
-          claimToken = allocateToken(fullKey);
-          tokenStates.set(claimToken, createTokenState());
+            if (parentType !== undefined && childType === undefined) {
+              // Edge doesn't exist in schema — poison token, skip entry creation
+              const poisonKey = `__invalid_edge_${tokenCount}`;
+              claimToken = allocateToken(poisonKey);
+              const ts = createTokenState();
+              edgeEarlyReject = new EdgeNotFoundError(msg.edge);
+              ts.reject(edgeEarlyReject);
+              tokenStates.set(claimToken, ts);
+            } else {
+              const seg: PathSegment =
+                msg.args && msg.args.length > 0
+                  ? [msg.edge, ...msg.args]
+                  : msg.edge;
+              const fullKey = parentPath + formatSegment(seg, options.reducers);
 
-          // Ensure NodeEntry exists
-          const edgeName = msg.edge;
-          const edgeArgs = msg.args ?? [];
-          const entry = ensureEntry(fullKey, parentPath, edgeName, edgeArgs);
-          entry.tokenRefCount = Math.max(entry.tokenRefCount, 1); // allocateToken already incremented
+              claimToken = allocateToken(fullKey);
+              tokenStates.set(claimToken, createTokenState());
+              tokenDepths.set(claimToken, newDepth);
+              if (childType !== undefined) {
+                tokenTypeIndex.set(claimToken, childType);
+              }
 
-          // Record segments for node reconstruction after eviction
-          if (!pathSegmentsIndex.has(fullKey)) {
-            const parentSegs = pathSegmentsIndex.get(parentPath) ?? [];
-            pathSegmentsIndex.set(fullKey, [...parentSegs, seg]);
-          }
+              // Ensure NodeEntry exists
+              const edgeName = msg.edge;
+              const edgeArgs = msg.args ?? [];
+              const entry = ensureEntry(
+                fullKey,
+                parentPath,
+                edgeName,
+                edgeArgs,
+              );
+              entry.tokenRefCount = Math.max(entry.tokenRefCount, 1);
 
-          // Also maintain the old nodeCache for ref()/walkPath() compatibility
-          if (!nodeCache.has(fullKey)) {
-            const pKey = parentPath;
-            nodeCache.set(
-              fullKey,
-              createCacheEntry(() =>
-                getNode(nodeCache.get(pKey)!)
-                  .then((parent) =>
-                    resolveEdge(parent, edgeName, edgeArgs, ctx),
-                  )
-                  .catch((err) => {
-                    if (err instanceof RpcError || serializer.handles(err))
-                      throw err;
-                    const rpcErr = new RpcError("EDGE_ERROR", String(err));
-                    wrappedOriginals.set(rpcErr, err);
-                    throw rpcErr;
-                  }),
-              ),
-            );
+              // Record parent-pointer segment for node reconstruction after eviction
+              if (!pathSegmentsIndex.has(fullKey)) {
+                pathSegmentsIndex.set(fullKey, {
+                  parentPath,
+                  segment: seg,
+                  depth: newDepth,
+                });
+              }
+
+              // Also maintain the old nodeCache for ref()/walkPath() compatibility
+              if (!nodeCache.has(fullKey)) {
+                const pKey = parentPath;
+                nodeCache.set(
+                  fullKey,
+                  createCacheEntry(() =>
+                    getNode(nodeCache.get(pKey)!)
+                      .then((parent) =>
+                        resolveEdge(parent, edgeName, edgeArgs, ctx),
+                      )
+                      .catch((err) => {
+                        if (err instanceof RpcError || serializer.handles(err))
+                          throw err;
+                        const rpcErr = new RpcError("EDGE_ERROR", String(err));
+                        wrappedOriginals.set(rpcErr, err);
+                        throw rpcErr;
+                      }),
+                  ),
+                );
+              }
+            }
           }
         } else {
           // Parent token invalid — allocate a poisoned token
@@ -1370,6 +1573,29 @@ function createHandler(
           claimToken = allocateToken(poisonKey);
           tokenStates.set(claimToken, createTokenState());
         }
+      }
+
+      // Early reject for depth/schema validation failures — skip async handler
+      if (edgeEarlyReject) {
+        const response = {
+          op: "edge" as const,
+          tok: claimToken,
+          re: messageId,
+          error: edgeEarlyReject,
+          errorId: undefined as string | undefined,
+        };
+        processErrorResponse(response);
+        try {
+          transport.send(serializer.stringify(response));
+        } catch (err) {
+          emitError(err);
+          transport.close();
+        } finally {
+          pendingOps--;
+          resetIdleTimer();
+          maybeCloseAbortedConnection();
+        }
+        return;
       }
 
       let responded = false;
@@ -1578,6 +1804,8 @@ function createHandler(
           } finally {
             if (opTimer) timers.clearTimeout(opTimer);
             pendingOps--;
+            // Fix 4: prune nodeCache entries not tracked by pathIndex (e.g. from ref())
+            pruneNodeCache();
             resetIdleTimer();
             maybeCloseAbortedConnection();
           }
@@ -1620,6 +1848,8 @@ function createHandler(
       slotQueue.length = 0;
       tokenStates.clear();
       tokenPaths.clear();
+      tokenDepths.clear();
+      tokenTypeIndex.clear();
       pathIndex.clear();
       nodeCache.clear();
       pathSegmentsIndex.clear();

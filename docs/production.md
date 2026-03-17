@@ -10,7 +10,7 @@ For deep implementation examples (OTel middleware, abort-signal integration patt
 
 - Enable redaction in production (`redactErrors`).
 - Log `operationError` with `errorId` for support correlation.
-- Set connection limits (`tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`) and transport payload limits.
+- Set connection limits (`tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, `rateLimit`) and transport payload limits.
 - Set `maxOperationTimeout` and use `abortSignal()` in long-running work.
 - Treat reconnect replay as at-least-once; use idempotency keys for non-idempotent writes.
 - Add lightweight observability via `connection`, `disconnect`, and `operation` events.
@@ -27,6 +27,7 @@ const server = createServer(
     maxStreams: 32,
     maxPendingOps: 20,
     maxQueuedOps: 1000,
+    maxDepth: 64,
     maxOperationTimeout: 30_000,
     idleTimeout: 60_000,
   },
@@ -150,13 +151,15 @@ If a method deterministically returns data larger than the limit, every call wil
 
 ## Connection Limits
 
-| Option          | Default | Description                                  |
-| --------------- | ------- | -------------------------------------------- |
-| `tokenWindow`   | 10000   | Sliding window of valid tokens               |
-| `maxStreams`    | 32      | Max concurrent streams per connection        |
-| `maxPendingOps` | 20      | Max concurrent executing operations          |
-| `maxQueuedOps`  | 1000    | Max total in-flight messages before close    |
-| `idleTimeout`   | 60000ms | Inactivity timeout before closing connection |
+| Option          | Default           | Description                                      |
+| --------------- | ----------------- | ------------------------------------------------ |
+| `tokenWindow`   | 10000             | Sliding window of valid tokens                   |
+| `maxStreams`    | 32                | Max concurrent streams per connection            |
+| `maxPendingOps` | 20                | Max concurrent executing operations              |
+| `maxQueuedOps`  | 1000              | Max total in-flight messages before close        |
+| `maxDepth`      | 64                | Max edge traversal depth per connection          |
+| `idleTimeout`   | 60000ms           | Inactivity timeout before closing connection     |
+| `rateLimit`     | 200 burst, 50/sec | Per-connection token bucket (`false` to disable) |
 
 ```typescript
 createServer(
@@ -210,11 +213,23 @@ Pings do not count as application activity — a connection with no real traffic
 
 ## Rate Limiting
 
-Primary recommendation: rate-limit before WebSocket upgrade.
+GraphPC includes a built-in per-connection token bucket rate limiter, **enabled by default** (200 burst, 50/sec refill). It protects against runaway clients (e.g., infinite invalidation loops). Exhausted connections receive `RATE_LIMITED` errors on individual operations — the connection stays open. Stream flow-control messages (`stream_credit`, `stream_cancel`) consume 0.1 tokens each — cheap enough for normal backpressure but still bounded.
 
-If you need dynamic in-request controls (for example per-user plans), enforce in graph code using context and close/reject abusive connections.
+```typescript
+createServer(
+  {
+    rateLimit: { bucketSize: 200, refillRate: 50 }, // defaults
+    // rateLimit: false,  // disable
+  },
+  factory,
+);
+```
 
-Detailed Bun/ws and in-request examples: [Production Operations — Rate Limiting](production-operations.md#rate-limiting).
+Monitor via `server.on("rateLimit", (ctx, info) => ...)`.
+
+For IP-based or connection-level rate limiting, rate-limit before WebSocket upgrade. For dynamic in-request controls (per-user plans), enforce in graph code using context.
+
+Detailed examples: [Production Operations — Rate Limiting](production-operations.md#rate-limiting).
 
 ## Request IDs
 

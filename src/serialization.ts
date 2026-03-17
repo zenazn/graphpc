@@ -11,6 +11,8 @@ import {
   ConnectionLostError,
   TokenExpiredError,
   StreamLimitExceededError,
+  RateLimitError,
+  PathDepthExceededError,
 } from "./errors";
 import { Reference } from "./reference";
 import { PathArg } from "./path-arg";
@@ -37,6 +39,8 @@ const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   MethodNotFoundError: (v) => v instanceof MethodNotFoundError && [v.method],
   TokenExpiredError: (v) => v instanceof TokenExpiredError && [],
   StreamLimitExceededError: (v) => v instanceof StreamLimitExceededError && [],
+  RateLimitError: (v) => v instanceof RateLimitError && [],
+  PathDepthExceededError: (v) => v instanceof PathDepthExceededError && [],
   NodePath: (v) => v instanceof PathArg && [v.segments],
 };
 
@@ -64,6 +68,8 @@ const builtinRevivers: Record<string, (value: unknown) => unknown> = {
   ConnectionLostError: () => new ConnectionLostError(),
   TokenExpiredError: () => new TokenExpiredError(),
   StreamLimitExceededError: () => new StreamLimitExceededError(),
+  RateLimitError: () => new RateLimitError(),
+  PathDepthExceededError: () => new PathDepthExceededError(),
   NodePath: (v) => {
     const [segments] = v as [PathSegments];
     return new PathArg(segments);

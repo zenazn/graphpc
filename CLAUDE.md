@@ -11,8 +11,11 @@ To get quickly up to speed on what this library does, read `docs/llm.md`.
 - The documentation is the spec
 - When making changes to behavior, you _must_ change the docs to match. Be thorough: some concepts are cross-referenced or summarized in several places.
 - `docs/llm.md` should communicate a high-level mental model, give an AI assistant just enough information to use graphpc in common cases, and point to where the assistant can learn more. DO NOT comprehensively document every library feature there. It is vital that the doc remain short and to the point. EVERY TOKEN IS PRECIOUS.
-- Write code with an eye towards making it easy to test; then write tests
+- Write code with an eye towards making it easy to test
+- Use red/green TDD. You _must_ use red/green TDD any time you find a bug
 - Delete tests that don't provide value
-- Write efficient code. Avoid linear scans
+- Write efficient code. Avoid linear scans. Don't allocate unnecessary memory
+- The server should, in principle, use bounded resources per user. Resource
+  leaks--especially memory leaks--are not permitted
 - Prefer `WeakMap` to stashing data on "userland" objects
 - Security is especially important for an RPC framework. Be mindful of common vulnerabilities, like `prototype` and `constructor` accesses

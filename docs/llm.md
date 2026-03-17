@@ -85,7 +85,7 @@ Details: [Caching and Invalidation](caching.md), [SSR and Hydration](ssr-and-hyd
 
 ## Errors (`errors.md`)
 
-Built-ins extend `RpcError`: `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `ConnectionLostError`, `TokenExpiredError`, `StreamLimitExceededError`.
+Built-ins extend `RpcError`: `ValidationError`, `EdgeNotFoundError`, `MethodNotFoundError`, `ConnectionLostError`, `TokenExpiredError`, `StreamLimitExceededError`, `RateLimitError`, `PathDepthExceededError`.
 
 - Registered custom errors preserve `instanceof` across the wire.
 - Unregistered errors arrive as `RpcError`.
@@ -95,7 +95,7 @@ Operational policy (redaction/reporting): [Production Guide](production.md).
 
 ## Production (`production.md`)
 
-- Set limits: `tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, payload size.
+- Set limits: `tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, `maxDepth`, `rateLimit`, payload size.
 - Set `maxOperationTimeout`; use `abortSignal()` in long-running work (timeout does not kill handlers that ignore it).
 - Log `operationError` with `errorId`.
 - Use `connection` / `disconnect` / `operation` events for observability.

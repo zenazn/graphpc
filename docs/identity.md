@@ -61,11 +61,18 @@ Multi-hop and conditional canonical paths are valid as long as they return a rec
 
 ### Where References Can Appear
 
-`ref()` works anywhere in a method return shape: arrays, objects, and nested structures.
+Resolved `Reference<T>` values work anywhere the serializer can reach: method returns, nested structures, and data properties on nodes.
 
 ```typescript
+// Method return shapes
 async list(): Promise<Reference<Post>[]> { ... }
 async thread(): Promise<{ post: Reference<Post>; author: Reference<User> }> { ... }
+
+// Data properties — useful for pagination pages (see Patterns)
+class PostsPage extends Node {
+  items: Reference<Post>[];
+  constructor(items: Reference<Post>[]) { super(); this.items = items; }
+}
 ```
 
 ### References and Caching

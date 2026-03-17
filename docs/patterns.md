@@ -72,11 +72,11 @@ async list(cursor?: string): Promise<{
 
 The client passes `nextCursor` back to get the next page. Each item is a reference, so the client can traverse edges and call methods on it.
 
-### Advanced: Pages as Graph Nodes
+### Pages as Graph Nodes
 
 > This pattern uses references (`ref()` and `[canonicalPath]`). If you haven't read [Identity and References](identity.md) yet, start with the simple pattern above.
 
-For richer pagination — page metadata (total count, hasNext) and navigable next-page links — model pages as graph nodes:
+For richer pagination — page metadata, caching, and component-friendly data loading — model pages as graph nodes with items as a data property:
 
 ```typescript
 import { canonicalPath } from "graphpc";
@@ -85,43 +85,27 @@ class PostsPage extends Node {
   cursor: string;
   total: number;
   hasNext: boolean;
-
-  #nextCursor: string | null;
-  #rows: { id: string }[];
+  nextCursor: string | null;
+  items: Reference<Post>[];
 
   constructor(
     cursor: string,
     total: number,
     nextCursor: string | null,
-    rows: { id: string }[],
+    items: Reference<Post>[],
   ) {
     super();
     this.cursor = cursor;
     this.total = total;
     this.hasNext = nextCursor != null;
-    this.#nextCursor = nextCursor;
-    this.#rows = rows;
+    this.nextCursor = nextCursor;
+    this.items = items;
   }
 
   static async create(cursor?: string): Promise<PostsPage> {
     const result = await db.posts.list({ after: cursor, limit: 20 });
-    return new PostsPage(
-      result.cursor,
-      result.total,
-      result.nextCursor,
-      result.rows,
-    );
-  }
-
-  @method
-  async items(): Promise<Reference<Post>[]> {
-    return Promise.all(this.#rows.map((r) => ref(Post, r.id)));
-  }
-
-  @method
-  async next(): Promise<Reference<PostsPage> | null> {
-    if (!this.#nextCursor) return null;
-    return ref(PostsPage, this.#nextCursor);
+    const items = await Promise.all(result.rows.map((r) => ref(Post, r.id)));
+    return new PostsPage(result.cursor, result.total, result.nextCursor, items);
   }
 
   static [canonicalPath](root: Api, cursor: string) {
@@ -129,6 +113,8 @@ class PostsPage extends Node {
   }
 }
 ```
+
+Items are pre-resolved references stored as a data property. When the client awaits the page, references are serialized with their data — each item arrives ready to use with no additional wire call.
 
 The entry point is an async edge (since constructing a page requires a DB call):
 
@@ -146,28 +132,27 @@ class PostsService extends Node {
 ```typescript
 const page = client.root.posts.page();
 
-// Page metadata comes from data properties
-const { total, hasNext } = await page;
+// One await gives you everything — metadata, items, and next-page cursor
+const { total, hasNext, nextCursor, items } = await page;
 
-// Items are references — each post is navigable
-const items = await page.items();
-const { title } = await items[0]; // data, already available (resolves instantly from ref cache)
+// Items are references — each post is navigable with data already loaded
+const { title } = await items[0]; // resolves instantly from ref cache
 await items[0].updateTitle("New Title"); // method call, goes over the wire
 
-// Next page is a reference too — or null at the end
-const page2 = await page.next();
-if (page2) {
-  const moreItems = await page2.items();
+// Next page is another edge traversal using the cursor
+if (nextCursor) {
+  const page2 = client.root.posts.page(nextCursor);
+  const { items: more } = await page2;
 }
 ```
 
 #### Why this works
 
-The key insight is that `next()` is a `@method`, not an `@edge`. Methods can return null — no awkward sentinel nodes or thrown errors at the end of the list. But the returned value is a `Reference<PostsPage>`, so it's still a navigable graph node with its own data, methods, and a canonical path.
+With cursor-based pagination, a page's contents are stable — the same cursor always returns the same data. This makes items a natural fit for a data property rather than a method. Storing pre-resolved references as properties means `await page` fetches everything in one shot: metadata, items (with their data), and the next cursor.
 
-Each page is addressable: the `[canonicalPath]` static method resolves `PostsPage` to a path like `root.posts.page("abc123")`. Pages are SSR-serializable, resumable across connections, and work with hydration — all from existing reference machinery.
+The client navigates to the next page via `posts.page(nextCursor)` — the same edge used to load the first page. Each page is independently addressable: `posts.page("abc123")` works for deep linking, SSR, and hydration via the `[canonicalPath]` static. Pages are cached by path, so revisiting a page is a cache hit.
 
-Use the page-node approach when pages have meaningful data (counts, facets) or behavior (filtered sub-queries).
+Use the page-node approach when pages need caching, component integration with `use()` / `await`, or meaningful metadata (counts, facets).
 
 ## Real-Time Updates with Streams
 
@@ -229,7 +214,7 @@ Using React 19's `use()` hook:
 ```tsx
 function PostList({ posts }: { posts: RpcStub<PostsService> }) {
   const page = posts.page();
-  const items = use(page.items());
+  const { items } = use(page);
 
   return (
     <div>
@@ -267,7 +252,7 @@ Using `await` expressions (requires `experimental.async` in your Svelte config):
 <script lang="ts">
   let { posts }: { posts: RpcStub<PostsService> } = $props();
   const page = posts.page();
-  const items = await page.items();
+  const { items } = await page;
 </script>
 
 {#each items as item (item.id)}
@@ -300,48 +285,41 @@ React's `use()` and similar APIs require stable promise identity across re-rende
 - **Persistent cache** — awaiting a stub returns the same promise within the cache. Two `use(post)` calls in the same render tree share one wire message.
 - **Referential stability** — stubs passed as props are stable objects. The promises they produce are stable because of coalescing (see [Caching and Invalidation](caching.md#coalescing-rules)).
 
-This is why edge-based pagination (pages as graph nodes) matters for this pattern. An edge like `.page()` returns a stable stub, while a method like `.list()` returns a new promise each call. With `use()`, you need the former. See the [Pages as Graph Nodes](#advanced-pages-as-graph-nodes) section above.
+This is why edge-based pagination (pages as graph nodes) matters for this pattern. An edge like `.page()` returns a stable stub, and `use(page)` reads from the persistent cache — one stable promise for metadata and items together. A method-based approach like `.list()` returns a new promise each call, breaking `use()`. See the [Pages as Graph Nodes](#pages-as-graph-nodes) section above.
 
 ### Coalescing and Waterfalls
 
 The natural code style — parent awaits, renders children, children await — creates parent-to-child data waterfalls. This is the tradeoff for colocation. Here's how the system mitigates it:
 
 - **Coalescing helps**: sibling components fetching the same node coalesce into one wire message. Ten `<PostCard>` components all awaiting posts will be pipelined.
-- **References help**: returned references include data, so common pagination patterns don't require an additional waterfall (see below).
+- **References help**: page items arrive as references with data pre-loaded, so `<PostCard>` components render immediately — no additional waterfall for item data.
 - **Cache lifetime**: the idle timeout won't fire during a render cycle. In-flight requests keep the connection alive, and frameworks schedule rendering back-to-back as promises resolve — there's no risk of the connection closing mid-render.
 
-For most UIs, the waterfall depth is shallow (2-3 levels) and the user experience is good enough with Suspense fallbacks. For the few performance-critical paths where it matters, pre-fetch in a parent component and pass resolved data down as props:
+For most UIs, the waterfall depth is shallow (2-3 levels) and the user experience is good enough with Suspense fallbacks. With the page-node pattern, items arrive as references with data pre-loaded, so the first level of rendering is waterfall-free. Further edge navigation (e.g., each post loading its comments) creates the next level. For the few cases where that matters, pre-fetch in a parent component:
 
 ```tsx
-// Eliminates waterfall at the cost of moving the fetch
+// Eliminates the comments waterfall by fetching counts alongside posts
 function PostList({ posts }: { posts: RpcStub<PostsService> }) {
-  const page = posts.page();
-  const items = use(page.items());
-  // Pre-fetch all post data in parallel
-  const resolved = use(Promise.all(items.map((item) => item)));
+  const { items } = use(posts.page());
+  // Items have data from references, but sub-edge data needs fetching.
+  // Pre-fetch comment counts in parallel:
+  const counts = use(Promise.all(items.map((item) => item.comments.count())));
 
-  return resolved.map((post) => <PostCard data={post} />);
-}
-
-function PostCard({ data }: { data: { title: string; body: string } }) {
-  return (
-    <article>
-      <h2>{data.title}</h2>
-      <p>{data.body}</p>
-    </article>
-  );
+  return items.map((item, i) => (
+    <PostCard key={item.id} item={item} commentCount={counts[i]} />
+  ));
 }
 ```
 
 ### What References Give You
 
-When a method returns `Reference<Post>[]`, each reference arrives on the client with its data already fetched. A child component receiving one of these references can:
+When references arrive on the client — whether from a method return or a data property like a page's `items` — each reference includes its data pre-fetched. A child component receiving one of these references can:
 
 - **Access data without a new wire call** — `.title`, `.body` arrived with the reference. Awaiting resolves instantly from cache.
 - **Call methods** — `.updateTitle()` goes over the wire as a normal method call.
 - **Navigate edges** — `.comments` starts a new edge traversal, triggering its own fetch.
 
-This means a `<PostCard>` that received a reference from `.list()` renders immediately — the data is already there. Only further edge navigation creates new fetches. See [Identity and References](identity.md) for the full `ref()` API.
+This means a `<PostCard>` that received a reference from a page's `items` property renders immediately — the data is already there. Only further edge navigation creates new fetches. See [Identity and References](identity.md) for the full `ref()` API.
 
 ## Read This Next
 

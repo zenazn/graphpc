@@ -37,6 +37,7 @@ import type {
   RpcStream,
   ClientOptions,
   ReconnectOptions,
+  LoopProtectionOptions,
   ServerInstance,
   RootOf,
   RpcClient,
@@ -248,13 +249,108 @@ export function createClient<S extends ServerInstance<any>>(
     }
   }
 
+  // --- Loop protection ---
+  const loopConfig: LoopProtectionOptions | null =
+    options.loopProtection === false
+      ? null
+      : typeof options.loopProtection === "object"
+        ? options.loopProtection
+        : {};
+  const loopBucketSize = loopConfig ? (loopConfig.bucketSize ?? 20) : 0;
+  const loopRefillRate = loopConfig ? (loopConfig.refillRate ?? 3) : 0;
+  const loopSweepInterval =
+    loopConfig && loopRefillRate > 0
+      ? Math.max(1000, Math.ceil((loopBucketSize / loopRefillRate) * 1000))
+      : 0;
+  const loopBuckets = loopConfig
+    ? new Map<string, { tokens: number; lastRefill: number }>()
+    : null;
+  const loopBroken = loopConfig ? new Set<string>() : null;
+  let lastLoopSweep = 0;
+
+  function clearLoopPathState(key: string) {
+    loopBuckets?.delete(key);
+    loopBroken?.delete(key);
+  }
+
+  function refillLoopBucket(
+    bucket: { tokens: number; lastRefill: number },
+    now: number,
+  ) {
+    const elapsed = now - bucket.lastRefill;
+    if (elapsed <= 0) return;
+    bucket.tokens = Math.min(
+      loopBucketSize,
+      bucket.tokens + (elapsed / 1000) * loopRefillRate,
+    );
+    bucket.lastRefill = now;
+  }
+
+  function sweepLoopBuckets(now: number) {
+    if (!loopBuckets) return;
+    for (const [key, bucket] of loopBuckets) {
+      const subs = pathSubscribers.get(key);
+      if (!subs || subs.size === 0) {
+        clearLoopPathState(key);
+        continue;
+      }
+      refillLoopBucket(bucket, now);
+      if (bucket.tokens >= loopBucketSize) {
+        loopBuckets.delete(key);
+      }
+    }
+    lastLoopSweep = now;
+  }
+
+  function consumeLoopToken(key: string): boolean {
+    if (!loopBuckets || !loopBroken) return true;
+    if (loopBroken.has(key)) return false;
+    const now = Date.now();
+    if (loopSweepInterval > 0 && now - lastLoopSweep >= loopSweepInterval) {
+      sweepLoopBuckets(now);
+    }
+
+    let bucket = loopBuckets.get(key);
+    if (bucket) {
+      refillLoopBucket(bucket, now);
+      if (bucket.tokens >= loopBucketSize) {
+        loopBuckets.delete(key);
+        bucket = undefined;
+      }
+    }
+
+    const available = bucket?.tokens ?? loopBucketSize;
+    if (available < 1) {
+      loopBuckets.delete(key);
+      loopBroken.add(key);
+      console.warn(
+        `[graphpc] Loop protection: subscribed path "${key}" exhausted its ${loopBucketSize}-token bucket (refill ${loopRefillRate}/s). Subscribers suspended until reconnect.`,
+      );
+      return false;
+    }
+
+    const next = bucket ?? { tokens: loopBucketSize, lastRefill: now };
+    next.tokens = available - 1;
+    next.lastRefill = now;
+    if (next.tokens >= loopBucketSize) {
+      loopBuckets.delete(key);
+    } else {
+      loopBuckets.set(key, next);
+    }
+    return true;
+  }
+
   // --- Reactivity ---
   // Subscribers per path key
   const pathSubscribers = new Map<string, Set<() => void>>();
 
   function notifyPath(key: string) {
     const subs = pathSubscribers.get(key);
-    if (!subs) return;
+    if (!subs || subs.size === 0) {
+      clearLoopPathState(key);
+      return;
+    }
+    if (!consumeLoopToken(key)) return;
     for (const cb of subs) {
       cb();
     }
@@ -348,6 +444,7 @@ export function createClient<S extends ServerInstance<any>>(
     for (const subKey of pathSubscribers.keys()) {
       if (subKey === key || isDescendantPathKey(key, subKey)) {
         pathSubscribers.delete(subKey);
+        clearLoopPathState(subKey);
       }
     }
   }
@@ -430,6 +527,10 @@ export function createClient<S extends ServerInstance<any>>(
         const hello = msg as HelloMessage;
         schema = hello.schema;
         tokenWindow = hello.tokenWindow;
+        // Reset loop protection on reconnect
+        loopBuckets?.clear();
+        loopBroken?.clear();
+        lastLoopSweep = 0;
         if (isReconnecting) {
           isReconnecting = false;
           exhausted = false;
@@ -1054,6 +1155,7 @@ export function createClient<S extends ServerInstance<any>>(
         subs!.delete(callback);
         if (subs!.size === 0) {
           pathSubscribers.delete(key);
+          clearLoopPathState(key);
         }
       };
     },

@@ -12,7 +12,7 @@
  * - await on a stub → fetches data, returns data props + stubs
  */
 
-import type { OperationInfo, OperationResult } from "./hooks";
+import type { OperationInfo, OperationResult, RateLimitInfo } from "./hooks";
 import type { Transport } from "./protocol";
 import type { Reference } from "./ref";
 import type { PathArg } from "./path-arg";
@@ -75,9 +75,15 @@ export interface ReconnectOptions {
   maxRetries?: number; // default 5
 }
 
+export interface LoopProtectionOptions {
+  bucketSize?: number; // max burst of subscriber notifications per path (default: 20)
+  refillRate?: number; // tokens refilled per second per path (default: 3)
+}
+
 export interface ClientOptions extends SerializerOptions {
   hydrationTimeout?: number;
   reconnect?: boolean | ReconnectOptions;
+  loopProtection?: boolean | LoopProtectionOptions;
   timers?: Timers;
 }
 
@@ -99,6 +105,7 @@ export type ServerEventMap = {
     info: OperationInfo,
     execute: () => Promise<OperationResult>,
   ) => Promise<OperationResult>;
+  rateLimit: (ctx: Context, info: RateLimitInfo) => void;
 };
 
 export type ServerEvent = keyof ServerEventMap;
