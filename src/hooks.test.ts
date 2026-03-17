@@ -1,8 +1,9 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
 import { createClient } from "./client";
-import { getContext } from "./context";
+import { getContext, abortSignal, abortThisConn } from "./context";
 import { edge, method } from "./decorators";
+import { RpcError } from "./errors";
 import type { OperationInfo, OperationResult } from "./hooks";
 import { createMockTransportPair } from "./protocol";
 import { createServer } from "./server";
@@ -77,18 +78,6 @@ test("connection event fires on connect, disconnect fires on close", async () =>
   await flush();
 
   expect(disconnected).toBe(true);
-});
-
-test("no disconnect handler doesn't error on close", async () => {
-  const server = createServer({}, () => new Api());
-  server.on("connection", () => {});
-
-  const [st, ct] = createMockTransportPair();
-  server.handle(st, {});
-
-  ct.close();
-  await flush();
-  // No error thrown — test passes
 });
 
 test("connection and disconnect events receive context", async () => {
@@ -281,17 +270,6 @@ test("getContext() works inside operation handler", async () => {
   expect(hookCtx).toEqual({ role: "admin" });
 });
 
-test("zero overhead / no regression when no handlers registered", async () => {
-  const server = createServer({}, () => new Api());
-  const client = createClient<typeof server>({}, () => mockConnect(server, {}));
-
-  const result = await client.root.ping();
-  expect(result).toBe("pong");
-
-  const post = await client.root.posts.get("1");
-  expect(post.title).toBe("Post 1");
-});
-
 test("multiple operations produce separate handler calls", async () => {
   const ops: OperationInfo[] = [];
 
@@ -406,4 +384,195 @@ test("off('operation') removes handler from future operations", async () => {
   await client.root.ping();
   // No new calls after off()
   expect(calls.length).toBe(callsAfterFirst);
+});
+
+// -- getContext / abortThisConn / abortSignal --
+
+test("context functions throw outside of a request", () => {
+  expect(() => getContext()).toThrow(
+    "getContext() called outside of a request",
+  );
+  expect(() => abortSignal()).toThrow(
+    "abortSignal() called outside of a request",
+  );
+  expect(() => abortThisConn()).toThrow(
+    "abortThisConn() called outside of a request",
+  );
+});
+
+test("getContext() returns the connection context inside an edge getter", async () => {
+  let captured: unknown = null;
+
+  class Child extends Node {
+    value = "ok";
+  }
+
+  class CtxRoot extends Node {
+    @edge(Child)
+    get child(): Child {
+      captured = getContext();
+      return new Child();
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const gpc = createServer({}, () => new CtxRoot());
+  gpc.handle(serverTransport, { role: "admin" });
+  const client = createClient<typeof gpc>({}, () => clientTransport);
+
+  await client.root.child;
+  expect(captured).toEqual({ role: "admin" });
+});
+
+test("getContext() returns different context per connection", async () => {
+  const captured: unknown[] = [];
+
+  class CtxRoot extends Node {
+    @method
+    async capture(): Promise<void> {
+      captured.push(getContext());
+    }
+  }
+
+  const [s1, c1] = createMockTransportPair();
+  const [s2, c2] = createMockTransportPair();
+  const gpc = createServer({}, () => new CtxRoot());
+  gpc.handle(s1, { id: 1 });
+  gpc.handle(s2, { id: 2 });
+
+  const client1 = createClient<typeof gpc>({}, () => c1);
+  const client2 = createClient<typeof gpc>({}, () => c2);
+
+  await client1.root.capture();
+  await client2.root.capture();
+
+  expect(captured).toEqual([{ id: 1 }, { id: 2 }]);
+});
+
+test("getContext() works in deeply nested edge traversals", async () => {
+  class CtxLeaf extends Node {
+    @method
+    async check(): Promise<string> {
+      return (getContext() as any).deep;
+    }
+  }
+
+  class CtxMid extends Node {
+    @edge(CtxLeaf)
+    get leaf(): CtxLeaf {
+      return new CtxLeaf();
+    }
+  }
+
+  class CtxRoot extends Node {
+    @edge(CtxMid)
+    get mid(): CtxMid {
+      return new CtxMid();
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const gpc = createServer({}, () => new CtxRoot());
+  gpc.handle(serverTransport, { deep: "yes" });
+  const client = createClient<typeof gpc>({}, () => clientTransport);
+
+  const result = await client.root.mid.leaf.check();
+  expect(result).toBe("yes");
+});
+
+test("getContext() survives across await boundary", async () => {
+  class CtxRoot extends Node {
+    @method
+    async delayedWhoAmI(): Promise<string> {
+      await new Promise((r) => setTimeout(r, 10));
+      return (getContext() as any).userId;
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const gpc = createServer({}, () => new CtxRoot());
+  gpc.handle(serverTransport, { userId: "u_456" });
+  const client = createClient<typeof gpc>({}, () => clientTransport);
+
+  const result = await client.root.delayedWhoAmI();
+  expect(result).toBe("u_456");
+});
+
+test("abortThisConn() closes the transport from a method handler", async () => {
+  let transportClosed = false;
+
+  class AbortRoot extends Node {
+    @method
+    async disconnect(): Promise<void> {
+      abortThisConn();
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const originalClose = serverTransport.close.bind(serverTransport);
+  serverTransport.close = () => {
+    transportClosed = true;
+    originalClose();
+  };
+
+  const gpc = createServer({}, () => new AbortRoot());
+  gpc.handle(serverTransport, {});
+  const client = createClient<typeof gpc>(
+    { reconnect: false },
+    () => clientTransport,
+  );
+
+  try {
+    await client.root.disconnect();
+  } catch {
+    // Client may receive an error since transport closes mid-request
+  }
+
+  await flush();
+  expect(transportClosed).toBe(true);
+});
+
+test("abortThisConn() with reconnect triggers reconnection", async () => {
+  const events: string[] = [];
+  let connectionCount = 0;
+
+  class AbortRoot extends Node {
+    @method
+    async kick(): Promise<string> {
+      if (connectionCount <= 1) {
+        abortThisConn();
+      }
+      return "survived";
+    }
+
+    @method
+    async ping(): Promise<string> {
+      return "pong";
+    }
+  }
+
+  const gpc = createServer({}, () => new AbortRoot());
+
+  const transportFactory = () => {
+    connectionCount++;
+    const [serverTransport, clientTransport] = createMockTransportPair();
+    gpc.handle(serverTransport, {});
+    return clientTransport;
+  };
+
+  const client = createClient<typeof gpc>(
+    { reconnect: { initialDelay: 10 } },
+    transportFactory,
+  );
+
+  client.on("disconnect", () => events.push("disconnect"));
+  client.on("reconnect", () => events.push("reconnect"));
+
+  const result1 = await client.root.ping();
+  expect(result1).toBe("pong");
+
+  const result2 = await client.root.kick();
+  expect(result2).toBe("survived");
+  expect(connectionCount).toBe(2);
+  expect(events).toEqual(["disconnect", "reconnect"]);
 });

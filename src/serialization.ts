@@ -9,6 +9,8 @@ import {
   EdgeNotFoundError,
   MethodNotFoundError,
   ConnectionLostError,
+  TokenExpiredError,
+  StreamLimitExceededError,
 } from "./errors";
 import { Reference } from "./reference";
 import { PathArg } from "./path-arg";
@@ -33,6 +35,8 @@ const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   ValidationError: (v) => v instanceof ValidationError && [v.issues],
   EdgeNotFoundError: (v) => v instanceof EdgeNotFoundError && [v.edge],
   MethodNotFoundError: (v) => v instanceof MethodNotFoundError && [v.method],
+  TokenExpiredError: (v) => v instanceof TokenExpiredError && [],
+  StreamLimitExceededError: (v) => v instanceof StreamLimitExceededError && [],
   NodePath: (v) => v instanceof PathArg && [v.segments],
 };
 
@@ -44,6 +48,8 @@ const builtinRevivers: Record<string, (value: any) => unknown> = {
   EdgeNotFoundError: ([edge]: [string]) => new EdgeNotFoundError(edge),
   MethodNotFoundError: ([method]: [string]) => new MethodNotFoundError(method),
   ConnectionLostError: () => new ConnectionLostError(),
+  TokenExpiredError: () => new TokenExpiredError(),
+  StreamLimitExceededError: () => new StreamLimitExceededError(),
   NodePath: ([segments]: [PathSegments]) => new PathArg(segments),
 };
 

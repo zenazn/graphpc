@@ -51,3 +51,15 @@ export class ConnectionLostError extends RpcError {
     super("CONNECTION_LOST", "All reconnection attempts failed");
   }
 }
+
+export class TokenExpiredError extends RpcError {
+  constructor() {
+    super("TOKEN_EXPIRED", "Token expired");
+  }
+}
+
+export class StreamLimitExceededError extends RpcError {
+  constructor() {
+    super("STREAM_LIMIT_EXCEEDED", "Maximum concurrent streams exceeded");
+  }
+}

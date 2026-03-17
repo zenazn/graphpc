@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, method } from "./decorators";
+import { edge, method, stream } from "./decorators";
 import { createServer } from "./server";
 import { createClient } from "./client";
 import { createMockTransportPair } from "./protocol";
@@ -820,4 +820,111 @@ test("reconnect() can exhaust again", async () => {
   client.reconnect();
   await waitForEvent(client, "reconnectFailed");
   expect(failedCount).toBe(2);
+});
+
+test("stream with resume keeps a pending next() alive across reconnect", async () => {
+  class ResumeNode extends Node {
+    @stream(z.number().optional())
+    async *updates(signal: AbortSignal, cursor = 0): AsyncGenerator<number> {
+      while (!signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        yield cursor++;
+      }
+    }
+  }
+
+  class ResumeRoot extends Node {
+    @edge(ResumeNode)
+    get node(): ResumeNode {
+      return new ResumeNode();
+    }
+  }
+
+  const serverTransports: Array<{ close(): void }> = [];
+  const gpc = createServer({ idleTimeout: 0 }, () => new ResumeRoot());
+  const client = createClient<typeof gpc>(
+    { reconnect: { initialDelay: 0, maxRetries: 2 } },
+    () => {
+      const [serverTransport, clientTransport] = createMockTransportPair();
+      gpc.handle(serverTransport, {});
+      serverTransports.push(serverTransport);
+      return clientTransport;
+    },
+  );
+
+  let cursor = 0;
+  const handle = client.root.node.updates(cursor);
+  handle.resume = () => client.root.node.updates(cursor);
+
+  const iter = handle[Symbol.asyncIterator]();
+  expect(await iter.next()).toEqual({ value: 0, done: false });
+  cursor = 1;
+
+  const pending = iter.next();
+  serverTransports[0]!.close();
+
+  const second = await Promise.race([
+    pending,
+    new Promise<IteratorResult<number>>((_, reject) =>
+      setTimeout(() => reject(new Error("resume timeout")), 750),
+    ),
+  ]);
+
+  expect(second).toEqual({ value: 1, done: false });
+  client.close();
+});
+
+test("return() during disconnect abandons resume and cancels reconnect", async () => {
+  class ResumeNode extends Node {
+    @stream
+    async *updates(signal: AbortSignal): AsyncGenerator<number> {
+      let i = 0;
+      while (!signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        yield i++;
+      }
+    }
+  }
+
+  class ResumeRoot extends Node {
+    @edge(ResumeNode)
+    get node(): ResumeNode {
+      return new ResumeNode();
+    }
+  }
+
+  let connectCount = 0;
+  let reconnectCount = 0;
+  let currentServerTransport: Transport | null = null;
+  const gpc = createServer({ idleTimeout: 0 }, () => new ResumeRoot());
+
+  const client = createClient<typeof gpc>(
+    { reconnect: { initialDelay: 50, maxRetries: 2 } },
+    () => {
+      connectCount++;
+      const [serverTransport, clientTransport] = createMockTransportPair();
+      currentServerTransport = serverTransport;
+      gpc.handle(serverTransport, {});
+      return clientTransport;
+    },
+  );
+  client.on("reconnect", () => reconnectCount++);
+
+  const handle = client.root.node.updates();
+  handle.resume = () => client.root.node.updates();
+
+  const iter = handle[Symbol.asyncIterator]();
+  expect(await iter.next()).toEqual({ value: 0, done: false });
+
+  const pending = iter.next();
+  currentServerTransport!.close();
+
+  expect(await iter.return?.()).toEqual({ value: undefined, done: true });
+  expect(await pending).toEqual({ value: undefined, done: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  expect(connectCount).toBe(1);
+  expect(reconnectCount).toBe(0);
+  client.close();
 });

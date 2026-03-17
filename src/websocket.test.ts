@@ -1,10 +1,9 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { createClient } from "./client";
 import { edge, method } from "./decorators";
 import { eventDataToString } from "./protocol";
 import { createServer } from "./server";
-import { flush, mockConnect } from "./test-utils";
+import { flush } from "./test-utils";
 import { Node } from "./types";
 import type { WsLike } from "./types";
 
@@ -67,24 +66,6 @@ test("eventDataToString handles string, Uint8Array, and ArrayBuffer", () => {
   expect(
     eventDataToString(new TextEncoder().encode('{"op":"edge"}').buffer),
   ).toBe('{"op":"edge"}');
-});
-
-// -- mockConnect --
-
-test("mockConnect: basic end-to-end", async () => {
-  const server = createServer({}, () => new Api());
-  const client = createClient<typeof server>({}, () => mockConnect(server, {}));
-
-  const result = await client.root.ping();
-  expect(result).toBe("pong");
-});
-
-test("mockConnect: deep navigation", async () => {
-  const server = createServer({}, () => new Api());
-  const client = createClient<typeof server>({}, () => mockConnect(server, {}));
-
-  const post = await client.root.posts.get("1");
-  expect(post.title).toBe("Hello World");
 });
 
 // -- wsHandlers --

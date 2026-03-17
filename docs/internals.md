@@ -4,32 +4,34 @@
 
 When to read this page: when you need wire-level behavior, token mechanics, and exact operation semantics.
 
-This page is protocol-focused. For app-level guidance, prefer [Mental Model](mental-model.md), [Epochs and Caching](caching.md), and [Reconnection](reconnection.md).
+This page is protocol-focused. For app-level guidance, prefer [Mental Model](mental-model.md), [Caching and Invalidation](caching.md), and [Reconnection](reconnection.md).
 
 ## Connection Setup
 
-When a connection opens, the server sends a **hello message** (message 0) — a server-initiated message containing the protocol version and an indexed array of node types. Each entry maps edge names to the index of their target type. Index 0 is always the root:
+When a connection opens, the server sends a **hello message** (message 0) — a server-initiated message containing the protocol version, connection parameters, and an indexed array of node types. Each entry maps edge names to the index of their target type and lists available streams. Index 0 is always the root:
 
 ```json
 {
   "op": "hello",
-  "version": 1,
+  "version": 2,
+  "tokenWindow": 10000,
+  "maxStreams": 32,
   "schema": [
-    { "edges": { "posts": 1, "users": 2 } },
-    { "edges": { "get": 3 } },
-    { "edges": { "get": 4 } },
-    { "edges": { "comments": 5 } },
-    { "edges": {} },
-    { "edges": {} }
+    { "edges": { "posts": 1, "users": 2 }, "streams": ["updates"] },
+    { "edges": { "get": 3 }, "streams": [] },
+    { "edges": { "get": 4 }, "streams": [] },
+    { "edges": { "comments": 5 }, "streams": [] },
+    { "edges": {}, "streams": [] },
+    { "edges": {}, "streams": [] }
   ]
 }
 ```
 
-The `version` field is the protocol version (currently `1`). The client uses the schema to distinguish edges from non-edges: if a name appears in `edges`, it's an edge traversal; otherwise it's a terminal `get` request (method call, property read, or getter invocation). The schema only contains edges — everything else is identified by exclusion.
+The `version` field is the protocol version (currently `2`). The `tokenWindow` field indicates the server's sliding token window size. The `maxStreams` field indicates the maximum number of concurrent streams per connection. The client uses the schema to distinguish edges from non-edges: if a name appears in `edges`, it's an edge traversal; if it appears in `streams`, it's a stream; otherwise it's a terminal `get` request (method call, property read, or getter invocation). The schema contains edges and streams — everything else is identified by exclusion.
 
 ## Wire Format
 
-### Client → Server
+### Client -> Server
 
 **Edge traversal** — navigate from a node to a child:
 
@@ -52,7 +54,25 @@ The `version` field is the protocol version (currently `1`). The client uses the
 { "op": "data", "tok": 2 }
 ```
 
-### Server → Client
+**Stream start** — open a server-push stream:
+
+```json
+{ "op": "stream_start", "tok": 0, "name": "updates", "args": ["cursor123"] }
+```
+
+**Stream credit** — grant the server permission to send more items:
+
+```json
+{ "op": "stream_credit", "streamId": -1, "credit": 10 }
+```
+
+**Stream cancel** — client cancels an active stream:
+
+```json
+{ "op": "stream_cancel", "streamId": -1 }
+```
+
+### Server -> Client
 
 Every response carries a `re` ("in reply to") field referencing the implicit ID of the client message being answered (see [Message Identity](#message-identity)). The `hello` message is message 0 — server-initiated with no `re`.
 
@@ -85,6 +105,28 @@ On failure, the result carries an error and an `errorId` (UUID for correlation):
 }
 ```
 
+**Stream data** — server pushes a value to the client:
+
+```json
+{
+  "op": "stream_data",
+  "streamId": -1,
+  "data": { "message": "New notification" }
+}
+```
+
+**Stream end** — server signals the stream has completed:
+
+```json
+{ "op": "stream_end", "streamId": -1 }
+```
+
+On stream error:
+
+```json
+{ "op": "stream_end", "streamId": -1, "error": { ... }, "errorId": "550e8400-..." }
+```
+
 ### The `get` Op
 
 The `get` op handles three kinds of access through a single message. The client doesn't distinguish between them — it just sends a name (and optional args). The server resolves the name against the node:
@@ -95,19 +137,20 @@ The `get` op handles three kinds of access through a single message. The client 
 
 3. **Getter invocation** — If the name matches a getter defined on the node's prototype chain (stopping before `Object.prototype`), the getter is called and the result is returned. If the result is a function, the request is rejected with an error.
 
-The `data` op returns all data fields — properties and getter results (including inherited ones), excluding `@edge`, `@method`, and `@hidden` members. The `get` op is used for `@method` calls and individual field reads when the full node data has not yet been fetched.
+The `data` op returns all data fields — properties and getter results (including inherited ones), excluding `@edge`, `@method`, `@stream`, and `@hidden` members. The `get` op is used for `@method` calls and individual field reads when the full node data has not yet been fetched.
 
 The server applies security checks in order:
 
 - `constructor`, `__proto__`, and `prototype` are always blocked
 - `@hidden` members are rejected
 - `@edge` members are rejected (must use the `edge` op)
+- `@stream` members are rejected (must use the `stream_start` op)
 - Only `@method`-decorated functions can be called with arguments
 - Undecorated functions are never returned or called
 
 ### Client-Side Path Representation
 
-On the client, navigation builds a **path** — an array of segments. Property access appends a string (e.g., `"title"`), while a function call appends an array (e.g., `["get", "42"]` or `["method"]` for zero-arg calls). This distinction determines caching behavior for terminal operations: a string terminal (property read like `await node.title`) is cached within an epoch, while an array terminal (method call like `node.update("x")`) is never cached. Edge traversals — whether string or array segments — are always cached. See [Epochs and Caching](caching.md).
+On the client, navigation builds a **path** — an array of segments. Property access appends a string (e.g., `"title"`), while a function call appends an array (e.g., `["get", "42"]` or `["method"]` for zero-arg calls). This distinction determines caching behavior for terminal operations: a string terminal (property read like `await node.title`) is cached within the persistent cache, while an array terminal (method call like `node.update("x")`) is never cached. Edge traversals — whether string or array segments — are always cached. See [Caching and Invalidation](caching.md).
 
 Because classification is schema-driven, hidden edges (omitted from schema) are often treated as terminal `get` operations by normal proxies. That is why hidden-edge access may surface as `MethodNotFoundError` in typical client usage, while a forced raw `edge` op yields `EdgeNotFoundError`.
 
@@ -123,17 +166,38 @@ Tokens are sequential integers assigned to nodes within a session:
 ### Token Lifecycle
 
 ```
-Connection opens       → token 0 = root
-edge(0, "posts")       → token 1 = PostsService
-edge(1, "get", ["42"]) → token 2 = Post
-edge(0, "users")       → token 3 = UsersService
+Connection opens       -> token 0 = root
+edge(0, "posts")       -> token 1 = PostsService
+edge(1, "get", ["42"]) -> token 2 = Post
+edge(0, "users")       -> token 3 = UsersService
 ```
 
-Tokens are ephemeral — scoped to a single epoch. When the connection closes (ending the epoch), all token state is garbage collected.
+Tokens persist across reconnects on the client side (the persistent cache retains stub-to-token mappings). On the server side, tokens are scoped to a single connection.
+
+## Token Window
+
+The server manages tokens using a sliding window (default size: 10000, configurable via `tokenWindow`). The window is implemented as a ring buffer that tracks the most recently assigned tokens. When a token falls outside the window, it is expired — subsequent operations on that token return a `TokenExpiredError`.
+
+```typescript
+const server = createServer({ tokenWindow: 20000 }, (ctx) => new Api());
+```
+
+This replaces a hard token limit with a more practical approach:
+
+- Recently-used tokens are always valid
+- Old tokens expire naturally as new ones are assigned
+- Server memory is bounded by the window size, not the total number of tokens ever assigned
+- The server applies LRU eviction with TTL to reclaim resources for idle nodes within the window
+
+When a token expires:
+
+1. Any `get`, `data`, or `stream_start` operation targeting the expired token returns `TOKEN_EXPIRED` on the wire
+2. The connection is **not** closed (unlike the old `TOKEN_LIMIT_EXCEEDED` behavior)
+3. The client handles this transparently by replaying the path to obtain a fresh token — application code is unaware of the expiration. `TokenExpiredError` only surfaces to the caller if the replay circuit breaker trips (after 5 consecutive failures on the same path)
 
 ## Message Identity
 
-Every message has an implicit sequential number assigned by its position in the transport stream. Client messages are numbered 1, 2, 3… (positive). Server messages are numbered -1, -2, -3… (negative). These numbers are never carried as fields on the wire — they exist only as counters on each side.
+Every message has an implicit sequential number assigned by its position in the transport stream. Client messages are numbered 1, 2, 3... (positive). Server messages are numbered -1, -2, -3... (negative). These numbers are never carried as fields on the wire — they exist only as counters on each side.
 
 The only place a message number appears explicitly is the `re` field on server responses, which references the client message being answered.
 
@@ -144,10 +208,10 @@ Server responses carry `re: number` ("in reply to") on the wire, matching the im
 Responses may arrive out of order for `get` and `data` operations. The client matches each response to its pending request by `re`, not by arrival order.
 
 ```
-→ get(0, "slowMethod")           // implicit ID 3
-→ get(0, "fastMethod")           // implicit ID 4
-← get result (re=4, data=...)    // fast resolves first
-← get result (re=3, data=...)    // slow resolves second
+-> get(0, "slowMethod")           // implicit ID 3
+-> get(0, "fastMethod")           // implicit ID 4
+<- get result (re=4, data=...)    // fast resolves first
+<- get result (re=3, data=...)    // slow resolves second
 ```
 
 Responses may also arrive out of order for `edge` operations. The server processes edges with dependency ordering — a child edge waits for its parent token to resolve — but sibling edges (same parent) run in parallel and may complete in any order. The client matches all responses by `re`, not by arrival order.
@@ -158,7 +222,7 @@ For a given path, a node must be created exactly once per connection. The server
 
 This guarantees:
 
-- **Stable object identity** — same path → same object reference within a connection
+- **Stable object identity** — same path -> same object reference within a connection
 - **Exactly-once side effects** — edge resolution side effects execute only once per path
 - **Correct concurrent behavior** — concurrent `get`/`data` handlers that trigger `ref()` with overlapping paths coalesce safely
 
@@ -167,15 +231,15 @@ This guarantees:
 Because tokens are sequential and predictable, the client can **pipeline** — send multiple messages without waiting for responses:
 
 ```
-→ edge(0, "posts")              // will be token 1, implicit ID 1
-→ edge(1, "get", ["42"])        // will be token 2, implicit ID 2
-→ data(2)                       // fetch data for token 2, implicit ID 3
-← edge result (tok=1, re=1)
-← edge result (tok=2, re=2)
-← data result (tok=2, re=3, data={...})
+-> edge(0, "posts")              // will be token 1, implicit ID 1
+-> edge(1, "get", ["42"])        // will be token 2, implicit ID 2
+-> data(2)                       // fetch data for token 2, implicit ID 3
+<- edge result (tok=1, re=1)
+<- edge result (tok=2, re=2)
+<- data result (tok=2, re=3, data={...})
 ```
 
-The client sends all three messages immediately. The server processes them with dependency ordering: each operation waits for the token it references to be resolved. A child edge (token 1 → token 2) waits for its parent (token 0 → token 1) to complete. Sibling edges from the same parent run in parallel. `get` and `data` operations wait for their target token, then run concurrently. Responses may arrive out of order.
+The client sends all three messages immediately. The server processes them with dependency ordering: each operation waits for the token it references to be resolved. A child edge (token 1 -> token 2) waits for its parent (token 0 -> token 1) to complete. Sibling edges from the same parent run in parallel. `get` and `data` operations wait for their target token, then run concurrently. Responses may arrive out of order.
 
 ## Concurrency & Ordering
 
@@ -184,10 +248,10 @@ The client sends all three messages immediately. The server processes them with 
 `get` (method calls and property reads) and `data` (full-node loads) ops execute concurrently on the server with **no ordering guarantee** — even when they target the same node. If the client sends two mutations on the same node without awaiting either, they may execute and complete in any order:
 
 ```
-→ get(2, "updateTitle", ["A"])   // implicit message ID 4
-→ get(2, "updateTitle", ["B"])   // implicit message ID 5
-← get result (re=5)              // "B" may finish first; re = "in reply to" message 5
-← get result (re=4)              // "A" may finish second — title is now "A"
+-> get(2, "updateTitle", ["A"])   // implicit message ID 4
+-> get(2, "updateTitle", ["B"])   // implicit message ID 5
+<- get result (re=5)              // "B" may finish first; re = "in reply to" message 5
+<- get result (re=4)              // "A" may finish second — title is now "A"
 ```
 
 The library does not queue or order ops per-node. There's no built-in concurrency control — concurrent access to the same node instance is the developer's responsibility.
@@ -226,6 +290,19 @@ post.updateTitle("Draft");
 post.publish();  // may execute before updateTitle
 ```
 
+## Stream Backpressure
+
+Streams use credit-based flow control to prevent the server from overwhelming the client:
+
+1. When a client opens a stream (`stream_start`), the server begins producing values.
+2. The client sends `stream_credit` messages to grant the server permission to send a specific number of items.
+3. When credits are exhausted, the server pauses yielding until more credits arrive.
+4. The client cancels a stream with `stream_cancel`, which fires the generator's abort signal.
+
+This ensures that a fast-producing server does not overwhelm a slow-consuming client. The credit model also means streams are safe for long-lived connections — memory usage is bounded by the credit window.
+
+The server enforces `maxStreams` (default: 32) concurrent streams per connection. Opening a stream beyond this limit returns a `StreamLimitExceededError`.
+
 ## Failure Semantics
 
 ### Failed Tokens
@@ -233,11 +310,11 @@ post.publish();  // may execute before updateTitle
 Edge traversals **always consume a token**, even on failure. A failed token propagates the original error — any subsequent operation targeting it receives the same rejection:
 
 ```
-→ edge(1, "get", ["deleted-user"])           // implicit ID 3
-← edge result (tok=2, re=3, error: NotFound)
+-> edge(1, "get", ["deleted-user"])           // implicit ID 3
+<- edge result (tok=2, re=3, error: NotFound)
 
-→ get(2, "updateEmail", ["x"])               // implicit ID 4
-← get result (tok=2, re=4, error: NotFound)  // same error, not executed
+-> get(2, "updateEmail", ["x"])               // implicit ID 4
+<- get result (tok=2, re=4, error: NotFound)  // same error, not executed
 ```
 
 This keeps client and server token counters in sync, which is critical for pipelining. Without this rule, a failed traversal would desynchronize the counters and break all subsequent messages. Internally, each token maps to a cache key in `nodeCache`. Cache entries use lazy resolution — the entry's promise is created on first access and cached for subsequent accesses. A failed edge's rejection propagates to all pipelined children that depend on it.
@@ -250,6 +327,8 @@ Errors are serialized through devalue with custom reducers, so the client receiv
 - `EdgeNotFoundError` — referenced edge doesn't exist
 - `MethodNotFoundError` — referenced method/property doesn't exist
 - `ConnectionLostError` — all reconnection attempts exhausted
+- `TokenExpiredError` — token has fallen outside the server's sliding window (normally handled transparently by client auto-replay; only surfaces if the replay circuit breaker trips)
+- `StreamLimitExceededError` — too many concurrent streams on this connection
 - `RpcError` — base class for all RPC errors
 
 Hidden-member errors are op-dependent (`edge` op -> `EdgeNotFoundError`, `get` op -> `MethodNotFoundError`) because client-side classification is schema-driven.
@@ -259,14 +338,16 @@ Hidden-member errors are op-dependent (`edge` op -> `EdgeNotFoundError`, `get` o
 Each connection has a **connection-wide** `AbortController`. Each incoming message creates a **per-operation** `AbortController`. The signals are combined via `AbortSignal.any([connSignal, opSignal])` and stored on the session.
 
 ```
-Connection AbortController ─────────┐
-                                     ├─ AbortSignal.any() → session.signal
-Per-operation AbortController ───────┘
+Connection AbortController ---------+
+                                     +-- AbortSignal.any() -> session.signal
+Per-operation AbortController -------+
 ```
 
 - The connection-wide signal fires when the transport closes.
 - The per-operation signal fires when `maxOperationTimeout` expires.
 - User code calls `abortSignal()` to get the combined signal.
+
+For streams, the abort signal is also passed as the first parameter to the generator function.
 
 ## Transport Interface
 
@@ -335,27 +416,11 @@ For advanced tests that need to spy on raw wire messages, use `createMockTranspo
 
 ## Idle Timeout
 
-The server can be configured with an `idleTimeout` (default: 5000ms). After no pending operations and no new messages for the timeout duration, the server closes the connection and garbage collects all token state.
+The server can be configured with an `idleTimeout` (default: 60000ms). After no pending operations and no new messages for the timeout duration, the server closes the connection and garbage collects all token state.
 
 ```typescript
-const server = createServer({ idleTimeout: 10_000 }, (ctx) => new Api()); // 10 seconds
+const server = createServer({ idleTimeout: 120_000 }, (ctx) => new Api()); // 2 minutes
 ```
-
-## Max Tokens
-
-The server can be configured with a `maxTokens` limit to bound per-connection memory usage. When the total number of tokens (both active and poisoned) reaches the limit, the next edge traversal returns an `RpcError` with code `TOKEN_LIMIT_EXCEEDED` and the connection is closed.
-
-```typescript
-const server = createServer({ maxTokens: 1000 }, (ctx) => new Api());
-```
-
-This prevents a single long-lived connection from accumulating unbounded token state. Each edge traversal allocates state that persists for the lifetime of the connection. Without a limit, a client navigating thousands of edges would keep all of those objects in memory indefinitely.
-
-When the limit is exceeded:
-
-1. The server assigns a token (to keep client/server counters synchronized for pipelined messages) and synchronously responds with an error — no cache entry is created
-2. An `RpcError` with code `TOKEN_LIMIT_EXCEEDED` is returned
-3. The connection is closed
 
 ## Max Pending Ops
 
@@ -365,7 +430,7 @@ The server limits the number of concurrently executing operations per connection
 const server = createServer({ maxPendingOps: 50 }, (ctx) => new Api());
 ```
 
-When all slots are occupied, new operations wait for a slot to free up after completing token resolution. This provides natural backpressure: the server processes work at a bounded rate, and the client's pending promises resolve as capacity becomes available. The `maxTokens` limit bounds edge traversals specifically — `maxPendingOps` bounds all operation types (`edge`, `get`, and `data`).
+When all slots are occupied, new operations wait for a slot to free up after completing token resolution. This provides natural backpressure: the server processes work at a bounded rate, and the client's pending promises resolve as capacity becomes available. The `tokenWindow` limit bounds edge traversals specifically — `maxPendingOps` bounds all operation types (`edge`, `get`, `data`, and `stream_start`).
 
 Operations waiting for a slot are processed in FIFO order as slots free up.
 

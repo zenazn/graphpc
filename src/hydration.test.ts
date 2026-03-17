@@ -14,7 +14,11 @@ function makeCache(opts?: { timeout?: number; timers?: any }) {
 /** Minimal hydration data for testing. */
 function makeHydrationData(overrides?: Partial<HydrationData>): HydrationData {
   return {
-    schema: [{ edges: { posts: 1 } }, { edges: { get: 2 } }, { edges: {} }],
+    schema: [
+      { edges: { posts: 1 }, streams: [] },
+      { edges: { get: 2 }, streams: [] },
+      { edges: {}, streams: [] },
+    ],
     refs: [
       [0, "posts"], // token 1
       [1, "get", "1"], // token 2
@@ -82,6 +86,23 @@ test("property read from data cache misses for absent properties", () => {
   const key = formatPath(["posts", ["get", "1"]]);
   const result = cache.lookup(key, { name: "nonexistent", args: [] });
   expect(result.hit).toBe(false);
+});
+
+test("property reads do not hit hydration data for Object.prototype names", () => {
+  const cache = makeCache();
+  cache.activate({
+    schema: [{ edges: {}, streams: [] }],
+    refs: [],
+    data: [[0, { name: "test", value: 42 }]],
+  });
+
+  const key = formatPath([]);
+  expect(cache.lookup(key, { name: "name", args: [] })).toEqual({
+    hit: true,
+    value: "test",
+  });
+  expect(cache.lookup(key, { name: "constructor", args: [] }).hit).toBe(false);
+  expect(cache.lookup(key, { name: "toString", args: [] }).hit).toBe(false);
 });
 
 test("method call with args does not cross-reference data cache", () => {
@@ -231,7 +252,7 @@ test("drop() clears pending inactivity timer", async () => {
 test("root path lookup (edgePath=[]) works", () => {
   const cache = makeCache();
   cache.activate({
-    schema: [{ edges: {} }],
+    schema: [{ edges: {}, streams: [] }],
     refs: [],
     data: [[0, { name: "root" }]],
   });
@@ -250,7 +271,10 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
   // Date edge arg vs ISO string
   const cache1 = makeCache();
   cache1.activate({
-    schema: [{ edges: { byDate: 1 } }, { edges: {} }],
+    schema: [
+      { edges: { byDate: 1 }, streams: [] },
+      { edges: {}, streams: [] },
+    ],
     refs: [[0, "byDate", date]],
     data: [[1, { found: "date-arg" }]],
   });
@@ -262,7 +286,10 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
   // Map edge arg — hit/miss correctly
   const cache2 = makeCache();
   cache2.activate({
-    schema: [{ edges: { lookup: 1 } }, { edges: {} }],
+    schema: [
+      { edges: { lookup: 1 }, streams: [] },
+      { edges: {}, streams: [] },
+    ],
     refs: [[0, "lookup", new Map([["a", 1]])]],
     data: [[1, { result: "map-hit" }]],
   });
@@ -278,7 +305,10 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
   // Method call with Date+Map args — hit/miss correctly
   const cache3 = makeCache();
   cache3.activate({
-    schema: [{ edges: { svc: 1 } }, { edges: {} }],
+    schema: [
+      { edges: { svc: 1 }, streams: [] },
+      { edges: {}, streams: [] },
+    ],
     refs: [[0, "svc"]],
     data: [
       [
@@ -302,6 +332,25 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
       args: [new Date("2025-01-01"), new Map([["x", 10]])],
     }).hit,
   ).toBe(false);
+});
+
+test("method call cached with undefined result is a hit, not a miss", () => {
+  const cache = makeCache();
+  cache.activate({
+    schema: [
+      { edges: { svc: 1 }, streams: [] },
+      { edges: {}, streams: [] },
+    ],
+    refs: [[0, "svc"]],
+    data: [
+      [1, "doSomething", [], undefined], // method returned undefined
+    ],
+  });
+
+  const key = formatPath(["svc"]);
+  const result = cache.lookup(key, { name: "doSomething", args: [] });
+  expect(result.hit).toBe(true);
+  expect((result as any).value).toBeUndefined();
 });
 
 // --- validateHydrationData ---

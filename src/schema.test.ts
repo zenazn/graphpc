@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, method, hidden } from "./decorators";
+import { edge, method, hidden, stream } from "./decorators";
 import { buildSchema } from "./schema";
 import { Node } from "./types";
 
@@ -52,13 +52,13 @@ test("buildSchema creates indexed schema from class metadata", () => {
   expect(classIndex.get(Post)).toBe(3);
 
   // Api has one edge: users → User (index 1)
-  expect(schema[0]).toEqual({ edges: { users: 1 } });
+  expect(schema[0]).toEqual({ edges: { users: 1 }, streams: [] });
   // User has one edge: posts → PostsService (index 2)
-  expect(schema[1]).toEqual({ edges: { posts: 2 } });
+  expect(schema[1]).toEqual({ edges: { posts: 2 }, streams: [] });
   // PostsService has one edge: get → Post (index 3)
-  expect(schema[2]).toEqual({ edges: { get: 3 } });
+  expect(schema[2]).toEqual({ edges: { get: 3 }, streams: [] });
   // Post has no edges
-  expect(schema[3]).toEqual({ edges: {} });
+  expect(schema[3]).toEqual({ edges: {}, streams: [] });
 });
 
 test("buildSchema handles cycles", () => {
@@ -72,7 +72,7 @@ test("buildSchema handles cycles", () => {
   const { schema, classIndex } = buildSchema(NodeA, {});
   expect(classIndex.get(NodeA)).toBe(0);
   // Self-referential edge
-  expect(schema[0]).toEqual({ edges: { self: 0 } });
+  expect(schema[0]).toEqual({ edges: { self: 0 }, streams: [] });
   expect(schema.length).toBe(1);
 });
 
@@ -98,7 +98,7 @@ test("buildSchema removes hidden edges when predicate returns true", () => {
   expect(classIndex.has(Root)).toBe(true);
   expect(classIndex.has(Public)).toBe(true);
   expect(classIndex.has(Secret)).toBe(false);
-  expect(schema[0]).toEqual({ edges: { pub: 1 } });
+  expect(schema[0]).toEqual({ edges: { pub: 1 }, streams: [] });
 });
 
 test("buildSchema keeps edges when predicate returns false", () => {
@@ -114,7 +114,7 @@ test("buildSchema keeps edges when predicate returns false", () => {
 
   const { schema, classIndex } = buildSchema(Root, {});
   expect(classIndex.has(Visible)).toBe(true);
-  expect(schema[0]).toEqual({ edges: { vis: 1 } });
+  expect(schema[0]).toEqual({ edges: { vis: 1 }, streams: [] });
 });
 
 test("buildSchema omits unreachable types entirely (shorter array)", () => {
@@ -169,4 +169,61 @@ test("types reachable via other visible edges still appear", () => {
   // hiddenPath should not be in the edges
   expect(schema[0]!.edges).not.toHaveProperty("hiddenPath");
   expect(schema[0]!.edges).toHaveProperty("visiblePath");
+});
+
+// -- Stream schema tests --
+
+test("buildSchema includes stream names", () => {
+  class StreamNode extends Node {
+    @stream
+    async *events(signal: AbortSignal): AsyncGenerator<string> {
+      yield "event";
+    }
+
+    @stream(z.string())
+    async *filtered(
+      signal: AbortSignal,
+      filter: string,
+    ): AsyncGenerator<string> {
+      yield filter;
+    }
+  }
+
+  class Root extends Node {
+    @edge(StreamNode)
+    get node(): StreamNode {
+      return new StreamNode();
+    }
+  }
+
+  const { schema } = buildSchema(Root, {});
+  // Root at 0, StreamNode at 1
+  expect(schema[1]!.streams).toContain("events");
+  expect(schema[1]!.streams).toContain("filtered");
+});
+
+test("buildSchema excludes hidden streams", () => {
+  class StreamNode extends Node {
+    @stream
+    async *visible(signal: AbortSignal): AsyncGenerator<number> {
+      yield 1;
+    }
+
+    @hidden(() => true)
+    @stream
+    async *secret(signal: AbortSignal): AsyncGenerator<number> {
+      yield 2;
+    }
+  }
+
+  class Root extends Node {
+    @edge(StreamNode)
+    get node(): StreamNode {
+      return new StreamNode();
+    }
+  }
+
+  const { schema } = buildSchema(Root, {});
+  expect(schema[1]!.streams).toContain("visible");
+  expect(schema[1]!.streams).not.toContain("secret");
 });

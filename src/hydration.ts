@@ -47,14 +47,17 @@ export class HydrationCache {
   private readonly timeout: number;
   private readonly timers: Timers;
   private readonly reducers: Reducers | undefined;
+  private readonly onDrop: ((data: Map<string, unknown>) => void) | undefined;
 
   constructor(options: {
     timeout: number;
     reducers?: Reducers;
     timers?: Partial<Timers>;
+    onDrop?: (data: Map<string, unknown>) => void;
   }) {
     this.timeout = options.timeout;
     this.reducers = options.reducers;
+    this.onDrop = options.onDrop;
     const defaults = defaultTimers();
     this.timers = {
       setTimeout: options.timers?.setTimeout ?? defaults.setTimeout,
@@ -130,8 +133,8 @@ export class HydrationCache {
 
     if (terminal) {
       const key = `${token}:${terminal.name}:${formatValue(terminal.args, this.reducers)}`;
-      const cached = this.callCache.get(key);
-      if (cached !== undefined) {
+      if (this.callCache.has(key)) {
+        const cached = this.callCache.get(key);
         this.trackInFlight();
         return { hit: true, value: cached };
       }
@@ -143,7 +146,7 @@ export class HydrationCache {
         if (
           nodeData != null &&
           typeof nodeData === "object" &&
-          terminal.name in (nodeData as Record<string, unknown>)
+          Object.hasOwn(nodeData as Record<string, unknown>, terminal.name)
         ) {
           this.trackInFlight();
           return {
@@ -165,6 +168,18 @@ export class HydrationCache {
 
   /** Drop the cache immediately. Idempotent. */
   drop(): void {
+    if (this.onDrop && this.pathToToken && this.dataCache) {
+      const remaining = new Map<string, unknown>();
+      for (const [pathKey, token] of this.pathToToken) {
+        const data = this.dataCache.get(token);
+        if (data !== undefined) {
+          remaining.set(pathKey, data);
+        }
+      }
+      if (remaining.size > 0) {
+        this.onDrop(remaining);
+      }
+    }
     this.active = false;
     this.pathToToken = undefined;
     this.dataCache = undefined;

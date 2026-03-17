@@ -169,13 +169,52 @@ Each page is addressable: the `[canonicalPath]` static method resolves `PostsPag
 
 Use the page-node approach when pages have meaningful data (counts, facets) or behavior (filtered sub-queries).
 
+## Real-Time Updates with Streams
+
+Use `@stream` when you need to push data from the server to the client in real time — notifications, live feeds, collaborative editing cursors, etc.
+
+```typescript
+import { Node, stream } from "graphpc";
+import { z } from "zod";
+
+class NotificationsService extends Node {
+  @stream(z.string().optional())
+  async *updates(
+    signal: AbortSignal,
+    cursor?: string,
+  ): AsyncGenerator<Notification> {
+    let lastId = cursor;
+    while (!signal.aborted) {
+      const batch = await db.notifications.after(lastId, { signal });
+      for (const n of batch) {
+        yield n;
+        lastId = n.id;
+      }
+      await delay(1000, signal);
+    }
+  }
+}
+```
+
+Client usage:
+
+```typescript
+const stream = client.root.notifications.updates();
+
+for await (const notification of stream) {
+  showNotification(notification);
+}
+```
+
+The cursor pattern enables resumable streams — pass the last received ID to pick up where you left off after a reconnect.
+
 ## Component Integration
 
 GraphPC's graph-based API maps naturally to component trees. Each component receives an `RpcStub<T>` prop representing a subtree of the graph, colocating data fetching with the component that consumes it. This pattern is framework-agnostic — it works with React, Svelte, Solid, Vue, or any component model.
 
 ### The Pattern
 
-Consider a blog app with a graph like `Api → PostsService → Post → CommentsService → Comment`. Each component takes a stub for the part of the graph it cares about:
+Consider a blog app with a graph like `Api -> PostsService -> Post -> CommentsService -> Comment`. Each component takes a stub for the part of the graph it cares about:
 
 - `<App>` receives `client.root` (`RpcStub<Api>`)
 - `<PostList>` receives `RpcStub<PostsService>`, calls `.page()` to get posts
@@ -225,7 +264,7 @@ Using `await` expressions (requires `experimental.async` in your Svelte config):
 
 ```svelte
 <!-- PostList.svelte -->
-<script>
+<script lang="ts">
   let { posts }: { posts: RpcStub<PostsService> } = $props();
   const page = posts.page();
   const items = await page.items();
@@ -239,7 +278,7 @@ Using `await` expressions (requires `experimental.async` in your Svelte config):
 {/each}
 
 <!-- PostCard.svelte -->
-<script>
+<script lang="ts">
   let { item }: { item: RpcStub<Post> } = $props();
   const { title, body } = await item;
 </script>
@@ -256,8 +295,8 @@ The same pattern applies to Solid (`createResource` or `createAsync`), Vue (`asy
 React's `use()` and similar APIs require stable promise identity across re-renders. GraphPC provides this naturally:
 
 - **Edge navigation is synchronous** — `client.root.posts.get("1")` always returns the same stub object. No network call, no new promise.
-- **Epoch cache** — awaiting a stub returns the same promise within an epoch. Two `use(post)` calls in the same render tree share one wire message.
-- **Referential stability** — stubs passed as props are stable objects. The promises they produce are stable because of coalescing (see [Epochs and Caching](caching.md#coalescing-rules)).
+- **Persistent cache** — awaiting a stub returns the same promise within the cache. Two `use(post)` calls in the same render tree share one wire message.
+- **Referential stability** — stubs passed as props are stable objects. The promises they produce are stable because of coalescing (see [Caching and Invalidation](caching.md#coalescing-rules)).
 
 This is why edge-based pagination (pages as graph nodes) matters for this pattern. An edge like `.page()` returns a stable stub, while a method like `.list()` returns a new promise each call. With `use()`, you need the former. See the [Pages as Graph Nodes](#advanced-pages-as-graph-nodes) section above.
 
@@ -267,9 +306,9 @@ The natural code style — parent awaits, renders children, children await — c
 
 - **Coalescing helps**: sibling components fetching the same node coalesce into one wire message. Ten `<PostCard>` components all awaiting posts will be pipelined.
 - **References help**: returned references include data, so common pagination patterns don't require an additional waterfall (see below).
-- **Epoch lifetime**: the idle timeout won't fire during a render cycle. In-flight requests keep the epoch alive, and frameworks schedule rendering back-to-back as promises resolve — there's no risk of the connection closing mid-render.
+- **Cache lifetime**: the idle timeout won't fire during a render cycle. In-flight requests keep the connection alive, and frameworks schedule rendering back-to-back as promises resolve — there's no risk of the connection closing mid-render.
 
-For most UIs, the waterfall depth is shallow (2–3 levels) and the user experience is good enough with Suspense fallbacks. For the few performance-critical paths where it matters, pre-fetch in a parent component and pass resolved data down as props:
+For most UIs, the waterfall depth is shallow (2-3 levels) and the user experience is good enough with Suspense fallbacks. For the few performance-critical paths where it matters, pre-fetch in a parent component and pass resolved data down as props:
 
 ```tsx
 // Eliminates waterfall at the cost of moving the fetch
@@ -306,4 +345,4 @@ This means a `<PostCard>` that received a reference from `.list()` renders immed
 
 1. [Identity and References](identity.md): full behavior of `ref()` and path-based identity tools
 2. [SSR and Hydration](ssr-and-hydration.md): carrying graph traversal and data across render/hydration boundaries
-3. [Runtime Lifecycle and Resilience](runtime.md): how epochs and reconnect affect UI behavior
+3. [Runtime Lifecycle and Resilience](runtime.md): how caching, invalidation, and reconnect affect UI behavior

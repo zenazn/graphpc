@@ -1,7 +1,7 @@
 /**
  * ESLint rule: graphpc/require-decorator
  *
- * Ensures every public method on a Node subclass is decorated with @edge, @method, or @hidden.
+ * Ensures every public method on a Node subclass is decorated with @edge, @method, @stream, or @hidden.
  * Undecorated public methods are invisible to the RPC framework — the runtime rejects them,
  * but they still appear in autocomplete, which is confusing.
  *
@@ -11,7 +11,7 @@
 import type { TSESTree } from "@typescript-eslint/utils";
 import { ESLintUtils } from "@typescript-eslint/utils";
 
-const GRAPHPC_DECORATORS = new Set(["edge", "method", "hidden"]);
+const GRAPHPC_DECORATOR_NAMES = new Set(["edge", "method", "stream", "hidden"]);
 
 const createRule = ESLintUtils.RuleCreator(
   () =>
@@ -52,19 +52,46 @@ function getSuperClassName(node: TSESTree.ClassDeclaration): string | null {
 }
 
 /**
+ * Collect the local names of graphpc decorator imports.
+ * E.g. `import { method as m } from "graphpc"` → returns Set(["m"]).
+ */
+function collectDecoratorLocals(program: TSESTree.Program): Set<string> {
+  const locals = new Set<string>();
+  for (const stmt of program.body) {
+    if (stmt.type !== "ImportDeclaration" || stmt.source.value !== "graphpc") {
+      continue;
+    }
+    for (const spec of stmt.specifiers) {
+      if (spec.type !== "ImportSpecifier") continue;
+      const importedName =
+        spec.imported.type === "Identifier"
+          ? spec.imported.name
+          : String(spec.imported.value);
+      if (GRAPHPC_DECORATOR_NAMES.has(importedName)) {
+        locals.add(spec.local.name);
+      }
+    }
+  }
+  return locals;
+}
+
+/**
  * Check if a method definition has a graphpc decorator (@edge, @method, or @hidden).
  */
-function hasGraphpcDecorator(node: TSESTree.MethodDefinition): boolean {
+function hasGraphpcDecorator(
+  node: TSESTree.MethodDefinition,
+  decoratorLocals: Set<string>,
+): boolean {
   if (!node.decorators || node.decorators.length === 0) return false;
   return node.decorators.some((d) => {
     const expr = d.expression;
     // @method, @edge, @hidden (bare identifier)
     if (expr.type === "Identifier") {
-      return GRAPHPC_DECORATORS.has(expr.name);
+      return decoratorLocals.has(expr.name);
     }
     // @method(...), @edge(...), @hidden(...)
     if (expr.type === "CallExpression" && expr.callee.type === "Identifier") {
-      return GRAPHPC_DECORATORS.has(expr.callee.name);
+      return decoratorLocals.has(expr.callee.name);
     }
     return false;
   });
@@ -76,17 +103,18 @@ export const requireDecorator = createRule({
     type: "problem",
     docs: {
       description:
-        "Require @edge, @method, or @hidden on public methods of Node subclasses",
+        "Require @edge, @method, @stream, or @hidden on public methods of Node subclasses",
     },
     messages: {
       missingDecorator:
-        'Public method "{{name}}" on Node subclass "{{className}}" must be decorated with @edge, @method, or @hidden. Undecorated methods are rejected at runtime.',
+        'Public method "{{name}}" on Node subclass "{{className}}" must be decorated with @edge, @method, @stream, or @hidden. Undecorated methods are rejected at runtime.',
     },
     schema: [],
   },
   defaultOptions: [],
   create(context) {
     let nodeImportLocal: string | null = null;
+    let decoratorLocals = new Set<string>();
 
     return {
       Program(program) {
@@ -94,6 +122,7 @@ export const requireDecorator = createRule({
         if (spec) {
           nodeImportLocal = spec.local.name;
         }
+        decoratorLocals = collectDecoratorLocals(program);
       },
 
       ClassDeclaration(node) {
@@ -127,7 +156,7 @@ export const requireDecorator = createRule({
           }
 
           // Skip if already decorated
-          if (hasGraphpcDecorator(member)) continue;
+          if (hasGraphpcDecorator(member, decoratorLocals)) continue;
 
           const name =
             member.key.type === "Identifier"

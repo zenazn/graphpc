@@ -6,7 +6,12 @@
  * Hydration is handled by createClient (see client.ts).
  */
 
-import { runWithSession, type Session, type CacheEntry } from "./context";
+import {
+  runWithSession,
+  createCacheEntry,
+  type Session,
+  type CacheEntry,
+} from "./context";
 import { resolveEdge, resolveData, resolveGet } from "./resolve";
 import { buildSchema } from "./schema";
 import type { Schema } from "./protocol";
@@ -85,11 +90,10 @@ export function createSSRClient<S extends ServerInstance<any>>(
     Promise<{ node: object; token: number }>
   >();
   const nodeCache = new Map<string, CacheEntry>();
-  nodeCache.set("root", {
-    promise: Promise.resolve(root as object),
-    settled: true,
-    resolve: () => Promise.resolve(root as object),
-  });
+  nodeCache.set(
+    "root",
+    createCacheEntry(() => Promise.resolve(root as object), root as object),
+  );
   // Dedup sets for data/call entries
   const recordedData = new Set<number>();
   const recordedCalls = new Set<string>();
@@ -145,7 +149,15 @@ export function createSSRClient<S extends ServerInstance<any>>(
   const backend: ProxyBackend = {
     resolve(path: PathSegments): Promise<unknown> {
       return runWithSession(session, async () => {
-        const { edgePath, terminal } = classifyPath(path, schema);
+        const {
+          edgePath,
+          terminal,
+          stream: streamInfo,
+        } = classifyPath(path, schema);
+        if (streamInfo) {
+          // Streams are inert during SSR — return undefined
+          return undefined;
+        }
         const { node, token } = await walkAndRecord(edgePath);
 
         if (terminal) {

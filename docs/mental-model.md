@@ -20,11 +20,12 @@ await post.updateTitle("New"); // network
 
 ## Node Surfaces
 
-Each node exposes three surfaces:
+Each node exposes up to four surfaces:
 
 1. **Edges** (`@edge`)
 2. **Methods** (`@method`)
-3. **Data fields** (public properties + getters, including inherited ones)
+3. **Streams** (`@stream`) — server-push data feeds via async iteration. See [Decorators](decorators.md#stream).
+4. **Data fields** (public properties + getters, including inherited ones)
 
 ### 1) Edges: graph navigation
 
@@ -56,7 +57,28 @@ class PostsService extends Node {
 const n = await client.root.posts.count(); // always RPC
 ```
 
-### 3) Data fields: node state snapshot
+### 3) Streams: server-push data feeds
+
+Streams push data from server to client via async iteration. The server yields values; the client consumes them with `for await`.
+
+```typescript
+class NotificationService extends Node {
+  @stream
+  async *updates(signal: AbortSignal): AsyncGenerator<Notification> {
+    for await (const n of db.notifications.subscribe(signal)) {
+      yield n;
+    }
+  }
+}
+
+for await (const n of client.root.notifications.updates()) {
+  console.log(n);
+}
+```
+
+This page focuses on the pull-based model. For full stream behavior — backpressure, resume, lifecycle — see [Decorators](decorators.md#stream).
+
+### 4) Data fields: node state snapshot
 
 Public properties and getters (including inherited ones) are loaded by awaiting the node.
 
@@ -91,19 +113,21 @@ That path identity enables:
 
 ## Caching and Ordering (Short Version)
 
-- Same-node and same-property reads coalesce within an [epoch](glossary.md#epoch).
+- The client maintains a persistent cache that survives reconnects.
+- Same-node and same-property reads coalesce within the cache.
 - Method calls do not coalesce.
 - Concurrent method calls have no server-side ordering guarantee.
 - Sequential `await` preserves order from the caller's perspective.
+- Use `invalidate()` to mark cached data stale; use `evict()` to remove it entirely.
 
 For details, see:
 
-- [Epochs and Caching](caching.md)
+- [Caching and Invalidation](caching.md)
 - [Reconnection](reconnection.md)
 - [Protocol Internals](internals.md#concurrency--ordering)
 
 ## Read This Next
 
-1. [Decorators](decorators.md): exact behavior of `@edge`, `@method`, and `@hidden`
-2. [Authentication and Authorization](auth.md): how graph reachability maps to access control
-3. [Identity and References](identity.md): returning or passing node identity safely
+1. [Decorators](decorators.md): exact behavior of `@edge`, `@method`, `@stream`, and `@hidden`
+2. [Identity and References](identity.md): returning or passing node identity safely
+3. [Authentication and Authorization](auth.md): how graph reachability maps to access control

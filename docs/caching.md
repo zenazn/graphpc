@@ -1,27 +1,27 @@
-# Epochs and Caching
+# Caching and Invalidation
 
 When to read this page: after [Mental Model](mental-model.md), when you need exact cache/coalescing/read-after-write behavior.
 
 ## Overview
 
-This page focuses on cache semantics **inside an epoch**.
+This page focuses on client-side cache semantics.
 
-For the full runtime timeline (SSR -> hydration epoch -> live epoch -> reconnect), see [Runtime Lifecycle and Resilience](runtime.md).
+For the full runtime timeline (SSR -> hydration -> persistent cache -> reconnect), see [Runtime Lifecycle and Resilience](runtime.md).
 
-An epoch is one connection-scoped cache window:
+The client maintains a **persistent cache** that survives reconnects:
 
-- first transport-needed `await` starts it
-- requests keep it alive and reset inactivity timers
-- idle timeout/close ends it and drops epoch cache
-- next transport-needed `await` starts a fresh epoch
+- first `await` that needs the server opens a connection
+- cached data persists across connection drops and reconnects
+- referential identity is preserved (same stub objects, same promises)
+- freshness is managed via `invalidate()`, `evict()`, and `ref()` returns
 
 ## Coalescing Rules
 
-Within an epoch, the client coalesces and caches requests according to three rules.
+The client coalesces and caches requests according to three rules.
 
 ### 1. Same node loads coalesce
 
-Two requests for the same node produce one `data` message, whether they're concurrent or sequential within the epoch:
+Two requests for the same node produce one `data` message, whether they're concurrent or sequential:
 
 ```typescript
 // Concurrent — one data message, both resolve to the same object
@@ -34,7 +34,7 @@ const [a, b] = await Promise.all([
 ```typescript
 // Sequential — still one data message (second is a cache hit)
 const a = await client.root.posts.get("1");
-const b = await client.root.posts.get("1"); // served from epoch cache
+const b = await client.root.posts.get("1"); // served from cache
 ```
 
 ### 2. Same property/getter reads coalesce
@@ -64,16 +64,16 @@ const [a, b] = await Promise.all([
 ]);
 ```
 
-Exception: during SSR and hydration, methods calls coalesce. See below.
+Exception: during SSR and hydration, method calls coalesce. See below.
 
 ## What Gets Cached
 
-| Operation                                 | Cached within epoch? | Cache key                        |
-| ----------------------------------------- | -------------------- | -------------------------------- |
-| Edge traversal (`client.root.posts`)      | Yes                  | path                             |
-| Full-node load (`await node`)             | Yes                  | token                            |
-| Property/getter read (`await node.title`) | Yes                  | token + name, or from data cache |
-| Method call (`node.method(...)`)          | Never                | —                                |
+| Operation                                 | Cached? | Cache key                        |
+| ----------------------------------------- | ------- | -------------------------------- |
+| Edge traversal (`client.root.posts`)      | Yes     | path                             |
+| Full-node load (`await node`)             | Yes     | token                            |
+| Property/getter read (`await node.title`) | Yes     | token + name, or from data cache |
+| Method call (`node.method(...)`)          | Never   | —                                |
 
 After `await node`, subsequent property reads like `await node.title` are served from the data cache — no additional wire message is sent. Method calls (`node.method()`) always go over the wire.
 
@@ -89,9 +89,85 @@ client.root.posts.search({ limit: 10, author: "alice" });
 
 This is rarely an issue in practice (arguments typically come from a single code path), but if you build argument objects dynamically, be aware that insertion order matters. Note that this behavior is an implementation detail, not a guarantee — a future version of GraphPC may normalize key order so that the two calls above do coalesce.
 
+## Invalidation
+
+Use `invalidate(stub)` to mark a cached node's data as stale. The next `await` on that stub will re-fetch from the server instead of returning cached data.
+
+```typescript
+import { invalidate } from "graphpc/client";
+
+const post = client.root.posts.get("1");
+const { title } = await post; // fetched from server, cached
+
+await post.updateTitle("New Title"); // mutation
+invalidate(post); // mark cache stale
+
+const { title: after } = await post; // re-fetched from server
+```
+
+`invalidate()` does not remove the cached data immediately — it marks it stale so the next read triggers a fresh fetch. In-flight reads are not affected.
+
+### Streams survive invalidation
+
+Streams survive invalidation. A running stream is a source of data, not cached data. When a node is invalidated, any active stream on that node continues running. Invalidation marks the node's data as stale and notifies observers, but the async generator keeps yielding.
+
+## Eviction
+
+Use `evict(stub)` to remove a node's cached data entirely. This is useful when you know a node has been deleted or is no longer relevant.
+
+```typescript
+import { evict } from "graphpc/client";
+
+const post = client.root.posts.get("1");
+await post.delete();
+evict(post); // remove from cache entirely
+```
+
+## Reactivity with `subscribe()`
+
+Use `subscribe(stub)` for reactive updates. It follows the Svelte store contract — call `subscribe()` with a callback, and it returns an unsubscribe function.
+
+```typescript
+import { subscribe } from "graphpc/client";
+
+const post = client.root.posts.get("1");
+
+const unsubscribe = subscribe(post, (stub) => {
+  console.log("Post changed, re-derive:", stub);
+});
+
+// Later:
+unsubscribe();
+```
+
+The callback value is the stub itself (which does not change). The notification is the trigger for re-derivation -- the subscriber should re-read data from the stub.
+
+### Invalidation propagation
+
+Invalidating a path notifies:
+
+1. The target path's subscribers
+2. All descendant paths' subscribers
+3. All ancestor paths' subscribers, up to and including root
+
+### Root vs subtree subscriptions
+
+Root-level subscriptions are coarse -- they fire on any invalidation in the tree. Fine-grained subscriptions (e.g., on a specific post stub rather than the root) fire only when that specific subtree is invalidated. Prefer fine-grained subscriptions for performance.
+
+### Svelte example
+
+```svelte
+<script lang="ts">
+  let { root }: { root: RpcStub<Api> } = $props();
+  const likes = $derived(await $root.posts(4).likes);
+</script>
+```
+
+When `root.posts(4)` is invalidated, the `$root` subscription fires, `$derived` re-evaluates the async expression, and the `await` returns fresh data because the cache was marked stale.
+
 ## Read-After-Write
 
-Because data is cached within an epoch, a plain `await node` after a mutation returns **cached** (potentially stale) data:
+Because data is cached, a plain `await node` after a mutation returns **cached** (potentially stale) data:
 
 ```typescript
 const post = client.root.posts.get("1");
@@ -109,7 +185,7 @@ On the client, the arriving reference:
 - invalidates per-property read cache entries for that node
 - invalidates cached descendants below that node so future traversals re-resolve
 
-Result: subsequent `await node` and `await node.title` calls see fresh data instead of stale same-epoch cache hits.
+Result: subsequent `await node` and `await node.title` calls see fresh data.
 
 ```typescript
 // Server — return a ref to the mutated node
@@ -127,7 +203,7 @@ const post = client.root.posts.get("1");
 const { title } = await post; // "Hello World"
 const t1 = await post.title; // "Hello World" (cached get)
 
-const updated = await post.updateTitle("New Title"); // returns ref → overwrites cache
+const updated = await post.updateTitle("New Title"); // returns ref -> overwrites cache
 console.log(updated.title); // "New Title" — fresh from the ref
 
 const { title: after } = await post; // "New Title" — cache was overwritten
@@ -136,19 +212,25 @@ const t2 = await post.title; // "New Title" — get cache was invalidated
 
 This makes `ref()` the primary mechanism for keeping client-side state fresh after mutations. See [Identity and References](identity.md) for the full `ref()` API.
 
-## The Hydration Epoch
+Alternatively, use `invalidate(stub)` after a mutation if you don't need immediate fresh data from the return value.
 
-Hydration uses a special epoch backed by SSR payload data (not live wire responses). It has a shorter timeout, requires no WebSocket, and can replay SSR-recorded `@method` calls during hydration only.
+## Hydration
 
-|                      | Hydration epoch              | Live epoch                           |
+Hydration seeds the persistent cache with SSR payload data. During the hydration phase:
+
+- Edge traversals and node data from SSR are loaded into the persistent cache
+- SSR-recorded `@method` call results are available during hydration only
+- After hydration ends (`endHydration()` or timeout), method call results are dropped — all other data stays in the persistent cache
+
+|                      | Hydration phase              | Live                                 |
 | -------------------- | ---------------------------- | ------------------------------------ |
 | **Data source**      | SSR payload (`window.__rpc`) | WebSocket responses                  |
 | **Default timeout**  | 250ms (client-side)          | Server's `idleTimeout` (server-side) |
 | **Transport needed** | No                           | Yes                                  |
 | **Methods cached**   | Yes (SSR-recorded results)   | Never                                |
-| **Ends when**        | `endHydration()` or timeout  | Idle timeout closes WebSocket        |
+| **Ends when**        | `endHydration()` or timeout  | Connection closes                    |
 
-When the hydration epoch ends, all cached data is dropped. The next cache miss triggers a WebSocket connection, starting a live epoch. See [SSR and Hydration](ssr-and-hydration.md) for how the payload is generated and consumed.
+When hydration ends, the next cache miss triggers a WebSocket connection. See [SSR and Hydration](ssr-and-hydration.md) for how the payload is generated and consumed.
 
 ## Configuration
 
@@ -156,12 +238,12 @@ When the hydration epoch ends, all cached data is dropped. The next cache miss t
 
 ```typescript
 const server = createServer(
-  { idleTimeout: 10_000 }, // 10 seconds of inactivity → close (default: 5s)
+  { idleTimeout: 120_000 }, // 2 minutes of inactivity -> close (default: 60s)
   (ctx) => new Api(),
 );
 ```
 
-**Client** — `hydrationTimeout` controls how long the hydration epoch lasts after the last cache hit:
+**Client** — `hydrationTimeout` controls how long the hydration phase lasts after the last cache hit:
 
 ```typescript
 const client = createClient<typeof server>(

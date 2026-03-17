@@ -11,7 +11,7 @@
 
 export interface OperationInfo {
   /** The operation type. */
-  op: "edge" | "get" | "data";
+  op: "edge" | "get" | "data" | "stream_start";
   /** Edge name, method/property name, or "data". */
   name: string;
   /** Human-readable graph path, e.g. "root.posts.get(\"42\")". */

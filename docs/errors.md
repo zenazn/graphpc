@@ -6,15 +6,19 @@ When to read this page: when you want exact client-visible error types and `inst
 
 GraphPC provides error classes that all extend `RpcError`:
 
-| Error                 | Code               | When it occurs                                                         |
-| --------------------- | ------------------ | ---------------------------------------------------------------------- |
-| `RpcError`            | varies             | Base class for all RPC errors; also wraps non-registered thrown values |
-| `ValidationError`     | `VALIDATION_ERROR` | `@edge` or `@method` argument fails schema validation                  |
-| `EdgeNotFoundError`   | `EDGE_NOT_FOUND`   | Server handled an `edge` op for a missing or hidden edge               |
-| `MethodNotFoundError` | `METHOD_NOT_FOUND` | Server handled a `get` op for a missing or hidden member               |
-| `ConnectionLostError` | `CONNECTION_LOST`  | All reconnect attempts exhausted                                       |
+| Error                      | Code                    | When it occurs                                                            |
+| -------------------------- | ----------------------- | ------------------------------------------------------------------------- |
+| `RpcError`                 | varies                  | Base class for all RPC errors; also wraps non-registered thrown values    |
+| `ValidationError`          | `VALIDATION_ERROR`      | `@edge` or `@method` argument fails schema validation                     |
+| `EdgeNotFoundError`        | `EDGE_NOT_FOUND`        | Server handled an `edge` op for a missing or hidden edge                  |
+| `MethodNotFoundError`      | `METHOD_NOT_FOUND`      | Server handled a `get` op for a missing or hidden member                  |
+| `ConnectionLostError`      | `CONNECTION_LOST`       | All reconnect attempts exhausted                                          |
+| `TokenExpiredError`        | `TOKEN_EXPIRED`         | Auto-replay circuit breaker tripped (5 consecutive failures on same path) |
+| `StreamLimitExceededError` | `STREAM_LIMIT_EXCEEDED` | Too many concurrent streams on this connection                            |
 
-When `maxTokens` is exceeded, the server returns an `RpcError` with code `TOKEN_LIMIT_EXCEEDED` and closes the connection. See [Internals — Max Tokens](internals.md#max-tokens).
+When a token expires, the client automatically replays the path to obtain a fresh token — this is transparent to application code. `TokenExpiredError` only surfaces to the caller if the auto-replay circuit breaker trips (after 5 consecutive replay failures on the same path). See [Internals — Token Window](internals.md#token-window).
+
+When the stream limit is exceeded, the server returns a `StreamLimitExceededError` for the new stream request. Existing streams are unaffected.
 
 All built-in errors are automatically serialized and deserialized — the client receives actual class instances with `instanceof` support.
 
@@ -59,21 +63,23 @@ See [Serialization](serialization.md) for the full reducer/reviver contract.
 
 Here's what the client receives for every failure mode:
 
-| Failure                                     | Client receives                                                                                                   | `instanceof`          |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `@edge`/`@method` argument fails validation | `ValidationError` with `.issues`                                                                                  | `ValidationError`     |
-| Edge throws a registered custom error       | The custom error instance                                                                                         | Custom class          |
-| Edge throws a non-registered custom error   | `RpcError` (message preserved)                                                                                    | `RpcError` only       |
-| Edge throws any other value                 | `RpcError` with code `EDGE_ERROR`                                                                                 | `RpcError`            |
-| Method throws a registered custom error     | The custom error instance                                                                                         | Custom class          |
-| Method throws a non-registered custom error | `RpcError` (message preserved)                                                                                    | `RpcError` only       |
-| Method throws any other value               | `RpcError` with code `GET_ERROR`                                                                                  | `RpcError`            |
-| Data op throws any other value              | `RpcError` with code `DATA_ERROR`                                                                                 | `RpcError`            |
-| `@hidden` edge via forced `edge` op         | `EdgeNotFoundError`                                                                                               | `EdgeNotFoundError`   |
-| `@hidden` edge via normal proxy access      | Usually `MethodNotFoundError` (can be `RpcError` `INVALID_PATH` for deeper paths, e.g. `root.admin.secretData()`) | Varies                |
-| `@hidden` method accessed                   | `MethodNotFoundError`                                                                                             | `MethodNotFoundError` |
-| Operation on failed edge's token            | Original error (propagated)                                                                                       | Varies                |
-| All reconnect attempts fail                 | `ConnectionLostError`                                                                                             | `ConnectionLostError` |
+| Failure                                     | Client receives                                                                                                   | `instanceof`               |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `@edge`/`@method` argument fails validation | `ValidationError` with `.issues`                                                                                  | `ValidationError`          |
+| Edge throws a registered custom error       | The custom error instance                                                                                         | Custom class               |
+| Edge throws a non-registered custom error   | `RpcError` (message preserved)                                                                                    | `RpcError` only            |
+| Edge throws any other value                 | `RpcError` with code `EDGE_ERROR`                                                                                 | `RpcError`                 |
+| Method throws a registered custom error     | The custom error instance                                                                                         | Custom class               |
+| Method throws a non-registered custom error | `RpcError` (message preserved)                                                                                    | `RpcError` only            |
+| Method throws any other value               | `RpcError` with code `GET_ERROR`                                                                                  | `RpcError`                 |
+| Data op throws any other value              | `RpcError` with code `DATA_ERROR`                                                                                 | `RpcError`                 |
+| `@hidden` edge via forced `edge` op         | `EdgeNotFoundError`                                                                                               | `EdgeNotFoundError`        |
+| `@hidden` edge via normal proxy access      | Usually `MethodNotFoundError` (can be `RpcError` `INVALID_PATH` for deeper paths, e.g. `root.admin.secretData()`) | Varies                     |
+| `@hidden` method accessed                   | `MethodNotFoundError`                                                                                             | `MethodNotFoundError`      |
+| Operation on failed edge's token            | Original error (propagated)                                                                                       | Varies                     |
+| All reconnect attempts fail                 | `ConnectionLostError`                                                                                             | `ConnectionLostError`      |
+| Token replay circuit breaker tripped        | `TokenExpiredError`                                                                                               | `TokenExpiredError`        |
+| Too many concurrent streams                 | `StreamLimitExceededError`                                                                                        | `StreamLimitExceededError` |
 
 ### Hidden-member nuance
 

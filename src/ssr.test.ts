@@ -8,6 +8,7 @@ import { createSSRClient } from "./ssr";
 import { createSerializer } from "./serialization";
 import { createServer } from "./server";
 import { createClient } from "./client";
+import { fakeTimers, flush } from "./test-utils";
 import { createMockTransportPair } from "./protocol";
 import type { Transport } from "./protocol";
 
@@ -492,6 +493,7 @@ test("hydration: endHydration() drops cache, requests go to transport", async ()
 });
 
 test("hydration: inactivity timeout drops cache", async () => {
+  const timers = fakeTimers();
   const [serverTransport, clientTransport] = createMockTransportPair();
   createServer({}, (_ctx: {}) => new Api()).handle(serverTransport, {});
 
@@ -499,14 +501,18 @@ test("hydration: inactivity timeout drops cache", async () => {
     async (c) => {
       await c.root.posts.get("1");
     },
-    { hydrationTimeout: 50 },
+    { hydrationTimeout: 50, timers },
     () => clientTransport,
   );
 
   const cached = await hydrated.root.posts.get("1");
   expect(cached.id).toBe("1");
 
-  await new Promise((r) => setTimeout(r, 100));
+  // After the lookup's microtask resolves, an inactivity timer starts.
+  await flush();
+  // Fire the inactivity timer to drop the hydration cache.
+  timers.fireAll();
+  await flush();
 
   const fresh = await hydrated.root.posts.get("1");
   expect(fresh.id).toBe("1");

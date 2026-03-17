@@ -1,8 +1,8 @@
 # Decorators
 
-When to read this page: after [Getting Started](getting-started.md), when you need exact `@edge`, `@method`, and `@hidden` behavior.
+When to read this page: after [Getting Started](getting-started.md), when you need exact `@edge`, `@method`, `@stream`, and `@hidden` behavior.
 
-GraphPC provides three decorators: `@edge`, `@method`, and `@hidden`.
+GraphPC provides four decorators: `@edge`, `@method`, `@stream`, and `@hidden`.
 
 ## `@edge`
 
@@ -54,8 +54,8 @@ For edges that reference their own class (e.g. tree nodes), pass a thunk instead
 ```typescript
 class TreeNode extends Node {
   @edge(() => TreeNode)
-  get children(): TreeNode[] {
-    return this.#children;
+  get parent(): TreeNode {
+    return this.#parent;
   }
 }
 ```
@@ -91,10 +91,11 @@ class User extends Node {
 }
 ```
 
-### Edge vs Method: The Rule
+### Edge vs Method vs Stream: The Rule
 
-- If the return value is an **object that clients can navigate further** → `@edge(TargetClass)`
-- If the return value is **data to consume** → `@method`
+- If the return value is an **object that clients can navigate further** -> `@edge(TargetClass)`
+- If the return value is **data to consume** -> `@method`
+- If returning a **push-based data feed** -> `@stream`
 
 ### Undecorated Access
 
@@ -117,11 +118,85 @@ class User extends Node {
 }
 ```
 
-Only functions annotated with `@method` can be called by the client. Note that undecorated methods still appear in `RpcStub<T>` autocomplete — use the [ESLint plugin](types.md#eslint-plugin) to catch these at lint time.
+Only functions annotated with `@method` or `@stream` can be called by the client. Note that undecorated methods still appear in `RpcStub<T>` autocomplete — use the [ESLint plugin](types.md#eslint-plugin) to catch these at lint time.
+
+## `@stream`
+
+Marks an async generator method as a **server-push stream**. The client receives an `RpcStream<T>` — an async iterable that yields values as the server produces them.
+
+```typescript
+import { Node, stream } from "graphpc";
+import { z } from "zod";
+
+class NotificationsService extends Node {
+  @stream(z.string().optional())
+  async *updates(
+    signal: AbortSignal,
+    cursor?: string,
+  ): AsyncGenerator<Notification> {
+    let lastId = cursor;
+    while (!signal.aborted) {
+      const batch = await db.notifications.after(lastId);
+      for (const n of batch) {
+        yield n;
+        lastId = n.id;
+      }
+      await delay(1000);
+    }
+  }
+}
+```
+
+### Parameters
+
+The first parameter is always an `AbortSignal` — provided automatically by the framework, not by the client. The signal fires when the client cancels the stream or the connection closes.
+
+Schemas validate the **remaining** parameters (after the signal). In the example above, `z.string().optional()` validates the `cursor` parameter.
+
+### Client usage
+
+```typescript
+const stream = client.root.notifications.updates();
+
+for await (const notification of stream) {
+  console.log(notification.message);
+}
+```
+
+The returned `RpcStream<T>` is an async iterable. It ends when:
+
+- The server generator returns
+- The client breaks out of the `for await` loop (sends a cancel)
+- The connection closes (without a resume callback)
+
+### Streams survive invalidation
+
+Streams survive invalidation. A running stream is a source of data, not cached data. When a node is invalidated, any active stream on that node continues running. Invalidation marks the node's data as stale and notifies observers, but the async generator keeps yielding.
+
+### Backpressure
+
+Streams use credit-based flow control. The client sends `stream_credit` messages to indicate how many items it is ready to receive. The server pauses yielding when credits are exhausted, providing natural backpressure.
+
+### Reconnect behavior
+
+- **Without a resume callback**: on disconnect, the pending `next()` returns `{ done: true }`. The `for await` loop exits cleanly.
+- **With a resume callback**: on disconnect, the pending `next()` blocks. On reconnect, `resume()` is called to get a new underlying stream, and the loop continues transparently.
+
+To opt in to auto-resume, assign a `resume` callback on the stream object. The cursor must reflect the most recent successfully consumed message:
+
+```typescript
+let cursor: string | undefined;
+const stream = client.root.notifications.updates(cursor);
+stream.resume = () => client.root.notifications.updates(cursor);
+
+for await (const msg of stream) {
+  cursor = msg.id; // update cursor as messages are consumed
+}
+```
 
 ## `@hidden`
 
-Conditionally hides a member from a connection's view based on the connection's context. Works on edges, methods, and data fields (properties and getters, including inherited ones). The predicate receives the context and returns `true` to hide, `false` to show.
+Conditionally hides a member from a connection's view based on the connection's context. Works on edges, methods, streams, and data fields (properties and getters, including inherited ones). The predicate receives the context and returns `true` to hide, `false` to show.
 
 ```typescript
 @hidden((ctx) => !ctx.isAdmin)
@@ -155,9 +230,9 @@ The predicate can base its decision on the context:
 @hidden((ctx) => !ctx.isAdmin) // ctx is typed from Register
 ```
 
-### Composition with `@edge` / `@method`
+### Composition with `@edge` / `@method` / `@stream`
 
-`@hidden` stacks with `@edge` and `@method`. The order of decorators doesn't matter, but by convention `@hidden` goes above `@edge`/`@method`.
+`@hidden` stacks with `@edge`, `@method`, and `@stream`. The order of decorators doesn't matter, but by convention `@hidden` goes above `@edge`/`@method`/`@stream`.
 
 ```typescript
 @hidden((ctx) => !ctx.isAdmin)
@@ -169,17 +244,16 @@ get admin(): AdminPanel { ... }
 async secretData(): Promise<string> { ... }
 
 @hidden((ctx) => !ctx.isAdmin)
+@stream
+async *adminUpdates(signal: AbortSignal): AsyncGenerator<AdminEvent> { ... }
+
+@hidden((ctx) => !ctx.isAdmin)
 secretToken = "sk-...";  // data field — hidden from non-admins
 ```
 
 ### Error behavior
 
-Hidden-member errors are operation-dependent:
-
-- `edge` op on a hidden edge -> `EdgeNotFoundError`
-- `get` op on a hidden member -> `MethodNotFoundError`
-
-In normal client usage, hidden edges are removed from the connection schema. Because of that, the proxy often classifies access as a terminal `get`, so `await client.root.admin` commonly yields `MethodNotFoundError`. A forced raw `edge` request for the same name yields `EdgeNotFoundError`. In both cases, hidden and nonexistent members are intentionally indistinguishable to callers.
+When hidden, the edge or method is absent from the schema sent to the client, and any attempt to access it returns the same error as a nonexistent edge or method — no information leakage. For protocol-level details, see [Error Handling](errors.md#hidden-member-nuance).
 
 For the full story — context as the authentication layer, session revocation, and how `@hidden` fits into the authorization model — see [Authentication and Authorization](auth.md).
 
@@ -199,7 +273,7 @@ A common way to populate the context is by examining request cookies or headers.
 
 ## Validation
 
-Both `@edge` and `@method` accept positional Standard Schema validators. Arguments are validated server-side before the method executes.
+Both `@edge`, `@method`, and `@stream` accept positional Standard Schema validators. Arguments are validated server-side before the method executes.
 
 ```typescript
 @edge(User, z.string().uuid())
@@ -207,6 +281,9 @@ get(id: string): User { ... }
 
 @method(z.string().email(), z.string().min(1))
 async updateProfile(email: string, name: string): Promise<void> { ... }
+
+@stream(z.string())
+async *events(signal: AbortSignal, channel: string): AsyncGenerator<Event> { ... }
 ```
 
 On validation failure, the client receives a `ValidationError` with structured issues:
@@ -216,7 +293,7 @@ try {
   await client.root.users.get("not-a-uuid");
 } catch (err) {
   // err instanceof ValidationError
-  // err.issues → [{ message: "id: Invalid uuid", ... }]
+  // err.issues -> [{ message: "id: Invalid uuid", ... }]
 }
 ```
 
@@ -237,7 +314,7 @@ import { path, Path } from "graphpc";
 
 @method(path(Post), path(Category))
 async move(post: Path<Post>, cat: Path<Category>): Promise<void> {
-  const p = await post;  // walks graph → live Post
+  const p = await post;  // walks graph -> live Post
   const c = await cat;
 }
 ```

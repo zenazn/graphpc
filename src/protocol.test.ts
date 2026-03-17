@@ -52,6 +52,55 @@ describe("parseClientMessage", () => {
       expect(msg).toEqual({ op: "data", tok: 0 });
     });
 
+    it("accepts valid stream_start", () => {
+      const msg = parseClientMessage({
+        op: "stream_start",
+        tok: 1,
+        stream: "count",
+        credits: 8,
+      });
+      expect(msg).toEqual({
+        op: "stream_start",
+        tok: 1,
+        stream: "count",
+        credits: 8,
+      });
+    });
+
+    it("accepts stream_start with args", () => {
+      const msg = parseClientMessage({
+        op: "stream_start",
+        tok: 0,
+        stream: "events",
+        args: ["cursor-123"],
+        credits: 4,
+      });
+      expect(msg).toEqual({
+        op: "stream_start",
+        tok: 0,
+        stream: "events",
+        args: ["cursor-123"],
+        credits: 4,
+      });
+    });
+
+    it("accepts valid stream_credit", () => {
+      const msg = parseClientMessage({
+        op: "stream_credit",
+        sid: -1,
+        credits: 4,
+      });
+      expect(msg).toEqual({ op: "stream_credit", sid: -1, credits: 4 });
+    });
+
+    it("accepts valid stream_cancel", () => {
+      const msg = parseClientMessage({
+        op: "stream_cancel",
+        sid: -3,
+      });
+      expect(msg).toEqual({ op: "stream_cancel", sid: -3 });
+    });
+
     it("accepts empty string edge name", () => {
       const msg = parseClientMessage({ op: "edge", tok: 0, edge: "" });
       expect(msg).toEqual({ op: "edge", tok: 0, edge: "" });
@@ -206,6 +255,43 @@ describe("parseClientMessage", () => {
         parseClientMessage({ op: "get", tok: 0, name: "x", args: 123 }),
       ).toThrow("must be an array");
     });
+
+    it("stream_credit with non-negative sid rejected", () => {
+      expect(() =>
+        parseClientMessage({ op: "stream_credit", sid: 0, credits: 4 }),
+      ).toThrow("negative integer");
+      expect(() =>
+        parseClientMessage({ op: "stream_credit", sid: 1, credits: 4 }),
+      ).toThrow("negative integer");
+    });
+
+    it("stream_cancel with non-negative sid rejected", () => {
+      expect(() => parseClientMessage({ op: "stream_cancel", sid: 0 })).toThrow(
+        "negative integer",
+      );
+    });
+
+    it("stream_start with zero credits rejected", () => {
+      expect(() =>
+        parseClientMessage({
+          op: "stream_start",
+          tok: 0,
+          stream: "x",
+          credits: 0,
+        }),
+      ).toThrow("positive integer");
+    });
+
+    it("stream_start with negative credits rejected", () => {
+      expect(() =>
+        parseClientMessage({
+          op: "stream_start",
+          tok: 0,
+          stream: "x",
+          credits: -1,
+        }),
+      ).toThrow("positive integer");
+    });
   });
 });
 
@@ -218,19 +304,33 @@ describe("parseServerMessage", () => {
     it("accepts hello with populated schema", () => {
       const msg = parseServerMessage({
         op: "hello",
-        version: 1,
+        version: 2,
+        tokenWindow: 10000,
+        maxStreams: 32,
         schema: [
-          { edges: { users: 1, posts: 2 } },
-          { edges: {} },
-          { edges: { author: 1 } },
+          { edges: { users: 1, posts: 2 }, streams: [] },
+          { edges: {}, streams: [] },
+          { edges: { author: 1 }, streams: [] },
         ],
       });
       expect(msg.op).toBe("hello");
     });
 
     it("accepts hello with empty schema", () => {
-      const msg = parseServerMessage({ op: "hello", version: 1, schema: [] });
-      expect(msg).toEqual({ op: "hello", version: 1, schema: [] });
+      const msg = parseServerMessage({
+        op: "hello",
+        version: 2,
+        tokenWindow: 10000,
+        maxStreams: 32,
+        schema: [],
+      });
+      expect(msg).toEqual({
+        op: "hello",
+        version: 2,
+        tokenWindow: 10000,
+        maxStreams: 32,
+        schema: [],
+      });
     });
 
     it("accepts edge success", () => {
@@ -291,6 +391,47 @@ describe("parseServerMessage", () => {
     it("accepts tok: 0 with re: 0", () => {
       const msg = parseServerMessage({ op: "edge", tok: 0, re: 0 });
       expect(msg).toEqual({ op: "edge", tok: 0, re: 0 });
+    });
+
+    it("accepts stream_start success", () => {
+      const msg = parseServerMessage({ op: "stream_start", sid: -1, re: 3 });
+      expect(msg.op).toBe("stream_start");
+    });
+
+    it("accepts stream_start failure", () => {
+      const msg = parseServerMessage({
+        op: "stream_start",
+        sid: -1,
+        re: 3,
+        error: "limit exceeded",
+      });
+      expect(msg.op).toBe("stream_start");
+      expect((msg as any).error).toBe("limit exceeded");
+    });
+
+    it("accepts stream_data", () => {
+      const msg = parseServerMessage({
+        op: "stream_data",
+        sid: -1,
+        data: { value: 42 },
+      });
+      expect(msg.op).toBe("stream_data");
+      expect((msg as any).data).toEqual({ value: 42 });
+    });
+
+    it("accepts stream_end without error", () => {
+      const msg = parseServerMessage({ op: "stream_end", sid: -1 });
+      expect(msg.op).toBe("stream_end");
+    });
+
+    it("accepts stream_end with error", () => {
+      const msg = parseServerMessage({
+        op: "stream_end",
+        sid: -2,
+        error: "boom",
+      });
+      expect(msg.op).toBe("stream_end");
+      expect((msg as any).error).toBe("boom");
     });
   });
 

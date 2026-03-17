@@ -48,6 +48,19 @@ class PostsService extends Node {
 client.root.posts.count(); // Promise<number>
 ```
 
+### `@stream` maps to `RpcStream<T>`
+
+Async generator functions decorated with `@stream` map to `RpcStream<T>` on the client — an async iterable that yields values as the server produces them.
+
+```typescript
+class NotificationsService extends Node {
+  @stream
+  async *updates(signal: AbortSignal): AsyncGenerator<Notification> { ... }
+}
+
+client.root.notifications.updates(); // RpcStream<Notification>
+```
+
 ### `await stub` returns data + stubs
 
 Awaiting a stub fetches node data fields and still exposes edge/method stubs.
@@ -71,7 +84,7 @@ Without `extends Node`, `Promise<Post>` is ambiguous and inference degrades.
 Quick checks when types look wrong:
 
 - every edge target class extends `Node`
-- callable RPC members are decorated (`@edge` or `@method`)
+- callable RPC members are decorated (`@edge`, `@method`, or `@stream`)
 - enable lint rule `graphpc/require-decorator`
 
 ## Path and Reference Type Mapping
@@ -91,6 +104,22 @@ await client.root.posts.archive(pathOf(client.root.posts.get("1")));
 ```
 
 See [Identity and References](identity.md) for runtime behavior.
+
+## Stream Type Mapping
+
+`RpcStream<T>` is the client-side type for server `@stream` declarations. It is an async iterable:
+
+```typescript
+// Server
+@stream(z.string())
+async *events(signal: AbortSignal, channel: string): AsyncGenerator<Event> { ... }
+
+// Client
+const stream: RpcStream<Event> = client.root.events("my-channel");
+for await (const event of stream) {
+  // event is typed as Event
+}
+```
 
 ## Shallow Return-Type Guard
 
@@ -125,7 +154,7 @@ export default [
 
 ### Rule: `graphpc/require-decorator`
 
-Flags public methods on `Node` subclasses that are missing `@edge` or `@method`.
+Flags public methods on `Node` subclasses that are missing `@edge`, `@method`, or `@stream`.
 
 Skipped by rule design: constructors, getters/setters, static methods, private/protected methods, `#private` methods.
 

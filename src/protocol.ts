@@ -6,6 +6,7 @@
 
 export interface NodeSchema {
   edges: Record<string, number>; // edge name → target type index
+  streams: string[]; // stream method names
 }
 
 export type Schema = NodeSchema[]; // index 0 = root type
@@ -31,7 +32,32 @@ export interface DataMessage {
   tok: number; // token identifying the target node
 }
 
-export type ClientMessage = EdgeMessage | GetMessage | DataMessage;
+export interface StreamStartMessage {
+  op: "stream_start";
+  tok: number; // token identifying the target node
+  stream: string; // stream method name
+  args?: unknown[];
+  credits: number; // initial credit window
+}
+
+export interface StreamCreditMessage {
+  op: "stream_credit";
+  sid: number; // stream ID (negative integer)
+  credits: number;
+}
+
+export interface StreamCancelMessage {
+  op: "stream_cancel";
+  sid: number; // stream ID (negative integer)
+}
+
+export type ClientMessage =
+  | EdgeMessage
+  | GetMessage
+  | DataMessage
+  | StreamStartMessage
+  | StreamCreditMessage
+  | StreamCancelMessage;
 
 // -- Server → Client messages --
 //
@@ -93,10 +119,48 @@ export type DataResult = DataSuccess | DataFailure;
 export interface HelloMessage {
   op: "hello";
   version: number;
+  tokenWindow: number; // sliding window size for token validity
+  maxStreams: number; // max concurrent streams per client
   schema: Schema;
 }
 
-export type ServerMessage = EdgeResult | GetResult | DataResult | HelloMessage;
+export interface StreamStartSuccess {
+  op: "stream_start";
+  sid: number; // server-assigned stream ID (negative integer)
+  re: number;
+}
+
+export interface StreamStartFailure {
+  op: "stream_start";
+  sid: number;
+  re: number;
+  error: unknown;
+  errorId?: string;
+}
+
+export type StreamStartResult = StreamStartSuccess | StreamStartFailure;
+
+export interface StreamDataMessage {
+  op: "stream_data";
+  sid: number; // stream ID
+  data: unknown;
+}
+
+export interface StreamEndMessage {
+  op: "stream_end";
+  sid: number; // stream ID
+  error?: unknown;
+  errorId?: string;
+}
+
+export type ServerMessage =
+  | EdgeResult
+  | GetResult
+  | DataResult
+  | HelloMessage
+  | StreamStartResult
+  | StreamDataMessage
+  | StreamEndMessage;
 
 // -- Message validation --
 
@@ -198,6 +262,80 @@ export function parseClientMessage(value: unknown): ClientMessage {
       return value as unknown as DataMessage;
     }
 
+    case "stream_start": {
+      const required = ["op", "tok", "stream", "credits"];
+      const optional = ["args"];
+      if (!hasExactKeys(value, required, optional)) {
+        throw new Error(
+          `Invalid "stream_start" message keys: ${JSON.stringify(Object.keys(value))}`,
+        );
+      }
+      if (!isNonNegativeInt(value.tok)) {
+        throw new Error(
+          `"stream_start" message "tok" must be a non-negative integer, got ${JSON.stringify(value.tok)}`,
+        );
+      }
+      if (typeof value.stream !== "string") {
+        throw new Error(
+          `"stream_start" message "stream" must be a string, got ${typeof value.stream}`,
+        );
+      }
+      if (!isNonNegativeInt(value.credits) || value.credits === 0) {
+        throw new Error(
+          `"stream_start" message "credits" must be a positive integer, got ${JSON.stringify(value.credits)}`,
+        );
+      }
+      if ("args" in value && !Array.isArray(value.args)) {
+        throw new Error(
+          `"stream_start" message "args" must be an array, got ${typeof value.args}`,
+        );
+      }
+      return value as unknown as StreamStartMessage;
+    }
+
+    case "stream_credit": {
+      const required = ["op", "sid", "credits"];
+      if (!hasExactKeys(value, required, [])) {
+        throw new Error(
+          `Invalid "stream_credit" message keys: ${JSON.stringify(Object.keys(value))}`,
+        );
+      }
+      if (
+        typeof value.sid !== "number" ||
+        !Number.isInteger(value.sid) ||
+        value.sid >= 0
+      ) {
+        throw new Error(
+          `"stream_credit" message "sid" must be a negative integer, got ${JSON.stringify(value.sid)}`,
+        );
+      }
+      if (!isNonNegativeInt(value.credits) || value.credits === 0) {
+        throw new Error(
+          `"stream_credit" message "credits" must be a positive integer, got ${JSON.stringify(value.credits)}`,
+        );
+      }
+      return value as unknown as StreamCreditMessage;
+    }
+
+    case "stream_cancel": {
+      const required = ["op", "sid"];
+      if (!hasExactKeys(value, required, [])) {
+        throw new Error(
+          `Invalid "stream_cancel" message keys: ${JSON.stringify(Object.keys(value))}`,
+        );
+      }
+      if (
+        typeof value.sid !== "number" ||
+        !Number.isInteger(value.sid) ||
+        value.sid >= 0
+      ) {
+        throw new Error(
+          `"stream_cancel" message "sid" must be a negative integer, got ${JSON.stringify(value.sid)}`,
+        );
+      }
+      return value as unknown as StreamCancelMessage;
+    }
+
     default:
       throw new Error(`Unknown client message op: ${JSON.stringify(value.op)}`);
   }
@@ -221,6 +359,9 @@ export function parseServerMessage(value: unknown): ServerMessage {
     case "edge":
     case "get":
     case "data":
+    case "stream_start":
+    case "stream_data":
+    case "stream_end":
       return msg as unknown as ServerMessage;
     default:
       throw new Error(`Unknown server message op: ${JSON.stringify(msg.op)}`);

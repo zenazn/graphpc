@@ -1,5 +1,5 @@
 // Decorators
-export { edge, method, hidden } from "./decorators";
+export { edge, method, hidden, stream } from "./decorators";
 export type { HiddenPredicate } from "./decorators";
 
 // Reference system
@@ -36,6 +36,8 @@ export {
   EdgeNotFoundError,
   MethodNotFoundError,
   ConnectionLostError,
+  TokenExpiredError,
+  StreamLimitExceededError,
 } from "./errors";
 
 // Context
@@ -52,7 +54,7 @@ export { createServer } from "./server";
 export type { ServerOptions } from "./server";
 
 // Client
-export { createClient } from "./client";
+export { createClient, invalidate, evict, subscribe } from "./client";
 
 // SSR
 export { createSSRClient } from "./ssr";
@@ -62,6 +64,7 @@ export type { SSRClient, HydrationData } from "./ssr";
 export type {
   Timers,
   RpcStub,
+  RpcStream,
   RpcDataOf,
   ClientOptions,
   ReconnectOptions,

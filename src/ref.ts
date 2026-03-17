@@ -4,16 +4,12 @@
 
 import { formatSegment, isDescendantPathKey } from "./format";
 import type { PathSegments, PathSegment } from "./path";
-import {
-  canonicalPath,
-  Node,
-  type CanonicalArgs,
-  type Context,
-} from "./types";
+import { canonicalPath, Node, type CanonicalArgs, type Context } from "./types";
 import {
   getSession,
   getNode,
   invalidateEntry,
+  createCacheEntry,
   type CacheEntry,
 } from "./context";
 import { resolveEdge, resolveData } from "./resolve";
@@ -34,16 +30,12 @@ function makeCacheEntry(
   cache: Map<string, CacheEntry>,
   ctx: Context,
 ): CacheEntry {
-  return {
-    promise: null,
-    settled: false,
-    resolve: () => {
-      const parentEntry = cache.get(parentKey)!;
-      return getNode(parentEntry).then((parent) =>
-        resolveEdge(parent, edgeName, args, ctx),
-      );
-    },
-  };
+  return createCacheEntry(() => {
+    const parentEntry = cache.get(parentKey)!;
+    return getNode(parentEntry).then((parent) =>
+      resolveEdge(parent, edgeName, args, ctx),
+    );
+  });
 }
 
 /**
@@ -104,11 +96,10 @@ export async function ref<
   // start; this handles ref() in unit-test sessions with empty caches).
   if (!session.nodeCache.has("root")) {
     const r = session.root;
-    session.nodeCache.set("root", {
-      promise: Promise.resolve(r),
-      settled: true,
-      resolve: () => Promise.resolve(r),
-    });
+    session.nodeCache.set(
+      "root",
+      createCacheEntry(() => Promise.resolve(r), r),
+    );
   }
 
   const leafKey = ensurePathEntries(
@@ -122,6 +113,8 @@ export async function ref<
   const leafEntry = session.nodeCache.get(leafKey)!;
   leafEntry.promise = null;
   leafEntry.settled = false;
+  leafEntry.rejected = false;
+  leafEntry.version++;
 
   // 4. Invalidate settled descendants so they re-resolve through the fresh leaf
   for (const [key, entry] of session.nodeCache) {
@@ -193,11 +186,10 @@ export async function walkPath(
 ): Promise<object> {
   // Ensure root entry exists
   if (!cache.has("root")) {
-    cache.set("root", {
-      promise: Promise.resolve(root),
-      settled: true,
-      resolve: () => Promise.resolve(root),
-    });
+    cache.set(
+      "root",
+      createCacheEntry(() => Promise.resolve(root), root),
+    );
   }
 
   const leafKey = ensurePathEntries(path, cache, reducers, ctx);

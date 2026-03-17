@@ -314,7 +314,7 @@ test("walkPath propagates error when intermediate edge throws", async () => {
   ).rejects.toThrow("Post 999 not found");
 });
 
-test("walkPath caches the failed promise so retries see the same rejection", async () => {
+test("walkPath retries a failed edge on subsequent access", async () => {
   const api = new FailingApi();
   const cache = new Map<string, CacheEntry>();
 
@@ -332,7 +332,8 @@ test("walkPath caches the failed promise so retries see the same rejection", asy
   // Cache should contain entries: root + posts + get("999")
   expect(cache.size).toBe(3);
 
-  // Second attempt with same cache — should get the same cached rejection
+  // Second attempt with same cache — should re-invoke the resolver (not return
+  // the cached rejection), allowing transient failures to recover.
   const err2 = await walkPath(
     api,
     ["posts", ["get", "999"]],
@@ -340,7 +341,8 @@ test("walkPath caches the failed promise so retries see the same rejection", asy
     undefined,
     {},
   ).catch((e: Error) => e);
-  expect(err2).toBe(err1); // exact same error instance from cached promise
+  expect(err2).toBeInstanceOf(Error);
+  expect((err2 as Error).message).toBe("Post 999 not found");
 });
 
 class BrokenTarget extends Node {}
@@ -459,7 +461,9 @@ test("ref() invalidates descendant cache entries (subtree invalidation)", async 
   const fakeChild: CacheEntry = {
     promise: Promise.resolve({} as any),
     settled: true,
+    rejected: false,
     resolve: () => Promise.resolve({} as any),
+    version: 0,
   };
   session.nodeCache.set(leafKey + ".child", fakeChild);
   expect(session.nodeCache.has(leafKey)).toBe(true);
@@ -476,6 +480,58 @@ test("ref() invalidates descendant cache entries (subtree invalidation)", async 
   expect(childEntry.promise).toBeNull();
   // Intermediate "root.items" should still be cached
   expect(session.nodeCache.has("root.items")).toBe(true);
+});
+
+test("ref() after rejection does not cause extra re-resolution", async () => {
+  // After a cache entry rejects, then ref() force-invalidates it,
+  // the subsequent successful resolution should stabilize (no spurious re-resolve).
+  const store = new Map([["1", "original"]]);
+  const api = new MutableApi(store);
+  const session: Session = {
+    ctx: {},
+    root: api,
+    nodeCache: new Map(),
+    close: () => {},
+    reducers: undefined,
+    signal: new AbortController().signal,
+  };
+
+  // First, seed cache with a successful walk
+  await runWithSession(session, async () => {
+    await walkPath(
+      api,
+      ["items", ["get", "1"]],
+      session.nodeCache,
+      undefined,
+      {},
+    );
+  });
+
+  const leafKey = 'root.items.get("1")';
+
+  // Manually simulate a previously rejected entry
+  // (as if a transient failure occurred, then settled)
+  const leafEntry = session.nodeCache.get(leafKey)!;
+  leafEntry.rejected = true;
+  leafEntry.settled = true;
+
+  // Now call ref() — force-invalidates the leaf
+  store.set("1", "recovered");
+  const r1 = await runWithSession(session, () => ref(MutableItem, "1"));
+  expect(r1.data).toEqual({ id: "1", name: "recovered" });
+
+  // Let the success handler settle
+  await new Promise((r) => setTimeout(r, 0));
+
+  // The entry should now be stable: settled, NOT rejected
+  const entry = session.nodeCache.get(leafKey)!;
+  expect(entry.settled).toBe(true);
+  expect(entry.rejected).toBe(false);
+
+  // A subsequent getNode() should return the SAME promise (no re-resolution)
+  const p1 = getNode(entry);
+  const p2 = getNode(entry);
+  expect(p1).toBe(p2); // same promise = stable
 });
 
 test("walkPath caches failure at first segment", async () => {

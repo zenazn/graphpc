@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { edge, method, hidden } from "./decorators";
-import { resolveEdge, resolveData, resolveGet } from "./resolve";
+import { edge, method, hidden, stream } from "./decorators";
+import { resolveEdge, resolveData, resolveGet, resolveStream } from "./resolve";
 import {
   EdgeNotFoundError,
   MethodNotFoundError,
@@ -196,6 +196,38 @@ test("resolveData: own properties shadow prototype getters", () => {
   });
   const data = resolveData(node, {});
   expect(data.label).toBe("from-own");
+});
+
+test("resolveData filters blocked names from own properties", () => {
+  class TestNode extends Node {
+    name = "safe";
+  }
+
+  const node = new TestNode();
+  Object.defineProperty(node, "__proto__", {
+    value: "malicious",
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(node, "constructor", {
+    value: "not-a-constructor",
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(node, "prototype", {
+    value: "not-a-prototype",
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+
+  const data = resolveData(node, {});
+  expect(data).toEqual({ name: "safe" });
+  expect(Object.keys(data)).not.toContain("__proto__");
+  expect(Object.keys(data)).not.toContain("constructor");
+  expect(Object.keys(data)).not.toContain("prototype");
 });
 
 test("resolveGet: invokes method", async () => {
@@ -493,4 +525,93 @@ test("resolveData excludes non-getter prototype function value", () => {
   const data = resolveData(node, {});
   expect(data).toEqual({ name: "test" });
   expect(data).not.toHaveProperty("protoFn");
+});
+
+test("resolveData: getter named after Object.prototype method is not dropped", () => {
+  class TestNode {
+    name = "test";
+    get toLocaleString(): string {
+      return "friendly-name";
+    }
+  }
+  const node = new TestNode();
+  const data = resolveData(node, {});
+  expect(data.name).toBe("test");
+  expect(data["toLocaleString"]).toBe("friendly-name");
+});
+
+test("resolveData: excludes @stream methods from data", () => {
+  class TestNode extends Node {
+    name = "test";
+    @stream
+    async *events(signal: AbortSignal): AsyncGenerator<string> {
+      yield "event";
+    }
+  }
+  const node = new TestNode();
+  const data = resolveData(node, {});
+  expect(data).toEqual({ name: "test" });
+  expect(data).not.toHaveProperty("events");
+});
+
+// -- resolveStream tests --
+
+class StreamNode extends Node {
+  @stream(z.number())
+  async *counter(signal: AbortSignal, limit: number): AsyncGenerator<number> {
+    for (let i = 0; i < limit; i++) {
+      if (signal.aborted) return;
+      yield i;
+    }
+  }
+
+  @hidden(() => true)
+  @stream
+  async *secretStream(signal: AbortSignal): AsyncGenerator<string> {
+    yield "secret";
+  }
+}
+
+test("resolveStream: calls stream method with signal and validated args", async () => {
+  const node = new StreamNode();
+  const ac = new AbortController();
+  const iterator = await resolveStream(node, "counter", [3], ac.signal, {});
+
+  const values: number[] = [];
+  let result = await iterator.next();
+  while (!result.done) {
+    values.push(result.value as number);
+    result = await iterator.next();
+  }
+  expect(values).toEqual([0, 1, 2]);
+});
+
+test("resolveStream: throws for missing stream", async () => {
+  const node = new StreamNode();
+  const ac = new AbortController();
+  expect(
+    resolveStream(node, "nonexistent", [], ac.signal, {}),
+  ).rejects.toBeInstanceOf(MethodNotFoundError);
+});
+
+test("resolveStream: throws for hidden stream", async () => {
+  const node = new StreamNode();
+  const ac = new AbortController();
+  expect(
+    resolveStream(node, "secretStream", [], ac.signal, {}),
+  ).rejects.toBeInstanceOf(MethodNotFoundError);
+});
+
+test("resolveStream: throws for blocked names", async () => {
+  const node = new StreamNode();
+  const ac = new AbortController();
+  expect(
+    resolveStream(node, "constructor", [], ac.signal, {}),
+  ).rejects.toBeInstanceOf(MethodNotFoundError);
+  expect(
+    resolveStream(node, "__proto__", [], ac.signal, {}),
+  ).rejects.toBeInstanceOf(MethodNotFoundError);
+  expect(
+    resolveStream(node, "prototype", [], ac.signal, {}),
+  ).rejects.toBeInstanceOf(MethodNotFoundError);
 });

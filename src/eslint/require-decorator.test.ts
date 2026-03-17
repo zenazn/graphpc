@@ -181,5 +181,24 @@ tester.run("require-decorator", requireDecorator, {
         },
       ],
     },
+    // Renamed decorator import — should NOT suppress the warning
+    {
+      code: `
+        import { Node, method as m } from "graphpc";
+
+        function method() { return (target: any, name: string) => {}; }
+
+        class Api extends Node {
+          @method
+          doStuff() { return 1; }
+        }
+      `,
+      errors: [
+        {
+          messageId: "missingDecorator",
+          data: { name: "doStuff", className: "Api" },
+        },
+      ],
+    },
   ],
 });

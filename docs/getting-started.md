@@ -36,6 +36,7 @@ On the client, you navigate those edges synchronously through normal object acce
 
 - **`@edge`**: "Go to another node" (local traversal, no immediate network call)
 - **`@method`**: "Do work and return data" (always RPC)
+- **`@stream`**: "Push server data to the client" (async iteration) — see [Decorators](decorators.md#stream)
 - **Data fields**: public properties + getters on a node (including inherited ones, loaded by `await node`)
 
 ```typescript
@@ -171,11 +172,13 @@ await post.updateTitle("New Title");
 const total = await client.root.posts.count();
 ```
 
-At this point you have exercised all three surfaces:
+At this point you have exercised the three pull-based surfaces:
 
 - edges
 - data fields
 - methods
+
+Streams (`@stream`) are the fourth surface — server-push via async iteration. See [Decorators](decorators.md#stream) when you're ready to add real-time data feeds.
 
 ## Common First Decisions
 
@@ -201,13 +204,14 @@ async rename(title: string): Promise<void> { ... }
 Recommended next order:
 
 1. [Mental Model](mental-model.md): path identity, caching, and ordering intuition
-2. [Decorators](decorators.md): full behavior of `@edge`, `@method`, `@hidden`
-3. [Authentication and Authorization](auth.md): context + graph reachability model
-4. [Common Patterns](patterns.md): pagination, resource hierarchies, component integration
-5. [Testing](testing.md): `mockConnect` and transport-pair testing
+2. [Decorators](decorators.md): full behavior of `@edge`, `@method`, `@stream`, `@hidden`
+3. [Identity and References](identity.md): `ref()`, `path()`, `pathOf()`, and `pathTo()`
+4. [Runtime Lifecycle and Resilience](runtime.md): lifecycle timeline and resilience
+5. [Authentication and Authorization](auth.md): context + graph reachability model
+6. [Common Patterns](patterns.md): pagination, resource hierarchies, streams, component integration
+7. [Testing](testing.md): `mockConnect` and transport-pair testing
 
-When you need runtime behavior details, continue with:
+When you need more detail on specific runtime topics:
 
-- [Runtime Lifecycle and Resilience](runtime.md)
-- [Epochs and Caching](caching.md)
+- [Caching and Invalidation](caching.md)
 - [Reconnection](reconnection.md)

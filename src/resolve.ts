@@ -2,7 +2,13 @@
  * Server-side resolution: navigate edges, invoke methods, extract data.
  */
 
-import { getEdges, getMethods, isHidden, validateArgs } from "./decorators";
+import {
+  getEdges,
+  getMethods,
+  getStreams,
+  isHidden,
+  validateArgs,
+} from "./decorators";
 import { EdgeNotFoundError, MethodNotFoundError } from "./errors";
 import type { Context } from "./types";
 
@@ -75,10 +81,12 @@ export function resolveData(
   const cls = node.constructor as new (...args: any[]) => any;
   const edges = getEdges(cls);
   const methods = getMethods(cls);
+  const streams = getStreams(cls);
   const data: Record<string, unknown> = {};
 
   // Own enumerable properties
   for (const key of Object.keys(node)) {
+    if (BLOCKED_NAMES.has(key)) continue;
     if (isHidden(cls, key, ctx)) continue;
     const value = (node as any)[key];
     if (typeof value === "function") continue;
@@ -90,9 +98,10 @@ export function resolveData(
   while (proto && proto !== Object.prototype) {
     for (const name of Object.getOwnPropertyNames(proto)) {
       if (BLOCKED_NAMES.has(name)) continue;
-      if (name in data) continue;
+      if (Object.hasOwn(data, name)) continue;
       if (edges.has(name)) continue;
       if (methods.has(name)) continue;
+      if (streams.has(name)) continue;
       if (isHidden(cls, name, ctx)) continue;
       const descriptor = Object.getOwnPropertyDescriptor(proto, name);
       if (descriptor?.get) {
@@ -205,5 +214,54 @@ export async function resolveGet(
   }
 
   // 8. Not found
+  throw new MethodNotFoundError(name);
+}
+
+/**
+ * Resolve a stream method on a node.
+ * Validates args against the stream's schemas, then calls the method
+ * with the provided AbortSignal as the first argument.
+ * Returns the async iterator (or async iterable) returned by the method.
+ */
+export async function resolveStream(
+  node: object,
+  name: string,
+  args: unknown[],
+  signal: AbortSignal,
+  ctx: Context,
+): Promise<AsyncIterator<unknown>> {
+  if (BLOCKED_NAMES.has(name)) {
+    throw new MethodNotFoundError(name);
+  }
+
+  const cls = node.constructor as new (...args: any[]) => any;
+
+  if (isHidden(cls, name, ctx)) {
+    throw new MethodNotFoundError(name);
+  }
+
+  const streams = getStreams(cls);
+  const meta = streams.get(name);
+
+  if (!meta) {
+    throw new MethodNotFoundError(name);
+  }
+
+  const validatedArgs = await validateArgs(meta.schemas, args, meta.paramNames);
+
+  const fn = (node as any)[name];
+  if (typeof fn !== "function") {
+    throw new MethodNotFoundError(name);
+  }
+
+  const result = fn.call(node, signal, ...validatedArgs);
+
+  // Support async generators, async iterables, and async disposables
+  if (result != null && typeof result === "object") {
+    if (typeof result[Symbol.asyncIterator] === "function") {
+      return result[Symbol.asyncIterator]();
+    }
+  }
+
   throw new MethodNotFoundError(name);
 }

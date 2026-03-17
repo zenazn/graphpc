@@ -188,7 +188,7 @@ test("PostsService.get returns a post", () => {
 import type { Timers } from "graphpc";
 
 const server = createServer(
-  { idleTimeout: 5_000, timers: fakeTimers },
+  { idleTimeout: 60_000, timers: fakeTimers },
   factory,
 );
 ```

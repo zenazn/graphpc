@@ -10,7 +10,7 @@ For deep implementation examples (OTel middleware, abort-signal integration patt
 
 - Enable redaction in production (`redactErrors`).
 - Log `operationError` with `errorId` for support correlation.
-- Set connection limits (`maxTokens`, `maxPendingOps`, `maxQueuedOps`) and transport payload limits.
+- Set connection limits (`tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`) and transport payload limits.
 - Set `maxOperationTimeout` and use `abortSignal()` in long-running work.
 - Treat reconnect replay as at-least-once; use idempotency keys for non-idempotent writes.
 - Add lightweight observability via `connection`, `disconnect`, and `operation` events.
@@ -23,11 +23,12 @@ Start with conservative limits and tune from real latency/load measurements.
 const server = createServer(
   {
     redactErrors: true,
-    maxTokens: 5000,
+    tokenWindow: 10_000,
+    maxStreams: 32,
     maxPendingOps: 20,
     maxQueuedOps: 1000,
     maxOperationTimeout: 30_000,
-    idleTimeout: 10_000,
+    idleTimeout: 60_000,
   },
   (ctx) => new Api(),
 );
@@ -125,18 +126,20 @@ Recommendation: set an explicit limit (for many APIs, around 1MB is a reasonable
 
 | Option          | Default | Description                                  |
 | --------------- | ------- | -------------------------------------------- |
-| `maxTokens`     | 9000    | Max edge traversals per connection           |
+| `tokenWindow`   | 10000   | Sliding window of valid tokens               |
+| `maxStreams`    | 32      | Max concurrent streams per connection        |
 | `maxPendingOps` | 20      | Max concurrent executing operations          |
 | `maxQueuedOps`  | 1000    | Max total in-flight messages before close    |
-| `idleTimeout`   | 5000ms  | Inactivity timeout before closing connection |
+| `idleTimeout`   | 60000ms | Inactivity timeout before closing connection |
 
 ```typescript
 createServer(
   {
-    maxTokens: 5000,
+    tokenWindow: 20_000,
+    maxStreams: 64,
     maxPendingOps: 10,
     maxQueuedOps: 500,
-    idleTimeout: 10_000,
+    idleTimeout: 120_000,
   },
   factory,
 );

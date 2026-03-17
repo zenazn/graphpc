@@ -45,7 +45,7 @@ server.on("disconnect", (ctx) => {
 
 ### `operation`
 
-`operation` wraps each edge/get/data operation. Handlers must call `execute()` exactly once and return its result.
+`operation` wraps each edge/get/data/stream_start operation. Handlers must call `execute()` exactly once and return its result.
 
 Multiple handlers compose in registration order (first registered = outermost).
 
@@ -56,14 +56,14 @@ server.on("operation", handlerB); // inner
 
 `OperationInfo` fields:
 
-| Field       | Type                        | Description               |
-| ----------- | --------------------------- | ------------------------- |
-| `op`        | `"edge" \| "get" \| "data"` | Operation kind            |
-| `name`      | `string`                    | Edge/member/data name     |
-| `path`      | `string`                    | Human-readable graph path |
-| `args`      | `readonly unknown[]`        | Operation args            |
-| `signal`    | `AbortSignal`               | Aborts on timeout/close   |
-| `messageId` | `number`                    | Internal correlation id   |
+| Field       | Type                                          | Description               |
+| ----------- | --------------------------------------------- | ------------------------- |
+| `op`        | `"edge" \| "get" \| "data" \| "stream_start"` | Operation kind            |
+| `name`      | `string`                                      | Edge/member/data name     |
+| `path`      | `string`                                      | Human-readable graph path |
+| `args`      | `readonly unknown[]`                          | Operation args            |
+| `signal`    | `AbortSignal`                                 | Aborts on timeout/close   |
+| `messageId` | `number`                                      | Internal correlation id   |
 
 `OperationResult.error` (if present) contains the original server error, before redaction.
 

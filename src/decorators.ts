@@ -28,11 +28,18 @@ export interface MethodMeta {
   paramNames: string[];
 }
 
+export interface StreamMeta {
+  name: string;
+  schemas: StandardSchemaV1[];
+  paramNames: string[];
+}
+
 // -- Metadata storage --
 
 interface ClassMeta {
   edges: Map<string, EdgeMeta>;
   methods: Map<string, MethodMeta>;
+  streams: Map<string, StreamMeta>;
   hidden: Map<string, HiddenPredicate>;
 }
 
@@ -53,6 +60,7 @@ function getOrCreateMeta(metadata: object): ClassMeta {
     meta = {
       edges: new Map(),
       methods: new Map(),
+      streams: new Map(),
       hidden: new Map(),
     };
     metadataMap.set(metadata, meta);
@@ -70,7 +78,12 @@ const collectCache = new WeakMap<object, ClassMeta>();
 function collect(cls: Function): ClassMeta {
   const metadata = (cls as any)[METADATA] as object | undefined;
   if (!metadata)
-    return { edges: new Map(), methods: new Map(), hidden: new Map() };
+    return {
+      edges: new Map(),
+      methods: new Map(),
+      streams: new Map(),
+      hidden: new Map(),
+    };
 
   const cached = collectCache.get(metadata);
   if (cached) return cached;
@@ -78,6 +91,7 @@ function collect(cls: Function): ClassMeta {
   const result: ClassMeta = {
     edges: new Map(),
     methods: new Map(),
+    streams: new Map(),
     hidden: new Map(),
   };
   let current: object | null = metadata;
@@ -89,6 +103,9 @@ function collect(cls: Function): ClassMeta {
       }
       for (const [name, val] of own.methods) {
         if (!result.methods.has(name)) result.methods.set(name, val);
+      }
+      for (const [name, val] of own.streams) {
+        if (!result.streams.has(name)) result.streams.set(name, val);
       }
       for (const [name, val] of own.hidden) {
         if (!result.hidden.has(name)) result.hidden.set(name, val);
@@ -125,6 +142,12 @@ export function getMethods(
   cls: new (...args: any[]) => any,
 ): Map<string, MethodMeta> {
   return collect(cls).methods;
+}
+
+export function getStreams(
+  cls: new (...args: any[]) => any,
+): Map<string, StreamMeta> {
+  return collect(cls).streams;
 }
 
 // -- Helpers --
@@ -428,6 +451,54 @@ export function hidden(predicate: HiddenPredicate) {
   ) => {
     const name = context.name as string;
     getOrCreateMeta(context.metadata).hidden.set(name, predicate);
+  };
+}
+
+// -- @stream decorator --
+
+function applyStream(
+  schemas: StandardSchemaV1[],
+  value: Function,
+  context: ClassMethodDecoratorContext,
+) {
+  const name = context.name as string;
+  // Extract param names, skipping the leading AbortSignal
+  const allParamNames = extractParamNames(value);
+  const paramNames = allParamNames.length > 0 ? allParamNames.slice(1) : [];
+  getOrCreateMeta(context.metadata).streams.set(name, {
+    name,
+    schemas,
+    paramNames,
+  });
+}
+
+/**
+ * @stream — marks an async generator method as a server-push stream.
+ *
+ * The first parameter is always an AbortSignal (provided by the framework).
+ * Remaining parameters are validated against Standard Schema validators.
+ *
+ * Usage:
+ *   @stream(z.string().optional())
+ *   async *updates(signal: AbortSignal, cursor?: string): AsyncGenerator<Update> { ... }
+ */
+export function stream(...args: any[]): any {
+  // Case 1: @stream (bare, no arguments) — TC39 calls stream(value, context)
+  if (
+    args.length === 2 &&
+    typeof args[0] === "function" &&
+    typeof args[1] === "object" &&
+    args[1] !== null &&
+    "kind" in args[1] &&
+    args[1].kind === "method"
+  ) {
+    applyStream([], args[0], args[1]);
+    return;
+  }
+  // Case 2: @stream(schema1, ...)
+  const schemas = args.filter(isStandardSchema);
+  return (value: Function, context: ClassMethodDecoratorContext) => {
+    applyStream(schemas, value, context);
   };
 }
 

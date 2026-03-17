@@ -275,12 +275,12 @@ This follows the capability model: the `.writable` edge is the authorization bou
 
 ## Edge Getter Caching and Authorization Safety
 
-Edge getters run **once per path** within an epoch. When the server resolves a path like `root.users.get("42")`, it caches the resulting node instance for the duration of the connection. Subsequent requests to the same path reuse the cached instance — the getter doesn't run again.
+Edge getters run **once per path** within a connection. When the server resolves a path like `root.users.get("42")`, it caches the resulting node instance for the duration of the connection. Subsequent requests to the same path reuse the cached instance — the getter doesn't run again.
 
 This is safe because:
 
 1. **Context is stable per connection** — the authorization decision only needs to run once, since the context (and therefore the user's identity and permissions) won't change mid-connection.
-2. **Each epoch has its own node cache** — nodes are never shared across connections or epochs. Two users resolving the same path get separate node instances, each authorized independently by their connection's edge getter. When a connection closes and a new epoch begins, the cache starts empty and edge getters run again.
+2. **Each connection has its own node cache** — nodes are never shared across connections. Two users resolving the same path get separate node instances, each authorized independently by their connection's edge getter. When a connection closes, the cache is discarded and edge getters run again on the next connection.
 
 ```typescript
 class Api extends Node {
@@ -343,7 +343,7 @@ If the client has `reconnect` enabled, it will auto-reconnect after the transpor
 
 ## Reconnection as Context Refresh
 
-When a client reconnects (whether after `abortThisConn()`, a network drop, or a server restart), a new epoch begins — the new connection starts completely fresh:
+When a client reconnects (whether after `abortThisConn()`, a network drop, or a server restart), a new server-side connection starts completely fresh:
 
 - The transport factory runs again (new WebSocket handshake)
 - `server.handle()` is called with a new context (credentials re-extracted)

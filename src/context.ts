@@ -12,11 +12,42 @@ import type { Context } from "./types";
 export interface CacheEntry {
   promise: Promise<object> | null;
   settled: boolean;
+  rejected: boolean;
   resolve: () => Promise<object>;
+  version: number;
+}
+
+/** Create a CacheEntry. Use this instead of constructing the object literal. */
+export function createCacheEntry(
+  resolve: () => Promise<object>,
+  resolved?: object,
+): CacheEntry {
+  if (resolved !== undefined) {
+    return {
+      promise: Promise.resolve(resolved),
+      settled: true,
+      rejected: false,
+      resolve,
+      version: 0,
+    };
+  }
+  return {
+    promise: null,
+    settled: false,
+    rejected: false,
+    resolve,
+    version: 0,
+  };
 }
 
 /** Get or create the lazy node promise from a cache entry. */
 export function getNode(entry: CacheEntry): Promise<object> {
+  // If previously rejected, clear and re-resolve on next access
+  if (entry.promise && entry.settled && entry.rejected) {
+    entry.promise = null;
+    entry.settled = false;
+    entry.rejected = false;
+  }
   if (!entry.promise) {
     entry.promise = entry.resolve();
     entry.promise.catch(() => {});
@@ -26,6 +57,7 @@ export function getNode(entry: CacheEntry): Promise<object> {
       },
       () => {
         entry.settled = true;
+        entry.rejected = true;
       },
     );
   }
@@ -42,6 +74,8 @@ export function invalidateEntry(entry: CacheEntry): void {
   if (!entry.promise || !entry.settled) return;
   entry.promise = null;
   entry.settled = false;
+  entry.rejected = false;
+  entry.version++;
 }
 
 export interface Session {

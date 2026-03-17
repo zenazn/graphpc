@@ -3,7 +3,7 @@
  * Walks @edge targetType recursively — no instance probing needed.
  */
 
-import { getEdges, isHidden } from "./decorators";
+import { getEdges, getStreams, isHidden } from "./decorators";
 import type { Schema } from "./protocol";
 import type { Context } from "./types";
 
@@ -35,7 +35,7 @@ export function buildSchema(
     // Reserve index before walking children (handles cycles)
     const index = schema.length;
     classIndex.set(cls, index);
-    schema.push({ edges: {} }); // placeholder
+    schema.push({ edges: {}, streams: [] }); // placeholder
 
     const edges = getEdges(cls);
     const edgeRecord: Record<string, number> = {};
@@ -45,7 +45,14 @@ export function buildSchema(
       edgeRecord[name] = register(meta.targetType);
     }
 
-    schema[index] = { edges: edgeRecord };
+    const streams = getStreams(cls);
+    const streamNames: string[] = [];
+    for (const [name] of streams) {
+      if (isHidden(cls, name, ctx)) continue;
+      streamNames.push(name);
+    }
+
+    schema[index] = { edges: edgeRecord, streams: streamNames };
     return index;
   }
 

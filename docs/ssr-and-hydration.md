@@ -8,6 +8,8 @@ GraphPC supports server-side rendering (SSR). During SSR, components interact wi
 
 The SSR client implements the same `RpcClient` interface as the regular client, so components can be written once and used in both environments.
 
+Streams (`@stream` members) are inert during SSR — they are not available on the SSR client.
+
 ## Server-Side Rendering
 
 ### Creating an SSR Client
@@ -77,9 +79,9 @@ The client serves cached data instantly, before the WebSocket is even connected.
 
 ### Hydration Lifetime
 
-Hydration runs inside a special epoch. During this window, reads are served from the SSR payload cache instead of the wire. Cache entries are reusable during the hydration epoch.
+Hydration runs as a special phase. During this window, reads are served from the SSR payload cache instead of the wire. Cache entries are reusable during the hydration phase.
 
-The hydration epoch ends when either:
+The hydration phase ends when either:
 
 1. **`client.endHydration()`** is called explicitly, or
 2. An **inactivity timeout** fires (default 250ms, configurable via `hydrationTimeout`)
@@ -95,11 +97,15 @@ const client = createClient<typeof server>({ hydrationTimeout: 500 }, () =>
 client.hydrate(window.__rpc);
 ```
 
-After hydration ends, the next cache miss that requires live data opens a WebSocket and starts a live epoch.
+When hydration ends:
 
-For exact cache and timeout behavior, see [Epochs and Caching](caching.md#the-hydration-epoch).
+- **Method call results** recorded during SSR are dropped from the cache. Methods are not cached during live operation, so keeping SSR-recorded results would be incorrect.
+- **All other data** (edge traversals, node data, property reads) stays in the persistent cache and continues to serve reads.
+- The next cache miss that requires live data opens a WebSocket connection.
 
-For the end-to-end runtime timeline (SSR -> hydration epoch -> live epochs -> reconnect), see [Runtime Lifecycle and Resilience](runtime.md).
+For exact cache and timeout behavior, see [Caching and Invalidation](caching.md#hydration).
+
+For the end-to-end runtime timeline (SSR -> hydration -> persistent cache -> reconnect), see [Runtime Lifecycle and Resilience](runtime.md).
 
 ## What Gets Tracked
 
@@ -111,9 +117,11 @@ The SSR client records:
 
 Plain property access (non-edge, non-method) is not recorded — it delegates directly to the real object.
 
+Streams (`@stream` members) are not tracked during SSR and are not included in the hydration payload.
+
 ### Method Call Replay During Hydration
 
-During SSR, each `@method` call's arguments and return value are captured in the hydration payload. During hydration, the same call (same path + args) is replayed from cache instead of the network.
+During SSR, each `@method` call's arguments and return value are captured in the hydration payload. During the hydration phase, the same call (same path + args) is replayed from cache instead of the network.
 
 ```typescript
 // SSR — recorded: path=posts.list, args=[], result=[{title:"Hello World"}]
@@ -123,7 +131,7 @@ const posts = await client.root.posts.list();
 const posts = await client.root.posts.list(); // no WebSocket needed
 ```
 
-This behavior is unique to the hydration epoch. In live epochs, `@method` results are never cached.
+This behavior is unique to the hydration phase. During live operation, `@method` results are never cached. When hydration ends, SSR-recorded method results are dropped from the cache.
 
 ## Unified Component Pattern
 
@@ -149,11 +157,11 @@ This component works identically whether `client` is:
 
 Every framework integration follows the same steps, mapped to GraphPC primitives:
 
-| Step        | What happens                                               | GraphPC primitive                   |
-| ----------- | ---------------------------------------------------------- | ----------------------------------- |
-| **Render**  | Server renders components using SSR client                 | `createSSRClient()` → `client.root` |
-| **Embed**   | Serialize hydration data into HTML                         | `client.generateHydrationData()`    |
-| **Hydrate** | Client reads embedded data instead of making network calls | `createClient()` then `.hydrate()`  |
+| Step        | What happens                                               | GraphPC primitive                    |
+| ----------- | ---------------------------------------------------------- | ------------------------------------ |
+| **Render**  | Server renders components using SSR client                 | `createSSRClient()` -> `client.root` |
+| **Embed**   | Serialize hydration data into HTML                         | `client.generateHydrationData()`     |
+| **Hydrate** | Client reads embedded data instead of making network calls | `createClient()` then `.hydrate()`   |
 
 ### What a Framework Adapter Needs to Do
 
@@ -182,4 +190,5 @@ hydrateApp({ client }); // framework hydrate function
 - Generate hydration data only after SSR data fetches complete.
 - Ensure hydration payload script is emitted before client code reads `window.__rpc`.
 - Call `hydrate()`/`hydrateString()` before client-side awaits.
+- Streams are not available during SSR — they require a live WebSocket connection.
 - Treat framework boundaries (RSC/Suspense/streaming) as framework concerns; GraphPC integration stays the same: `createSSRClient` -> `generateHydrationData` -> `createClient` + `hydrate`.

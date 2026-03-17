@@ -4,8 +4,10 @@ import {
   edge,
   method,
   hidden,
+  stream,
   getEdges,
   getMethods,
+  getStreams,
   getHidden,
   isHidden,
 } from "./decorators";
@@ -348,6 +350,55 @@ test("paramNames handles strings/templates with brackets in defaults", () => {
     async escape(a: string = 'he said "(hi)"', b: string): Promise<void> {}
   }
   expect(getMethods(Escape).get("escape")!.paramNames).toEqual(["a", "b"]);
+});
+
+// -- @stream tests --
+
+test("@stream stores metadata with schemas", () => {
+  class Api {
+    @stream(z.string())
+    async *events(signal: AbortSignal, cursor: string): AsyncGenerator<string> {
+      yield cursor;
+    }
+  }
+
+  const streams = getStreams(Api);
+  expect(streams.size).toBe(1);
+  const meta = streams.get("events")!;
+  expect(meta.name).toBe("events");
+  expect(meta.schemas.length).toBe(1);
+  // paramNames should exclude the leading AbortSignal
+  expect(meta.paramNames).toEqual(["cursor"]);
+});
+
+test("@stream bare (no schemas) stores metadata", () => {
+  class Api {
+    @stream
+    async *updates(signal: AbortSignal): AsyncGenerator<number> {
+      yield 1;
+    }
+  }
+
+  const streams = getStreams(Api);
+  expect(streams.size).toBe(1);
+  const meta = streams.get("updates")!;
+  expect(meta.name).toBe("updates");
+  expect(meta.schemas).toEqual([]);
+  expect(meta.paramNames).toEqual([]);
+});
+
+test("getStreams returns inherited streams", () => {
+  class Base {
+    @stream
+    async *baseStream(signal: AbortSignal): AsyncGenerator<number> {
+      yield 1;
+    }
+  }
+  class Derived extends Base {}
+
+  const streams = getStreams(Derived);
+  expect(streams.size).toBe(1);
+  expect(streams.get("baseStream")).toMatchObject({ name: "baseStream" });
 });
 
 // -- validateArgs excess arguments tests --

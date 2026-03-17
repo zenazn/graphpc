@@ -6,9 +6,9 @@ When to read this page: before shipping to unreliable networks, or whenever muta
 
 This page focuses on behavior after an established client loses transport unexpectedly (server restart, network drop, WebSocket error).
 
-Each successful reconnect starts a fresh epoch (fresh tokens/cache/context).
+The persistent cache survives reconnects — same stubs, same promises, same referential identity. Only in-flight operations are replayed.
 
-For the full lifecycle timeline, see [Runtime Lifecycle and Resilience](runtime.md). For hydration-epoch semantics, see [SSR and Hydration](ssr-and-hydration.md) and [Epochs and Caching](caching.md#the-hydration-epoch).
+For the full lifecycle timeline, see [Runtime Lifecycle and Resilience](runtime.md). For hydration semantics, see [SSR and Hydration](ssr-and-hydration.md) and [Caching and Invalidation](caching.md#hydration).
 
 ## Enabled by Default
 
@@ -66,7 +66,7 @@ const client = createClient<typeof server>(
   () => new WebSocket("ws://localhost:3000"),
 );
 
-client.on("disconnect", () => showBanner("Reconnecting…"));
+client.on("disconnect", () => showBanner("Reconnecting..."));
 client.on("reconnect", () => hideBanner());
 client.on("reconnectFailed", () =>
   showBanner("Connection lost. Please refresh."),
@@ -76,7 +76,7 @@ client.on("reconnectFailed", () =>
 Remove a listener with `client.off()`:
 
 ```typescript
-const handler = () => showBanner("Reconnecting…");
+const handler = () => showBanner("Reconnecting...");
 client.on("disconnect", handler);
 client.off("disconnect", handler);
 ```
@@ -98,6 +98,38 @@ This means:
 - **Idle timeout on the server** does not cause a reconnect loop. The client stays dormant until the next operation.
 - **`'reconnect'` only fires** after an eager reconnect (in-flight operations were pending). An idle disconnect followed by a fresh connection does **not** emit `'reconnect'`.
 - **`'disconnect'` always fires** when the transport closes, regardless of whether operations were in-flight.
+
+## Persistent Cache Across Reconnects
+
+The client's persistent cache is **not** dropped on reconnect. Cached node data, stub objects, and their referential identity are preserved:
+
+- Stubs created before disconnect remain valid and usable after reconnect.
+- Promises that were already resolved continue to hold their resolved values.
+- In-flight operations are replayed on the new connection transparently.
+- The client re-walks only the edges needed by queued/new work.
+
+This means UI components holding stub references do not need to re-fetch data after a reconnect unless the data has been invalidated or evicted.
+
+## Stream Behavior on Disconnect
+
+Streams (`@stream` members) have specific reconnect behavior:
+
+- **Without a resume callback**: on disconnect, the pending `next()` returns `{ done: true }`. The `for await` loop exits cleanly.
+- **With a resume callback**: on disconnect, the pending `next()` blocks (does not resolve or reject). On reconnect, the library calls `resume()` to get a new underlying stream and routes the held `next()` to the new iterator's first yield. The loop continues transparently.
+
+To opt in to auto-resume, assign a `resume` callback on the stream object. The cursor must reflect the most recent successfully consumed message:
+
+```typescript
+let cursor: string | undefined;
+const stream = client.root.notifications.updates(cursor);
+stream.resume = () => client.root.notifications.updates(cursor);
+
+for await (const msg of stream) {
+  cursor = msg.id; // update cursor as messages are consumed
+}
+```
+
+See [Decorators — @stream](decorators.md#stream) for the full stream API.
 
 ## Replay Behavior
 

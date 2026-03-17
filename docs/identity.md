@@ -8,7 +8,7 @@ When to read this page: when methods need to exchange node identity between clie
 | ------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------ |
 | Return navigable results from a `@method` with data preloaded | `ref()` / `Reference<T>` | Bundles canonical path + data so the client can use the node immediately |
 | Return lightweight navigable handles without data             | `pathTo()`               | Records canonical paths without graph walking or data extraction         |
-| Accept “act on this node” arguments from the client           | `path()` + `pathOf()`    | Client sends path identity; server validates and resolves on `await`     |
+| Accept "act on this node" arguments from the client           | `path()` + `pathOf()`    | Client sends path identity; server validates and resolves on `await`     |
 
 ## References: Returning Navigable Results
 
@@ -70,13 +70,13 @@ async thread(): Promise<{ post: Reference<Post>; author: Reference<User> }> { ..
 
 ### References and Caching
 
-When a `Reference<T>` arrives on the client, GraphPC updates the epoch cache at that canonical path:
+When a `Reference<T>` arrives on the client, GraphPC updates the persistent cache at that canonical path:
 
 - node data is overwritten with fresh data
 - per-property caches for that node are invalidated
 - cached descendants are invalidated so future traversals re-resolve
 
-This is the primary read-after-write mechanism inside a live epoch.
+This is the primary read-after-write mechanism. Alternatively, use `invalidate(stub)` to explicitly mark data as stale.
 
 ### References and Authorization
 
@@ -162,7 +162,7 @@ Because connection schema excludes `@hidden` members, hidden-edge paths are reje
 | Data included              | Yes                      | No                            | No                      |
 | Path                       | Canonical                | Caller-traversed path         | Canonical               |
 | Requires `[canonicalPath]` | Yes                      | No                            | Yes                     |
-| Typical use                | Fresh method results     | “Act on this node” parameters | Cheap navigable handles |
+| Typical use                | Fresh method results     | "Act on this node" parameters | Cheap navigable handles |
 
 ## How `ref()` Works (Short Version)
 

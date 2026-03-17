@@ -8,6 +8,7 @@
  * that, we use the following heuristics:
  * - Getters/methods returning Node (sync or async) → @edge → synchronous stub navigation
  * - Methods returning T or Promise<T> (non-Node) → @method → keeps as Promise<T>
+ * - Methods returning AsyncGenerator<T> → @stream → returns RpcStream<T>
  * - await on a stub → fetches data, returns data props + stubs
  */
 
@@ -132,6 +133,18 @@ export interface ServerInstance<TRoot extends object> {
 
 export type RootOf<S> = S extends ServerInstance<infer R> ? R : never;
 
+// -- RpcStream type --
+
+/** Client-side stream handle. Async iterable + lifecycle controls. */
+export interface RpcStream<T> {
+  /** Async iteration support. */
+  [Symbol.asyncIterator](): AsyncIterator<T>;
+  /** Set to opt in to auto-resume on reconnect. Called to get a new stream. */
+  resume?: () => RpcStream<T>;
+  /** Cancel the stream. */
+  cancel(): void;
+}
+
 // -- RpcStub types --
 
 /** Check if T extends Node */
@@ -143,6 +156,11 @@ type IsPath<T> = T extends { readonly [pathTag]: any } ? true : false;
 /** Map Path<T> params → PathArg on the client */
 type MapPathParam<T> = T extends { readonly [pathTag]: any } ? PathArg : T;
 type MapPathParams<T extends any[]> = { [K in keyof T]: MapPathParam<T[K]> };
+
+/** Strip leading AbortSignal from parameter tuple */
+type StripAbortSignal<T extends any[]> = T extends [AbortSignal, ...infer Rest]
+  ? Rest
+  : T;
 
 /** Unwrap Reference<T> or Path<T> to transparent data+stub hybrid / stub */
 type UnwrapRef<T> =
@@ -237,23 +255,34 @@ export type RpcDataOf<T> = {
         : K]: T[K];
 };
 
-/** Navigable parts of a stub — edges (sync/async returning Node), methods, property edges */
+/** Detect if a function returns an AsyncGenerator */
+type IsAsyncGenerator<T> =
+  T extends AsyncGenerator<any, any, any> ? true : false;
+
+/** Navigable parts of a stub — edges (sync/async returning Node), methods, streams, property edges */
 type RpcNav<T> = {
   // Functions
   [K in keyof T as T[K] extends Function ? K : never]: T[K] extends (
-    // sync edge: (...args) => Node
+    // Check for async generator (stream) first
     ...args: infer A
   ) => infer R
-    ? IsNode<R> extends true
-      ? (...args: MapPathParams<A>) => RpcStub<R>
-      : // async edge: (...args) => Promise<Node>
-        R extends Promise<infer U>
-        ? IsNode<U> extends true
-          ? (...args: MapPathParams<A>) => RpcStub<U>
-          : // method: (...args) => Promise<T> where T is not Node
-            ResolveMethodReturn<MapPathParams<A>, U>
-        : // sync method: (...args) => T where T is not Node
-          ResolveMethodReturn<MapPathParams<A>, R>
+    ? IsAsyncGenerator<R> extends true
+      ? R extends AsyncGenerator<infer Y, any, any>
+        ? (
+            ...args: MapPathParams<StripAbortSignal<A>>
+          ) => RpcStream<UnwrapReferences<Y>>
+        : never
+      : // sync edge: (...args) => Node
+        IsNode<R> extends true
+        ? (...args: MapPathParams<A>) => RpcStub<R>
+        : // async edge: (...args) => Promise<Node>
+          R extends Promise<infer U>
+          ? IsNode<U> extends true
+            ? (...args: MapPathParams<A>) => RpcStub<U>
+            : // method: (...args) => Promise<T> where T is not Node
+              ResolveMethodReturn<MapPathParams<A>, U>
+          : // sync method: (...args) => T where T is not Node
+            ResolveMethodReturn<MapPathParams<A>, R>
     : never;
 } & {
   // Property edges: non-function properties whose type extends Node
@@ -281,7 +310,7 @@ export type ClientEvent = keyof ClientEventMap;
 
 export interface RpcClient<S extends ServerInstance<any>> {
   readonly root: RpcStub<RootOf<S>>;
-  /** Resolves once the client has received the hello message and is ready to issue operations. Resets on reconnection. */
+  /** Resolves once the client has received the hello message and is ready to issue operations. */
   readonly ready: Promise<void>;
   on<E extends ClientEvent>(event: E, handler: ClientEventMap[E]): void;
   off<E extends ClientEvent>(event: E, handler: ClientEventMap[E]): void;
@@ -289,7 +318,7 @@ export interface RpcClient<S extends ServerInstance<any>> {
   hydrate(value: unknown): void;
   /** Hydrate from a raw string (e.g. from fetch or localStorage). Must be called before any awaits. */
   hydrateString(str: string): void;
-  /** Explicitly end the hydration epoch, dropping the cache. No-op if never hydrated. */
+  /** Explicitly end hydration, dropping the cache. Method call results are discarded; all other data forms the starting point for the client cache. No-op if never hydrated. */
   endHydration(): void;
   /** Reset retry counter and immediately attempt to reconnect. No-op if connected, closed, or reconnect is disabled. */
   reconnect(): void;

@@ -16,6 +16,7 @@ Define your API as classes, navigate it as objects on the client, and keep end-t
 
 - **`@edge`**: navigate to another node (local, synchronous path building)
 - **`@method`**: run an operation and return data (RPC)
+- **`@stream`**: push server data to the client (async iteration)
 - **`await node`**: load a node's data fields (public properties + getters, including inherited ones)
 
 Server shape:
@@ -54,9 +55,10 @@ await post.updateTitle("New"); // RPC method call
 1. [Getting Started](docs/getting-started.md)
 2. [Mental Model](docs/mental-model.md)
 3. [Decorators](docs/decorators.md)
-4. [Authentication and Authorization](docs/auth.md)
-5. [Common Patterns](docs/patterns.md)
-6. [Documentation Index](docs/index.md)
+4. [Identity and References](docs/identity.md)
+5. [Authentication and Authorization](docs/auth.md)
+6. [Common Patterns](docs/patterns.md)
+7. [Documentation Index](docs/index.md)
 
 ## Install
 

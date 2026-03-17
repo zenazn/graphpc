@@ -18,7 +18,11 @@ A navigable relationship from one node to another node. Edge navigation on the c
 
 A callable operation on a node that returns data over RPC. When client code calls a `@method`, GraphPC always sends a request to the server to execute it there.
 
-See also: [Decorators](decorators.md), [Mental Model](mental-model.md)
+### Stream (`@stream`)
+
+A server-push data feed declared as an async generator on the server. The client receives an `RpcStream<T>` — an async iterable that yields values as the server produces them.
+
+See also: [Decorators](decorators.md)
 
 ### Data fields
 
@@ -58,23 +62,29 @@ See also: [Path References](identity.md)
 
 ## Freshness and Lifecycle Terms
 
-### Epoch
+### Invalidation
 
-A connection-scoped activity window with its own cache and token space. Caches are dropped when an epoch ends.
+The act of marking cached data as stale so that the next read triggers a fresh fetch from the server. Performed client-side via `invalidate(stub)`.
 
-See also: [Epochs and Caching](caching.md), [Runtime Lifecycle and Resilience](runtime.md)
+See also: [Caching and Invalidation](caching.md)
 
-### Hydration epoch
+### Subscribe
 
-A short-lived epoch seeded from SSR hydration payload rather than wire responses.
+A reactive subscription to a stub's cached data, following the Svelte store contract. Call `subscribe(stub, callback)` to receive updates when data changes; returns an unsubscribe function.
 
-See also: [SSR and Hydration](ssr-and-hydration.md), [Epochs and Caching](caching.md)
+See also: [Caching and Invalidation](caching.md)
+
+### Token window
+
+The server-side sliding window of valid tokens. Tokens outside the window are expired, but the client handles this transparently by replaying the path to obtain a fresh token. App code is unaware of token management. `TokenExpiredError` only surfaces if the replay circuit breaker trips (5 consecutive failures on the same path).
+
+See also: [Protocol Internals](internals.md#token-window), [Production Guide](production.md)
 
 ### Coalescing
 
-Combining duplicate in-flight reads (same node/property) into one wire request within an epoch.
+Combining duplicate in-flight reads (same node/property) into one wire request within the cache.
 
-See also: [Epochs and Caching](caching.md)
+See also: [Caching and Invalidation](caching.md)
 
 ### Reference (`Reference<T>`, `ref()`)
 
