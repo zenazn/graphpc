@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { z } from "zod";
 import { edge, method } from "./decorators";
 import { createServer } from "./server";
 import { createClient } from "./client";
@@ -18,6 +19,10 @@ class Api extends Node {
   @method
   async bump(): Promise<number> {
     return ++bumpCount;
+  }
+  @method(z.any())
+  async echo(v: unknown): Promise<unknown> {
+    return v;
   }
 }
 
@@ -80,4 +85,27 @@ test("a replayed op survives a second disconnect instead of hanging", async () =
   slowResolvers.forEach((r) => r());
   const result = await slowP;
   expect(result).toBe("done");
+});
+
+test("an unserializable argument does not desync response correlation", async () => {
+  const { client } = setup();
+  await client.ready;
+
+  const root = client.root as unknown as { echo(v: unknown): Promise<unknown> };
+
+  // A function argument can't be serialized: the send must reject without
+  // advancing the positional message counter.
+  let threw = false;
+  try {
+    await root.echo(() => 1);
+  } catch {
+    threw = true;
+  }
+  expect(threw).toBe(true);
+
+  // Subsequent calls must still resolve with their own values, not misrouted.
+  const a = await root.echo("AAA");
+  const b = await root.echo("BBB");
+  expect(a).toBe("AAA");
+  expect(b).toBe("BBB");
 });

@@ -874,11 +874,6 @@ export function createClient<S extends ServerInstance<any>>(
           tokenBirthCount.delete(tok);
           tok = await resolveEdgePath(parentPath);
         }
-        const token = nextToken++;
-        sendCount++;
-        tokenBirthCount.set(token, sendCount);
-        pathToTokenSync.set(key, token);
-        const msgId = nextMessageId++;
         const edgeName = typeof seg === "string" ? seg : seg[0];
         const args = typeof seg === "string" ? [] : (seg.slice(1) as unknown[]);
 
@@ -889,6 +884,17 @@ export function createClient<S extends ServerInstance<any>>(
           ...(args.length > 0 && { args }),
         };
 
+        // Serialize before consuming the token/message counters. Correlation is
+        // positional, so an unserializable edge argument must reject here rather
+        // than advance the counters and desync every later response.
+        const wire = serializer.stringify(msg);
+
+        const token = nextToken++;
+        sendCount++;
+        tokenBirthCount.set(token, sendCount);
+        pathToTokenSync.set(key, token);
+        const msgId = nextMessageId++;
+
         pending.set(msgId, {
           resolve: () => {},
           reject: () => {
@@ -897,7 +903,7 @@ export function createClient<S extends ServerInstance<any>>(
         });
 
         try {
-          transport!.send(serializer.stringify(msg));
+          transport!.send(wire);
         } catch (err) {
           pending.delete(msgId);
           cleanup(token);
@@ -990,17 +996,21 @@ export function createClient<S extends ServerInstance<any>>(
         }
 
         // Method calls — always send independently, never coalesce
-        const msgId = nextMessageId++;
         const msg: ClientMessage = {
           op: "get",
           tok: token,
           name: terminal.name,
           ...(terminal.args.length > 0 && { args: terminal.args }),
         };
+        // Serialize before consuming a message id. Response correlation is
+        // positional, so an unserializable argument must reject here rather
+        // than advance the counter and misroute every later response.
+        const wire = serializer.stringify(msg);
+        const msgId = nextMessageId++;
         return new Promise((resolve, reject) => {
           pending.set(msgId, { resolve, reject });
           try {
-            transport!.send(serializer.stringify(msg));
+            transport!.send(wire);
           } catch (err) {
             pending.delete(msgId);
             reject(err);
@@ -1215,15 +1225,12 @@ export function createClient<S extends ServerInstance<any>>(
       ready.then(async () => {
         const token = await resolveEdgePath(path);
 
-        const msgId = nextMessageId++;
         // If there's a resume pending, use the old state instead of the new one
         const isResume = resumeQueue.length > 0;
         const effectiveState = isResume ? resumeQueue.shift()! : streamState;
         const startCredits = effectiveState.windowSize;
         effectiveState.framesSinceGrant = 0;
         effectiveState.lastGrantSize = startCredits;
-        // Pre-register so stream_start handler can associate data immediately
-        pendingStreamStarts.set(msgId, effectiveState);
 
         const msg: ClientMessage = {
           op: "stream_start",
@@ -1233,29 +1240,43 @@ export function createClient<S extends ServerInstance<any>>(
           ...(args.length > 0 && { args }),
         };
 
-        pending.set(msgId, {
-          resolve: () => {},
-          reject: (err: unknown) => {
-            pendingStreamStarts.delete(msgId);
-            effectiveState.done = true;
-            effectiveState.error = err;
-            if (effectiveState.pending) {
-              effectiveState.pending.reject(err);
-              effectiveState.pending = null;
-            }
-          },
-        });
-        try {
-          transport!.send(serializer.stringify(msg));
-        } catch (err) {
-          pending.delete(msgId);
-          pendingStreamStarts.delete(msgId);
+        const failStart = (err: unknown) => {
           effectiveState.done = true;
           effectiveState.error = err;
           if (effectiveState.pending) {
             effectiveState.pending.reject(err);
             effectiveState.pending = null;
           }
+        };
+
+        // Serialize before consuming a message id. Correlation is positional,
+        // so an unserializable stream argument must fail the stream rather than
+        // advance the counter and desync every later response.
+        let wire: string;
+        try {
+          wire = serializer.stringify(msg);
+        } catch (err) {
+          failStart(err);
+          return;
+        }
+
+        const msgId = nextMessageId++;
+        // Pre-register so stream_start handler can associate data immediately
+        pendingStreamStarts.set(msgId, effectiveState);
+
+        pending.set(msgId, {
+          resolve: () => {},
+          reject: (err: unknown) => {
+            pendingStreamStarts.delete(msgId);
+            failStart(err);
+          },
+        });
+        try {
+          transport!.send(wire);
+        } catch (err) {
+          pending.delete(msgId);
+          pendingStreamStarts.delete(msgId);
+          failStart(err);
         }
       });
 
