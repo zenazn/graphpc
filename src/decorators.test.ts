@@ -451,3 +451,32 @@ test("@edge throws when target does not extend Node", () => {
     }
   }).toThrow("@edge target NotANode must extend Node");
 });
+
+test("a subclass override changes a member's kind across categories", () => {
+  class Target extends Node {}
+  class Parent extends Node {
+    @edge(Target) get thing(): Target {
+      return new Target();
+    }
+  }
+  class Child extends Parent {
+    // Redeclaring an inherited @edge as a @method is intentionally not
+    // expressible in well-typed code (edge returns a Node, method returns
+    // data), so suppress the override type error — this guards the runtime
+    // metadata behaviour for `any`/untyped call sites.
+    // @ts-expect-error intentional cross-kind override
+    @method async thing(): Promise<string> {
+      return "hi";
+    }
+  }
+
+  // The child redeclares `thing` as a @method, so the inherited @edge must not
+  // linger — otherwise dispatch would treat it as an edge and the method would
+  // be unreachable.
+  expect(getMethods(Child).has("thing")).toBe(true);
+  expect(getEdges(Child).has("thing")).toBe(false);
+
+  // The parent is unaffected.
+  expect(getEdges(Parent).has("thing")).toBe(true);
+  expect(getMethods(Parent).has("thing")).toBe(false);
+});

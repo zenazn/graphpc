@@ -96,18 +96,34 @@ function collect(cls: Function): ClassMeta {
     streams: new Map(),
     hidden: new Map(),
   };
+  // edge/method/stream are mutually exclusive *kinds* for a given member name.
+  // Walking child -> parent, the first level to claim a name fixes its kind;
+  // an ancestor's declaration of the same name (in any of the three) is then
+  // shadowed, so e.g. a subclass overriding an @edge as a @method wins cleanly.
+  // @hidden is orthogonal (a member can be hidden *and* an edge/method/stream),
+  // so it merges independently.
+  const claimed = new Set<string>();
   let current: object | null = metadata;
   while (current) {
     const own = metadataMap.get(current);
     if (own) {
       for (const [name, val] of own.edges) {
-        if (!result.edges.has(name)) result.edges.set(name, val);
+        if (!claimed.has(name)) {
+          result.edges.set(name, val);
+          claimed.add(name);
+        }
       }
       for (const [name, val] of own.methods) {
-        if (!result.methods.has(name)) result.methods.set(name, val);
+        if (!claimed.has(name)) {
+          result.methods.set(name, val);
+          claimed.add(name);
+        }
       }
       for (const [name, val] of own.streams) {
-        if (!result.streams.has(name)) result.streams.set(name, val);
+        if (!claimed.has(name)) {
+          result.streams.set(name, val);
+          claimed.add(name);
+        }
       }
       for (const [name, val] of own.hidden) {
         if (!result.hidden.has(name)) result.hidden.set(name, val);
