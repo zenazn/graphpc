@@ -31,8 +31,6 @@ export interface SerializerOptions {
 
 const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   ResolvedRef: (v) => v instanceof Reference && [v.path, v.data],
-  RpcError: (v) =>
-    v instanceof RpcError && v.constructor === RpcError && [v.code, v.message],
   ConnectionLostError: (v) => v instanceof ConnectionLostError && [],
   ValidationError: (v) => v instanceof ValidationError && [v.issues],
   EdgeNotFoundError: (v) => v instanceof EdgeNotFoundError && [v.edge],
@@ -42,6 +40,11 @@ const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   RateLimitError: (v) => v instanceof RateLimitError && [],
   PathDepthExceededError: (v) => v instanceof PathDepthExceededError && [],
   NodePath: (v) => v instanceof PathArg && [v.segments],
+  // Catch-all for RpcError (and any unregistered subclass), evaluated last so
+  // the specific error reducers above match first. devalue uses the first
+  // reducer that returns truthy. An unregistered subclass round-trips as a
+  // base RpcError with its code and message preserved.
+  RpcError: (v) => v instanceof RpcError && [v.code, v.message],
 };
 
 const builtinRevivers: Record<string, (value: unknown) => unknown> = {

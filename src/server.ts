@@ -822,6 +822,7 @@ function createHandler(
       credits: number;
       cancelled: boolean;
       abortController: AbortController;
+      onConnAbort: () => void; // connAbort listener, removed on cleanup
       sending: boolean; // true while we're in the send loop
       path: string[]; // ancestor paths for pinning
     }
@@ -1100,6 +1101,38 @@ function createHandler(
       return response;
     }
 
+    /**
+     * Serialize and send a server response. If serialization fails — e.g. a
+     * method returned a value no reducer can encode — fall back to a
+     * guaranteed-serializable INTERNAL_ERROR so the client's promise settles
+     * instead of hanging. The op/tok/sid/re routing fields are preserved.
+     */
+    function sendResponse(response: ServerMessage): void {
+      let wire: string;
+      try {
+        wire = serializer.stringify(response);
+      } catch (err) {
+        emitError(err);
+        const fallback: Record<string, unknown> = {
+          op: response.op,
+          error: new RpcError("INTERNAL_ERROR", "Failed to serialize response"),
+          errorId: undefined,
+        };
+        if ("re" in response) fallback.re = (response as { re: number }).re;
+        if ("tok" in response) fallback.tok = (response as { tok: number }).tok;
+        if ("sid" in response) fallback.sid = (response as { sid: number }).sid;
+        processErrorResponse(fallback as { error: unknown; errorId?: string });
+        try {
+          transport.send(serializer.stringify(fallback));
+        } catch (err2) {
+          emitError(err2);
+          transport.close();
+        }
+        return;
+      }
+      transport.send(wire);
+    }
+
     async function handleEdge(
       re: number,
       claimToken: number,
@@ -1215,12 +1248,13 @@ function createHandler(
         try {
           if (opSignal.aborted) throw operationAbortError();
           const streamAbort = new AbortController();
-          // Link to connection abort
-          connAbort.signal.addEventListener(
-            "abort",
-            () => streamAbort.abort(),
-            { once: true },
-          );
+          // Link to connection abort. Keep the listener reference so cleanup
+          // can remove it — otherwise every stream ever opened leaves a
+          // listener on connAbort.signal for the connection's lifetime.
+          const onConnAbort = () => streamAbort.abort();
+          connAbort.signal.addEventListener("abort", onConnAbort, {
+            once: true,
+          });
           iterator = await resolveStream(
             node,
             msg.stream,
@@ -1236,16 +1270,25 @@ function createHandler(
             credits: Math.min(msg.credits, maxCredits),
             cancelled: false,
             abortController: streamAbort,
+            onConnAbort,
             sending: false,
             path: [],
           };
-          // If the timeout already fired, don't start the stream
-          if (opSignal.aborted) {
+          // Re-check abort state and the stream limit in the same synchronous
+          // span as the increment below. The check at the top of this function
+          // races: many concurrent stream_start messages all pass it before any
+          // of them increments (TOCTOU), and opSignal may have fired during the
+          // awaits above.
+          if (opSignal.aborted || activeStreamCount >= maxStreams) {
+            const limited = !opSignal.aborted;
             streamAbort.abort();
+            connAbort.signal.removeEventListener("abort", onConnAbort);
             if (typeof iterator.return === "function") {
               iterator.return().catch(() => {});
             }
-            throw operationAbortError();
+            throw limited
+              ? new StreamLimitExceededError()
+              : operationAbortError();
           }
 
           activeStreams.set(sid, stream);
@@ -1346,6 +1389,7 @@ function createHandler(
       activeStreamCount--;
       stream.cancelled = true;
       stream.abortController.abort();
+      connAbort.signal.removeEventListener("abort", stream.onConnAbort);
       // Call return() on iterator for cleanup
       if (typeof stream.iterator.return === "function") {
         stream.iterator.return().catch(() => {});
@@ -1482,96 +1526,126 @@ function createHandler(
       let edgeEarlyReject: RpcError | null = null;
 
       if (msg.op === "edge") {
-        // Compute cache key from parent's (already-known) key.
-        const parentPath = getPathForToken(msg.tok);
-        if (parentPath !== null) {
-          // Fix 1: depth limit check
-          const parentDepth = tokenDepths.get(msg.tok) ?? 0;
-          const newDepth = parentDepth + 1;
-          if (newDepth > maxDepth) {
-            const poisonKey = `__depth_${tokenCount}`;
-            claimToken = allocateToken(poisonKey);
-            const ts = createTokenState();
-            edgeEarlyReject = new PathDepthExceededError();
-            ts.reject(edgeEarlyReject);
-            tokenStates.set(claimToken, ts);
-          } else {
-            // Fix 3: validate edge name against schema before allocating entries
-            const parentType = tokenTypeIndex.get(msg.tok);
-            const childType =
-              parentType !== undefined
-                ? schema[parentType]?.edges[msg.edge]
-                : undefined;
-
-            if (parentType !== undefined && childType === undefined) {
-              // Edge doesn't exist in schema — poison token, skip entry creation
-              const poisonKey = `__invalid_edge_${tokenCount}`;
+        try {
+          // Compute cache key from parent's (already-known) key.
+          const parentPath = getPathForToken(msg.tok);
+          if (parentPath !== null) {
+            // Fix 1: depth limit check
+            const parentDepth = tokenDepths.get(msg.tok) ?? 0;
+            const newDepth = parentDepth + 1;
+            if (newDepth > maxDepth) {
+              const poisonKey = `__depth_${tokenCount}`;
               claimToken = allocateToken(poisonKey);
               const ts = createTokenState();
-              edgeEarlyReject = new EdgeNotFoundError(msg.edge);
+              edgeEarlyReject = new PathDepthExceededError();
               ts.reject(edgeEarlyReject);
               tokenStates.set(claimToken, ts);
             } else {
-              const seg: PathSegment =
-                msg.args && msg.args.length > 0
-                  ? [msg.edge, ...msg.args]
-                  : msg.edge;
-              const fullKey = parentPath + formatSegment(seg, options.reducers);
+              // Fix 3: validate edge name against schema before allocating entries.
+              // Use an own-property check so prototype keys (__proto__, constructor,
+              // toString, …) don't read inherited members and pass as real edges.
+              const parentType = tokenTypeIndex.get(msg.tok);
+              const parentEdges =
+                parentType !== undefined
+                  ? schema[parentType]?.edges
+                  : undefined;
+              const childType =
+                parentEdges && Object.hasOwn(parentEdges, msg.edge)
+                  ? parentEdges[msg.edge]
+                  : undefined;
 
-              claimToken = allocateToken(fullKey);
-              tokenStates.set(claimToken, createTokenState());
-              tokenDepths.set(claimToken, newDepth);
-              if (childType !== undefined) {
-                tokenTypeIndex.set(claimToken, childType);
-              }
+              if (parentType !== undefined && childType === undefined) {
+                // Edge doesn't exist in schema — poison token, skip entry creation
+                const poisonKey = `__invalid_edge_${tokenCount}`;
+                claimToken = allocateToken(poisonKey);
+                const ts = createTokenState();
+                edgeEarlyReject = new EdgeNotFoundError(msg.edge);
+                ts.reject(edgeEarlyReject);
+                tokenStates.set(claimToken, ts);
+              } else {
+                const seg: PathSegment =
+                  msg.args && msg.args.length > 0
+                    ? [msg.edge, ...msg.args]
+                    : msg.edge;
+                const fullKey =
+                  parentPath + formatSegment(seg, options.reducers);
 
-              // Ensure NodeEntry exists
-              const edgeName = msg.edge;
-              const edgeArgs = msg.args ?? [];
-              const entry = ensureEntry(
-                fullKey,
-                parentPath,
-                edgeName,
-                edgeArgs,
-              );
-              entry.tokenRefCount = Math.max(entry.tokenRefCount, 1);
+                claimToken = allocateToken(fullKey);
+                tokenStates.set(claimToken, createTokenState());
+                tokenDepths.set(claimToken, newDepth);
+                if (childType !== undefined) {
+                  tokenTypeIndex.set(claimToken, childType);
+                }
 
-              // Record parent-pointer segment for node reconstruction after eviction
-              if (!pathSegmentsIndex.has(fullKey)) {
-                pathSegmentsIndex.set(fullKey, {
-                  parentPath,
-                  segment: seg,
-                  depth: newDepth,
-                });
-              }
-
-              // Also maintain the old nodeCache for ref()/walkPath() compatibility
-              if (!nodeCache.has(fullKey)) {
-                const pKey = parentPath;
-                nodeCache.set(
+                // Ensure NodeEntry exists
+                const edgeName = msg.edge;
+                const edgeArgs = msg.args ?? [];
+                const entry = ensureEntry(
                   fullKey,
-                  createCacheEntry(() =>
-                    getNode(nodeCache.get(pKey)!)
-                      .then((parent) =>
-                        resolveEdge(parent, edgeName, edgeArgs, ctx),
-                      )
-                      .catch((err) => {
-                        if (err instanceof RpcError || serializer.handles(err))
-                          throw err;
-                        const rpcErr = new RpcError("EDGE_ERROR", String(err));
-                        wrappedOriginals.set(rpcErr, err);
-                        throw rpcErr;
-                      }),
-                  ),
+                  parentPath,
+                  edgeName,
+                  edgeArgs,
                 );
+                entry.tokenRefCount = Math.max(entry.tokenRefCount, 1);
+
+                // Record parent-pointer segment for node reconstruction after eviction
+                if (!pathSegmentsIndex.has(fullKey)) {
+                  pathSegmentsIndex.set(fullKey, {
+                    parentPath,
+                    segment: seg,
+                    depth: newDepth,
+                  });
+                }
+
+                // Also maintain the old nodeCache for ref()/walkPath() compatibility
+                if (!nodeCache.has(fullKey)) {
+                  const pKey = parentPath;
+                  nodeCache.set(
+                    fullKey,
+                    createCacheEntry(() =>
+                      getNode(nodeCache.get(pKey)!)
+                        .then((parent) =>
+                          resolveEdge(parent, edgeName, edgeArgs, ctx),
+                        )
+                        .catch((err) => {
+                          if (
+                            err instanceof RpcError ||
+                            serializer.handles(err)
+                          )
+                            throw err;
+                          const rpcErr = new RpcError(
+                            "EDGE_ERROR",
+                            String(err),
+                          );
+                          wrappedOriginals.set(rpcErr, err);
+                          throw rpcErr;
+                        }),
+                    ),
+                  );
+                }
               }
             }
+          } else {
+            // Parent token invalid — allocate a poisoned token
+            const poisonKey = `__invalid_${tokenCount}`;
+            claimToken = allocateToken(poisonKey);
+            tokenStates.set(claimToken, createTokenState());
           }
-        } else {
-          // Parent token invalid — allocate a poisoned token
-          const poisonKey = `__invalid_${tokenCount}`;
-          claimToken = allocateToken(poisonKey);
-          tokenStates.set(claimToken, createTokenState());
+        } catch (err) {
+          // Any synchronous failure in edge pre-processing (e.g. a missing
+          // parent NodeEntry for a poisoned or LRU-evicted token) must surface
+          // as an edge error, not an uncaught exception that crashes the handler.
+          const rpcErr =
+            err instanceof RpcError
+              ? err
+              : new RpcError("EDGE_ERROR", String(err));
+          if (!(err instanceof RpcError)) wrappedOriginals.set(rpcErr, err);
+          if (claimToken === -1) {
+            claimToken = allocateToken(`__edge_error_${tokenCount}`);
+            tokenStates.set(claimToken, createTokenState());
+          }
+          tokenStates.get(claimToken)?.reject(rpcErr);
+          edgeEarlyReject = rpcErr;
         }
       }
 
@@ -1770,7 +1844,7 @@ function createHandler(
                   response as { error: unknown; errorId?: string },
                 );
               }
-              transport.send(serializer.stringify(response));
+              sendResponse(response);
             }
           } catch (err) {
             if (!responded) {
