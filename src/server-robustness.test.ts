@@ -4,6 +4,7 @@ import { createMockTransportPair, type Transport } from "./protocol";
 import { createSerializer } from "./serialization";
 import { Node } from "./types";
 import { edge, method, stream } from "./decorators";
+import { getContext } from "./context";
 import { RpcError } from "./errors";
 
 class CustomRpcError extends RpcError {
@@ -24,6 +25,16 @@ class Feed extends Node {
     let i = 0;
     while (!signal.aborted) {
       yield i++;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+
+  @stream
+  async *whoTicks(signal: AbortSignal): AsyncGenerator<unknown> {
+    let i = 0;
+    while (!signal.aborted && i < 6) {
+      const ctx = getContext() as { who?: string };
+      yield { i: i++, who: ctx.who };
       await new Promise((r) => setTimeout(r, 0));
     }
   }
@@ -49,7 +60,10 @@ class Api extends Node {
   }
 }
 
-function connect(opts: Parameters<typeof createServer>[0] = {}) {
+function connect(
+  opts: Parameters<typeof createServer>[0] = {},
+  ctx: object = {},
+) {
   const [st, ct] = createMockTransportPair();
   const recv: string[] = [];
   ct.addEventListener("message", (e) => recv.push(e.data));
@@ -57,7 +71,7 @@ function connect(opts: Parameters<typeof createServer>[0] = {}) {
     { idleTimeout: 0, pingInterval: 0, rateLimit: false, ...opts },
     () => new Api(),
   );
-  server.handle(st as Transport, {});
+  server.handle(st as Transport, ctx);
   return { ct, recv, server };
 }
 
@@ -217,4 +231,39 @@ test("returning a non-serializable value settles the client with an error (no ha
   // A subsequent valid call must still work (connection stays usable).
   const ok = await callMethod(ct, recv, "ok");
   expect((ok as { data?: unknown })?.data).toBe("ok");
+});
+
+test("getContext() works inside a stream across credit-driven resumes", async () => {
+  const { ct, recv } = connect({}, { who: "alice" });
+  await flush();
+  await navigateToFeed(ct, recv);
+
+  // Start with 2 credits so the pump pauses, then grant more from fresh
+  // message-handler ticks (which historically ran outside runWithSession).
+  ct.send(
+    ser.stringify({
+      op: "stream_start",
+      tok: 1,
+      stream: "whoTicks",
+      credits: 2,
+    }),
+  );
+  await flush();
+  ct.send(ser.stringify({ op: "stream_credit", sid: -1, credits: 2 }));
+  await flush();
+  ct.send(ser.stringify({ op: "stream_credit", sid: -1, credits: 2 }));
+  await flush();
+
+  const parsed = recv.map(
+    (r) => ser.parse(r) as { op: string; data?: unknown },
+  );
+  const frames = parsed.filter((m) => m.op === "stream_data");
+  const errorEnds = parsed.filter(
+    (m) => m.op === "stream_end" && "error" in (m as object),
+  );
+  expect(errorEnds.length).toBe(0);
+  expect(frames.length).toBeGreaterThanOrEqual(4);
+  expect(
+    frames.every((f) => (f.data as { who?: string }).who === "alice"),
+  ).toBe(true);
 });

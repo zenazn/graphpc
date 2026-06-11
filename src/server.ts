@@ -7,6 +7,7 @@ import {
   getNode,
   createCacheEntry,
   type CacheEntry,
+  type Session,
 } from "./context";
 import {
   RpcError,
@@ -823,6 +824,7 @@ function createHandler(
       cancelled: boolean;
       abortController: AbortController;
       onConnAbort: () => void; // connAbort listener, removed on cleanup
+      session: Session; // re-entered around every pump so getContext() works
       sending: boolean; // true while we're in the send loop
       path: string[]; // ancestor paths for pinning
     }
@@ -1271,6 +1273,19 @@ function createHandler(
             cancelled: false,
             abortController: streamAbort,
             onConnAbort,
+            // Credit-driven pumps run from a bare message handler, outside the
+            // op's runWithSession. Re-enter this session around every pump so
+            // the generator's getContext()/abortSignal() keep working.
+            session: {
+              ctx,
+              root,
+              nodeCache,
+              close: () => transport.close(),
+              reducers: options.reducers,
+              signal: streamAbort.signal,
+              schema,
+              classIndex,
+            },
             sending: false,
             path: [],
           };
@@ -1334,6 +1349,10 @@ function createHandler(
     async function pumpStream(stream: ActiveStream) {
       if (stream.sending || stream.cancelled) return;
       stream.sending = true;
+      return runWithSession(stream.session, () => pumpStreamLoop(stream));
+    }
+
+    async function pumpStreamLoop(stream: ActiveStream) {
       try {
         while (stream.credits > 0 && !stream.cancelled) {
           let result: IteratorResult<unknown>;
