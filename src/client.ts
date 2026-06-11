@@ -1048,9 +1048,15 @@ export function createClient<S extends ServerInstance<any>>(
           pending.set(msgId, {
             resolve: (data: unknown) => {
               const record = data as Record<string, unknown>;
-              liveDataCache.set(edgeKey, record);
               const proxy = createDataProxy(backend, edgePath, record);
-              dataProxyCache.set(edgeKey, proxy);
+              // If the path was evicted or invalidated while this load was in
+              // flight, dataLoadCache no longer points at this promise. Don't
+              // resurrect the persistent cache; just resolve this one caller.
+              if (dataLoadCache.get(edgeKey) === promise) {
+                liveDataCache.set(edgeKey, record);
+                dataProxyCache.set(edgeKey, proxy);
+                dataLoadCache.delete(edgeKey);
+              }
               resolve(proxy);
             },
             reject: (err: unknown) => {
