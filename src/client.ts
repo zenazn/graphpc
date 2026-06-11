@@ -352,7 +352,14 @@ export function createClient<S extends ServerInstance<any>>(
     }
     if (!consumeLoopToken(key)) return;
     for (const cb of subs) {
-      cb();
+      try {
+        cb();
+      } catch (err) {
+        // Notifications can fire while parsing a server message (e.g. a ref
+        // revival). A throwing subscriber must not abort sibling subscribers or
+        // tear down the connection; surface it out-of-band instead.
+        console.error("[graphpc] subscriber callback threw:", err);
+      }
     }
   }
 
