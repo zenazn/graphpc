@@ -796,8 +796,14 @@ export function createClient<S extends ServerInstance<any>>(
   }
 
   function replayPendingTerminals() {
+    // Re-issue every still-pending terminal on the new connection. Terminals
+    // stay registered until they actually settle (the work chain's
+    // success/failure handlers delete them), so a second disconnect mid-replay
+    // still sees them and reconnects again rather than orphaning them.
+    // Terminals created during the reconnect window were deliberately *not*
+    // issued by backend.resolve (see there), so this is their only issuance —
+    // no double send.
     const snapshot = [...pendingTerminals];
-    pendingTerminals.clear();
     for (const pt of snapshot) {
       issueOperation(pt);
     }
@@ -1056,6 +1062,8 @@ export function createClient<S extends ServerInstance<any>>(
       },
       (err) => {
         if (err instanceof ReconnectingError) {
+          // This work chain died with the connection; the terminal stays in
+          // pendingTerminals so the next reconnect replays it.
           return;
         }
         // Handle TOKEN_EXPIRED: replay the path
@@ -1138,7 +1146,10 @@ export function createClient<S extends ServerInstance<any>>(
       return new Promise((resolve, reject) => {
         const pt: PendingTerminal = { resolve, reject, path };
         pendingTerminals.add(pt);
-        issueOperation(pt);
+        // During a reconnect, leave issuance to replayPendingTerminals so the
+        // op is sent exactly once on the new connection. Issuing here too would
+        // park a second work chain and double-send (re-executing methods).
+        if (!isReconnecting) issueOperation(pt);
       });
     },
 
