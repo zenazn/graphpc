@@ -33,6 +33,8 @@ export {
   ConnectionLostError,
   TokenExpiredError,
   StreamLimitExceededError,
+  RateLimitError,
+  PathDepthExceededError,
 } from "./errors";
 
 // Error UUID

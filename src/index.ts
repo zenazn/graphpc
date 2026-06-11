@@ -89,4 +89,8 @@ export type {
   ServerEventMap,
   ServerEvent,
 } from "./types";
-export { Node, nodeTag, canonicalPath, pathTag } from "./types";
+export { Node, canonicalPath } from "./types";
+// nodeTag/pathTag are phantom type brands (declared, never given a runtime
+// value), so they can only be re-exported as types — value-exporting them
+// breaks ESM linking for the whole barrel.
+export type { nodeTag, pathTag } from "./types";
