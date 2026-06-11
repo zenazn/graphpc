@@ -330,8 +330,10 @@ function extractParamNames(fn: Function): string[] {
 }
 
 function isStandardSchema(v: unknown): v is StandardSchemaV1 {
+  // Some validators (notably arktype) expose their schema as a *callable*
+  // object, so accept functions as well as plain objects.
   return (
-    typeof v === "object" &&
+    (typeof v === "object" || typeof v === "function") &&
     v !== null &&
     "~standard" in v &&
     typeof (v as Record<string, unknown>)["~standard"] === "object"
