@@ -378,3 +378,26 @@ test("validateHydrationData rejects invalid inputs", () => {
     validateHydrationData({ refs: [], data: [], schema: "bad" }),
   ).toThrow(TypeError);
 });
+
+// --- robustness ---
+
+test("a malformed payload leaves the cache inactive, not half-built", () => {
+  const cache = makeCache();
+  // A ref entry that isn't a tuple throws mid-build.
+  const bad = makeHydrationData({
+    refs: [null as unknown as [number, string]],
+  });
+  expect(() => cache.activate(bad)).toThrow();
+  expect(cache.isActive()).toBe(false);
+});
+
+test("the inactivity timeout arms even when no lookup ever hits", () => {
+  const timers = fakeTimers();
+  const cache = makeCache({ timeout: 1000, timers });
+  cache.activate(makeHydrationData());
+  expect(cache.isActive()).toBe(true);
+  // No lookups happen, but the auto-drop must still be scheduled.
+  expect(timers.pending()).toBeGreaterThan(0);
+  timers.fireAll();
+  expect(cache.isActive()).toBe(false);
+});

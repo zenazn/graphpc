@@ -70,12 +70,13 @@ export class HydrationCache {
    * Returns the schema embedded in the hydration data.
    */
   activate(parsed: HydrationData): Schema {
-    this.active = true;
-
+    // Build into locals first; a malformed entry (e.g. a ref that isn't a
+    // tuple) throws here, leaving the cache cleanly inactive rather than
+    // half-built and permanently bricked.
     const tokenPaths = new Map<number, PathSegments>();
-    this.pathToToken = new Map<string, number>();
+    const pathToToken = new Map<string, number>();
     tokenPaths.set(0, []);
-    this.pathToToken.set("root", 0);
+    pathToToken.set("root", 0);
 
     for (let i = 0; i < parsed.refs.length; i++) {
       const ref = parsed.refs[i]!;
@@ -85,21 +86,32 @@ export class HydrationCache {
       const segment: PathSegment = args.length > 0 ? [edge, ...args] : edge;
       const fullPath = [...parentPath, segment];
       tokenPaths.set(token, fullPath);
-      this.pathToToken.set(formatPath(fullPath, this.reducers), token);
+      pathToToken.set(formatPath(fullPath, this.reducers), token);
     }
 
-    this.dataCache = new Map<number, unknown>();
-    this.callCache = new Map<string, unknown>();
+    const dataCache = new Map<number, unknown>();
+    const callCache = new Map<string, unknown>();
 
     for (const entry of parsed.data) {
       if (entry.length === 2) {
-        this.dataCache.set(entry[0] as number, entry[1]);
+        dataCache.set(entry[0] as number, entry[1]);
       } else if (entry.length === 4) {
         const [token, method, args, result] = entry;
         const key = `${token}:${method}:${formatValue(args, this.reducers)}`;
-        this.callCache.set(key, result);
+        callCache.set(key, result);
       }
     }
+
+    // Commit only after the whole payload parsed cleanly.
+    this.pathToToken = pathToToken;
+    this.dataCache = dataCache;
+    this.callCache = callCache;
+    this.active = true;
+
+    // Arm the inactivity timeout up front. If the app never reads a hydrated
+    // path, the cache must still drop on its own instead of living for the
+    // client's lifetime.
+    this.onInFlightDrop();
 
     return parsed.schema;
   }
