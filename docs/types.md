@@ -154,7 +154,7 @@ export default [
 
 ### Rule: `graphpc/require-decorator`
 
-Flags public methods on `Node` subclasses that are missing `@edge`, `@method`, or `@stream`.
+Flags public methods on `Node` subclasses that are missing `@edge`, `@method`, `@stream`, or `@hidden`.
 
 Skipped by rule design: constructors, getters/setters, static methods, private/protected methods, `#private` methods.
 

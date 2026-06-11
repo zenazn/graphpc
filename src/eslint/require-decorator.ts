@@ -76,7 +76,7 @@ function collectDecoratorLocals(program: TSESTree.Program): Set<string> {
 }
 
 /**
- * Check if a method definition has a graphpc decorator (@edge, @method, or @hidden).
+ * Check if a method definition has a graphpc decorator (@edge, @method, @stream, or @hidden).
  */
 function hasGraphpcDecorator(
   node: TSESTree.MethodDefinition,

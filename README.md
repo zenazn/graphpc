@@ -40,6 +40,13 @@ class PostsService extends Node {
     return new Post();
   }
 }
+
+class Api extends Node {
+  @edge(PostsService)
+  get posts(): PostsService {
+    return new PostsService();
+  }
+}
 ```
 
 Client behavior:
