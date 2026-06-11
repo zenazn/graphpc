@@ -1088,11 +1088,11 @@ export function createClient<S extends ServerInstance<any>>(
           const key = pathKey(pt.path);
           const attempts = (replayAttempts.get(key) ?? 0) + 1;
           if (attempts > MAX_REPLAYS) {
+            // Circuit breaker: stop replaying and surface the documented
+            // TokenExpiredError so callers' instanceof checks hold.
             replayAttempts.delete(key);
             pendingTerminals.delete(pt);
-            pt.reject(
-              new RpcError("REPLAY_LIMIT", "Token replay limit exceeded"),
-            );
+            pt.reject(err);
             return;
           }
           replayAttempts.set(key, attempts);

@@ -68,18 +68,20 @@ Exception: during SSR and hydration, method calls coalesce. See below.
 
 ## What Gets Cached
 
-| Operation                                 | Cached? | Cache key                        |
-| ----------------------------------------- | ------- | -------------------------------- |
-| Edge traversal (`client.root.posts`)      | Yes     | path                             |
-| Full-node load (`await node`)             | Yes     | token                            |
-| Property/getter read (`await node.title`) | Yes     | token + name, or from data cache |
-| Method call (`node.method(...)`)          | Never   | —                                |
+| Operation                                 | Cached? | Cache key                       |
+| ----------------------------------------- | ------- | ------------------------------- |
+| Edge traversal (`client.root.posts`)      | Yes     | path                            |
+| Full-node load (`await node`)             | Yes     | path                            |
+| Property/getter read (`await node.title`) | Yes     | path + name, or from data cache |
+| Method call (`node.method(...)`)          | Never   | —                               |
+
+All client caches are keyed by path, not token: cached data survives the token churn of reconnects.
 
 After `await node`, subsequent property reads like `await node.title` are served from the data cache — no additional wire message is sent. Method calls (`node.method()`) always go over the wire.
 
 ### Cache key identity
 
-Cache keys for edge traversals are built by serializing each path segment with devalue. Devalue does **not** sort object keys — it preserves JavaScript's property enumeration order (integer keys ascending, then string keys in insertion order). Two object literals with the same entries in different order produce different cache keys:
+Cache keys are built by formatting each path segment (the same `formatPath`/`formatValue` used in error messages). Object arguments are **not** key-sorted — formatting follows JavaScript's property enumeration order (integer keys ascending, then string keys in insertion order). Two object literals with the same entries in different order produce different cache keys:
 
 ```typescript
 // These are two different cache keys — they will NOT coalesce
@@ -105,7 +107,7 @@ invalidate(post); // mark cache stale
 const { title: after } = await post; // re-fetched from server
 ```
 
-`invalidate()` does not remove the cached data immediately — it marks it stale so the next read triggers a fresh fetch. In-flight reads are not affected.
+`invalidate()` drops the cached data for the node and its subtree so the next read fetches fresh from the server; in-flight reads already on the wire are unaffected. (`evict()` does the same but also removes the node's subscriptions — see below.)
 
 ### Streams survive invalidation
 

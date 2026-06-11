@@ -15,7 +15,7 @@ const GRAPHPC_DECORATOR_NAMES = new Set(["edge", "method", "stream", "hidden"]);
 
 const createRule = ESLintUtils.RuleCreator(
   () =>
-    "https://github.com/zenazn/graphpc/blob/main/docs/type-checking.md#eslint-plugin",
+    "https://github.com/zenazn/graphpc/blob/main/docs/types.md#eslint-plugin",
 );
 
 /**

@@ -54,22 +54,28 @@ The `version` field is the protocol version (currently `2`). The `tokenWindow` f
 { "op": "data", "tok": 2 }
 ```
 
-**Stream start** — open a server-push stream:
+**Stream start** — open a server-push stream. `credits` is the initial credit window:
 
 ```json
-{ "op": "stream_start", "tok": 0, "name": "updates", "args": ["cursor123"] }
+{
+  "op": "stream_start",
+  "tok": 0,
+  "stream": "updates",
+  "args": ["cursor123"],
+  "credits": 8
+}
 ```
 
-**Stream credit** — grant the server permission to send more items:
+**Stream credit** — grant the server permission to send more items. `sid` is the server-assigned stream ID (a negative integer):
 
 ```json
-{ "op": "stream_credit", "streamId": -1, "credit": 10 }
+{ "op": "stream_credit", "sid": -1, "credits": 10 }
 ```
 
 **Stream cancel** — client cancels an active stream:
 
 ```json
-{ "op": "stream_cancel", "streamId": -1 }
+{ "op": "stream_cancel", "sid": -1 }
 ```
 
 ### Server -> Client
@@ -86,6 +92,12 @@ On failure, the result carries an error and an `errorId` (UUID for correlation):
 
 ```json
 { "op": "edge", "tok": 2, "re": 2, "error": { ... }, "errorId": "550e8400-..." }
+```
+
+**Stream start result** — assigns the stream's `sid` (negative integer); carries an `error` on failure:
+
+```json
+{ "op": "stream_start", "sid": -1, "re": 5 }
 ```
 
 **Get result** — returns data or error:
@@ -110,7 +122,7 @@ On failure, the result carries an error and an `errorId` (UUID for correlation):
 ```json
 {
   "op": "stream_data",
-  "streamId": -1,
+  "sid": -1,
   "data": { "message": "New notification" }
 }
 ```
@@ -118,24 +130,33 @@ On failure, the result carries an error and an `errorId` (UUID for correlation):
 **Stream end** — server signals the stream has completed:
 
 ```json
-{ "op": "stream_end", "streamId": -1 }
+{ "op": "stream_end", "sid": -1 }
 ```
 
 On stream error:
 
 ```json
-{ "op": "stream_end", "streamId": -1, "error": { ... }, "errorId": "550e8400-..." }
+{ "op": "stream_end", "sid": -1, "error": { ... }, "errorId": "550e8400-..." }
+```
+
+**Ping / pong** — liveness probes (no `re`). The server sends `ping`; the client replies `pong`:
+
+```json
+{ "op": "ping" }
+{ "op": "pong" }
 ```
 
 ### The `get` Op
 
-The `get` op handles three kinds of access through a single message. The client doesn't distinguish between them — it just sends a name (and optional args). The server resolves the name against the node:
+The `get` op handles four kinds of access through a single message. The client doesn't distinguish between them — it just sends a name (and optional args). The server resolves the name against the node:
 
 1. **`@method` invocation** — If the name matches a `@method`-decorated function, args are validated against the method's schemas and the function is called. This is the only case where args are accepted.
 
 2. **Property read** — If the name matches an own data property on the node instance (and no args are provided), the value is returned directly. If the value is a function, the request is rejected with an error.
 
-3. **Getter invocation** — If the name matches a getter defined on the node's prototype chain (stopping before `Object.prototype`), the getter is called and the result is returned. If the result is a function, the request is rejected with an error.
+3. **Getter invocation** — If the name matches a getter on the node's prototype chain (stopping before `Object.prototype`), the getter is called and the result is returned. If the result is a function, the request is rejected with an error.
+
+4. **Prototype value property** — A non-getter, non-function value defined on the prototype chain is returned directly.
 
 The `data` op returns all data fields — properties and getter results (including inherited ones), excluding `@edge`, `@method`, `@stream`, and `@hidden` members. The `get` op is used for `@method` calls and individual field reads when the full node data has not yet been fetched.
 
@@ -172,7 +193,7 @@ edge(1, "get", ["42"]) -> token 2 = Post
 edge(0, "users")       -> token 3 = UsersService
 ```
 
-Tokens persist across reconnects on the client side (the persistent cache retains stub-to-token mappings). On the server side, tokens are scoped to a single connection.
+Tokens are scoped to a single connection on both sides. On reconnect the client discards its token mappings and re-walks the edges that queued or new work needs, minting fresh tokens; the persistent cache (node data and stub identity) is what survives, not the tokens.
 
 ## Token Window
 
@@ -197,9 +218,9 @@ When a token expires:
 
 ## Message Identity
 
-Every message has an implicit sequential number assigned by its position in the transport stream. Client messages are numbered 1, 2, 3... (positive). Server messages are numbered -1, -2, -3... (negative). These numbers are never carried as fields on the wire — they exist only as counters on each side.
+Each request/response client message — `edge`, `get`, `data`, `stream_start` — is assigned an implicit sequential number (1, 2, 3…) by its order in the transport stream. Fire-and-forget messages (`pong`, `stream_credit`, `stream_cancel`) get no number; they have no reply. The number is never sent on the wire — client and server each keep the counter, and the server echoes it back in the `re` field of the matching response.
 
-The only place a message number appears explicitly is the `re` field on server responses, which references the client message being answered.
+(Stream IDs are a separate counter: the server assigns each stream a negative `sid` (-1, -2, …), carried explicitly on every stream message.)
 
 ## Request-Response Correlation
 
@@ -329,6 +350,8 @@ Errors are serialized through devalue with custom reducers, so the client receiv
 - `ConnectionLostError` — all reconnection attempts exhausted
 - `TokenExpiredError` — token has fallen outside the server's sliding window (normally handled transparently by client auto-replay; only surfaces if the replay circuit breaker trips)
 - `StreamLimitExceededError` — too many concurrent streams on this connection
+- `RateLimitError` — the per-connection token bucket is exhausted
+- `PathDepthExceededError` — edge traversal exceeded `maxDepth`
 - `RpcError` — base class for all RPC errors
 
 Hidden-member errors are op-dependent (`edge` op -> `EdgeNotFoundError`, `get` op -> `MethodNotFoundError`) because client-side classification is schema-driven.

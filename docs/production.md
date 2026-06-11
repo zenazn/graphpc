@@ -43,7 +43,7 @@ Then add:
 
 ## Error Redaction
 
-In production (`NODE_ENV=production`), GraphPC can redact unregistered errors before they are sent to clients.
+GraphPC can redact unregistered errors before they are sent to clients. `redactErrors` defaults to on when `NODE_ENV=production` and off otherwise; set it explicitly to override.
 
 ```typescript
 createServer({ redactErrors: true }, factory);
@@ -151,15 +151,17 @@ If a method deterministically returns data larger than the limit, every call wil
 
 ## Connection Limits
 
-| Option          | Default           | Description                                      |
-| --------------- | ----------------- | ------------------------------------------------ |
-| `tokenWindow`   | 10000             | Sliding window of valid tokens                   |
-| `maxStreams`    | 32                | Max concurrent streams per connection            |
-| `maxPendingOps` | 20                | Max concurrent executing operations              |
-| `maxQueuedOps`  | 1000              | Max total in-flight messages before close        |
-| `maxDepth`      | 64                | Max edge traversal depth per connection          |
-| `idleTimeout`   | 60000ms           | Inactivity timeout before closing connection     |
-| `rateLimit`     | 200 burst, 50/sec | Per-connection token bucket (`false` to disable) |
+| Option          | Default           | Description                                         |
+| --------------- | ----------------- | --------------------------------------------------- |
+| `tokenWindow`   | 10000             | Sliding window of valid tokens                      |
+| `maxStreams`    | 32                | Max concurrent streams per connection               |
+| `maxCredits`    | 256               | Max stream credits the server will honor at once    |
+| `maxPendingOps` | 20                | Max concurrent executing operations                 |
+| `maxQueuedOps`  | 1000              | Max total in-flight messages before close           |
+| `maxDepth`      | 64                | Max edge traversal depth per connection             |
+| `idleTimeout`   | 60000ms           | Inactivity timeout before closing connection        |
+| `lruTTL`        | 60000ms           | Idle time before an unpinned server node is evicted |
+| `rateLimit`     | 200 burst, 50/sec | Per-connection token bucket (`false` to disable)    |
 
 ```typescript
 createServer(

@@ -4,9 +4,10 @@
 
 Initial release.
 
-- Type-safe graph API with `Node` classes, `@edge` and `@method` decorators
+- Type-safe graph API with `Node` classes and `@edge`, `@method`, `@stream`, and `@hidden` decorators
 - WebSocket transport with automatic reconnection and exponential backoff
-- SSR rendering with `createSSRContext` and client-side hydration
+- Server-push streams with credit-based backpressure
+- SSR rendering with `createSSRClient` and client-side hydration
 - `ref()` for cross-node references in method return values
 - Validation via Standard Schema (zod, valibot, arktype, etc.)
 - Rich serialization via devalue with custom type support
