@@ -19,7 +19,6 @@ const MAX_PATH_DEPTH = 64;
 export class Path<T extends Node> extends PathArg implements PromiseLike<T> {
   declare readonly [pathTag]: T;
   readonly #expectedType: new (...args: any[]) => T;
-  #resolved: Promise<T> | undefined;
 
   constructor(segments: PathSegments, expectedType: new (...args: any[]) => T) {
     super(segments);
@@ -35,8 +34,12 @@ export class Path<T extends Node> extends PathArg implements PromiseLike<T> {
     onfulfilled?: ((v: T) => R1 | PromiseLike<R1>) | null,
     onrejected?: ((e: unknown) => R2 | PromiseLike<R2>) | null,
   ): Promise<R1 | R2> {
-    this.#resolved ??= this.#walk();
-    return this.#resolved.then(onfulfilled, onrejected);
+    // Resolve against the *current* session every time. A Path instance can be
+    // reused across connections (e.g. one built at module scope via pathTo);
+    // memoizing the first resolution would leak that connection's node — and
+    // bypass the new connection's auth/@hidden checks. walkPath coalesces
+    // within a session via session.nodeCache, so re-walking stays cheap.
+    return this.#walk().then(onfulfilled, onrejected);
   }
 
   async #walk(): Promise<T> {

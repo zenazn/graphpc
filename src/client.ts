@@ -1153,7 +1153,10 @@ export function createClient<S extends ServerInstance<any>>(
 
       return () => {
         subs!.delete(callback);
-        if (subs!.size === 0) {
+        // Only drop the key if it still maps to *this* set. After an evict() or
+        // a later subscribe(), the key may point at a different set whose
+        // subscribers must not be torn down by this stale unsubscribe.
+        if (subs!.size === 0 && pathSubscribers.get(key) === subs) {
           pathSubscribers.delete(key);
           clearLoopPathState(key);
         }
