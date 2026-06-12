@@ -95,6 +95,8 @@ When methods use identity tools:
 - `Path<T>` return type on server -> `RpcStub<T>` on client
 - `Reference<T>` return type on server -> data+stub hybrid on client
 
+The mapping is recursive: it applies inside arrays, Maps, Sets, and nested objects (e.g. a `{ items: Reference<Post>[] }` pagination envelope), and to `Reference` values stored in node data properties.
+
 ```typescript
 @method(path(Post))
 async archive(post: Path<Post>): Promise<void> { ... }

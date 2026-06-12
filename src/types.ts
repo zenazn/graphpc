@@ -177,29 +177,32 @@ type StripAbortSignal<T extends any[]> = T extends [AbortSignal, ...infer Rest]
   ? Rest
   : T;
 
-/** Unwrap Reference<T> or Path<T> to transparent data+stub hybrid / stub */
-type UnwrapRef<T> =
+/**
+ * Recursively unwrap Reference<T> and Path<T> anywhere in a type:
+ * Reference<T> becomes a transparent data+stub hybrid, Path<T> becomes a
+ * stub, and containers/objects are walked at any depth. Functions and
+ * serializable built-ins pass through unchanged.
+ */
+type UnwrapReferences<T> =
   T extends Reference<infer U>
     ? RpcDataOf<U> & RpcNav<U>
     : T extends { readonly [pathTag]: infer U }
       ? U extends Node
         ? RpcStub<U>
         : T
-      : T;
-
-/** Recursively unwrap references in a type */
-type UnwrapReferences<T> =
-  T extends Reference<infer U>
-    ? RpcDataOf<U> & RpcNav<U>
-    : T extends Array<infer E>
-      ? UnwrapRef<E>[]
-      : T extends Map<infer K, infer V>
-        ? Map<K, UnwrapRef<V>>
-        : T extends Set<infer E>
-          ? Set<UnwrapRef<E>>
-          : T extends object
-            ? { [K in keyof T]: UnwrapRef<T[K]> }
-            : T;
+      : T extends Function
+        ? T
+        : T extends Date | RegExp | Error
+          ? T
+          : T extends Array<infer E>
+            ? UnwrapReferences<E>[]
+            : T extends Map<infer K, infer V>
+              ? Map<K, UnwrapReferences<V>>
+              : T extends Set<infer E>
+                ? Set<UnwrapReferences<E>>
+                : T extends object
+                  ? { [K in keyof T]: UnwrapReferences<T[K]> }
+                  : T;
 
 /** Detect object properties whose values are Node subclasses (for ShallowContainsNode) */
 type HasNodeValue<T> = {
@@ -259,7 +262,11 @@ type ResolveMethodReturn<A extends any[], R> =
     ? (...args: A) => ShallowNodeError
     : (...args: A) => Promise<UnwrapReferences<R>>;
 
-/** Extract plain data properties (non-function, non-Node, excluding nodeTag) */
+/**
+ * Extract plain data properties (non-function, non-Node, excluding nodeTag).
+ * Reference/Path values are unwrapped, matching the proxies the runtime
+ * delivers in node data.
+ */
 export type RpcDataOf<T> = {
   readonly [K in keyof T as K extends typeof nodeTag
     ? never
@@ -267,7 +274,7 @@ export type RpcDataOf<T> = {
       ? never
       : IsNode<T[K]> extends true
         ? never
-        : K]: T[K];
+        : K]: UnwrapReferences<T[K]>;
 };
 
 /** Detect if a function returns an AsyncGenerator */

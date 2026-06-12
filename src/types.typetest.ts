@@ -416,3 +416,92 @@ async function _pathReturn() {
   // @ts-expect-error — needs 2 args
   moveSvc.move(null! as PathArg);
 }
+
+// ===========================================================================
+// Reference unwrapping — recursion and data properties
+// ===========================================================================
+
+/** Node with Reference data properties (single and in containers). */
+declare class FeedItem extends Node {
+  headline: string;
+  author: Reference<User>;
+  related: Reference<Post>[];
+}
+
+/** Recursive reference: a node referencing its own type. */
+declare class TreeNode extends Node {
+  name: string;
+  parent: Reference<TreeNode> | null;
+}
+
+declare class PageService extends Node {
+  /** The documented pagination pattern: refs nested in an envelope object. */
+  page(cursor?: string): Promise<{
+    items: Reference<Post>[];
+    next: string | null;
+  }>;
+  deep(): Promise<{ a: { b: Reference<Post> } }>;
+  pages(): Promise<Reference<Post>[][]>;
+  byId(): Promise<Map<string, Reference<Post>[]>>;
+  stamps(): Promise<{ at: Date }>;
+}
+
+declare const pageSvc: RpcStub<PageService>;
+declare const feedItem: RpcStub<FeedItem>;
+declare const tree: RpcStub<TreeNode>;
+
+// -- POSITIVE: refs inside an envelope object unwrap (pagination pattern) --
+async function _refsInEnvelope() {
+  const page = await pageSvc.page();
+  const first = page.items[0]!;
+  const _title: string = first.title;
+  const _update: Promise<void> = first.updateTitle("x");
+  const _next: string | null = page.next;
+}
+
+// -- POSITIVE: deeply nested refs unwrap --
+async function _refsDeep() {
+  const result = await pageSvc.deep();
+  const _title: string = result.a.b.title;
+}
+
+// -- POSITIVE: refs in nested arrays unwrap --
+async function _refsNestedArrays() {
+  const pages = await pageSvc.pages();
+  const _title: string = pages[0]![0]!.title;
+}
+
+// -- POSITIVE: refs in containers inside Map values unwrap --
+async function _refsInMapValues() {
+  const map = await pageSvc.byId();
+  const _title: string = map.get("a")![0]!.title;
+}
+
+// -- POSITIVE: built-in object types survive unwrapping --
+async function _builtinsSurvive() {
+  const result = await pageSvc.stamps();
+  const _at: Date = result.at;
+  const _iso: string = result.at.toISOString();
+}
+
+// -- POSITIVE: Reference data properties are navigable proxies after await --
+async function _refDataProps() {
+  const item = await feedItem;
+  const _headline: string = item.headline;
+  const _name: string = item.author.name;
+  const _title: string = item.related[0]!.title;
+  const _update: Promise<void> = item.related[0]!.updateTitle("x");
+}
+
+// -- POSITIVE: recursive references terminate and stay navigable --
+async function _recursiveRefs() {
+  const t = await tree;
+  const _name: string = t.parent!.parent!.name;
+}
+
+// -- NEGATIVE: unwrapped ref data props are not raw References --
+async function _refDataPropNotRaw() {
+  const item = await feedItem;
+  // @ts-expect-error author is unwrapped to a data proxy, not a raw Reference
+  const _raw: Reference<User> = item.author;
+}
