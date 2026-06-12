@@ -39,11 +39,10 @@
     "docs"
   ],
   "scripts": {
-    "build": "bun run build:server && bun run build:client && bun run build:eslint && bun run build:types",
-    "build:server": "bun build src/index.ts --outdir dist --target node --format esm --external @typescript-eslint/utils --external devalue --external @standard-schema/spec",
-    "build:client": "bun build src/client-entry.ts --outdir dist --target node --format esm --external devalue --external @standard-schema/spec",
+    "build": "bun run build:entries && bun run build:eslint && bun run build:types",
+    "build:entries": "bun build src/index.ts src/client-entry.ts --outdir dist --target node --format esm --splitting --external @typescript-eslint/utils --external devalue --external @standard-schema/spec",
     "build:eslint": "bun build src/eslint/index.ts --outdir dist/eslint --target node --format esm --external @typescript-eslint/utils",
-    "build:types": "tsc -p tsconfig.build.json",
+    "build:types": "tsc -p tsconfig.build.json && bun scripts/fix-dts-extensions.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
