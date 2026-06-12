@@ -47,26 +47,70 @@ const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   RpcError: (v) => v instanceof RpcError && [v.code, v.message],
 };
 
+/**
+ * Shape validation for untrusted payloads. The server parses
+ * client-controlled wire data with these revivers; rejecting malformed
+ * payloads here keeps blind casts out of the rest of the pipeline.
+ */
+export function isPathSegments(v: unknown): v is PathSegments {
+  if (!Array.isArray(v)) return false;
+  for (const seg of v) {
+    if (typeof seg === "string") continue;
+    if (Array.isArray(seg) && seg.length >= 1 && typeof seg[0] === "string")
+      continue;
+    return false;
+  }
+  return true;
+}
+
+function isPlainData(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function invalid(name: string): never {
+  throw new TypeError(`Invalid ${name} payload`);
+}
+
 const builtinRevivers: Record<string, (value: unknown) => unknown> = {
   ResolvedRef: (v) => {
-    const [path, data] = v as [PathSegments, Record<string, unknown>];
-    return new Reference(path, data);
+    if (!Array.isArray(v) || !isPathSegments(v[0]) || !isPlainData(v[1]))
+      invalid("ResolvedRef");
+    return new Reference(v[0], v[1]);
   },
   RpcError: (v) => {
-    const [code, message] = v as [string, string];
-    return new RpcError(code, message);
+    if (
+      !Array.isArray(v) ||
+      typeof v[0] !== "string" ||
+      typeof v[1] !== "string"
+    )
+      invalid("RpcError");
+    return new RpcError(v[0], v[1]);
   },
   ValidationError: (v) => {
-    const [issues] = v as [{ message: string; path?: PropertyKey[] }[]];
-    return new ValidationError(issues);
+    if (
+      !Array.isArray(v) ||
+      !Array.isArray(v[0]) ||
+      !v[0].every(
+        (issue: unknown) =>
+          isPlainData(issue) &&
+          typeof issue.message === "string" &&
+          (issue.path === undefined || Array.isArray(issue.path)),
+      )
+    )
+      invalid("ValidationError");
+    return new ValidationError(
+      v[0] as { message: string; path?: PropertyKey[] }[],
+    );
   },
   EdgeNotFoundError: (v) => {
-    const [edge] = v as [string];
-    return new EdgeNotFoundError(edge);
+    if (!Array.isArray(v) || typeof v[0] !== "string")
+      invalid("EdgeNotFoundError");
+    return new EdgeNotFoundError(v[0]);
   },
   MethodNotFoundError: (v) => {
-    const [method] = v as [string];
-    return new MethodNotFoundError(method);
+    if (!Array.isArray(v) || typeof v[0] !== "string")
+      invalid("MethodNotFoundError");
+    return new MethodNotFoundError(v[0]);
   },
   ConnectionLostError: () => new ConnectionLostError(),
   TokenExpiredError: () => new TokenExpiredError(),
@@ -74,8 +118,8 @@ const builtinRevivers: Record<string, (value: unknown) => unknown> = {
   RateLimitError: () => new RateLimitError(),
   PathDepthExceededError: () => new PathDepthExceededError(),
   NodePath: (v) => {
-    const [segments] = v as [PathSegments];
-    return new PathArg(segments);
+    if (!Array.isArray(v) || !isPathSegments(v[0])) invalid("NodePath");
+    return new PathArg(v[0]);
   },
 };
 
@@ -98,6 +142,12 @@ function buildSerializer(
 
 export function createSerializer(options: SerializerOptions = {}) {
   const userReducers = options.reducers ?? {};
+  // Builtin names shadow same-named user reducers at stringify time
+  // (documented behavior), so handles() must not consult shadowed reducers —
+  // it would claim values the serializer cannot actually encode.
+  const effectiveUserReducers = Object.entries(userReducers).filter(
+    ([name]) => !Object.hasOwn(builtinReducers, name),
+  );
   const serializer = buildSerializer(
     { ...userReducers, ...builtinReducers },
     { ...options.revivers, ...builtinRevivers },
@@ -105,8 +155,8 @@ export function createSerializer(options: SerializerOptions = {}) {
   return {
     ...serializer,
     handles(value: unknown): boolean {
-      for (const key in userReducers) {
-        if (userReducers[key]!(value)) return true;
+      for (const [, reducer] of effectiveUserReducers) {
+        if (reducer(value)) return true;
       }
       return false;
     },

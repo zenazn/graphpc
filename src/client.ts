@@ -28,6 +28,7 @@ import type {
 import {
   createSerializer,
   createClientSerializer,
+  isPathSegments,
   type Serializer,
 } from "./serialization";
 import { RpcError, ConnectionLostError, TokenExpiredError } from "./errors";
@@ -1471,6 +1472,16 @@ export function createClient<S extends ServerInstance<any>>(
   serializer = createClientSerializer(
     options,
     (value) => {
+      // Hydration payloads can come from semi-trusted storage; validate the
+      // shape before it reaches the cache.
+      if (
+        !Array.isArray(value) ||
+        !isPathSegments(value[0]) ||
+        typeof value[1] !== "object" ||
+        value[1] === null
+      ) {
+        throw new TypeError("Invalid ResolvedRef payload");
+      }
       const [path, data] = value as [PathSegments, Record<string, unknown>];
       const refPathKey = pathKey(path);
       // Update persistent cache
@@ -1523,8 +1534,10 @@ export function createClient<S extends ServerInstance<any>>(
       return createDataProxy(backend, path, data);
     },
     (value) => {
-      const [segments] = value as [PathSegments];
-      return createStub(backend, segments);
+      if (!Array.isArray(value) || !isPathSegments(value[0])) {
+        throw new TypeError("Invalid NodePath payload");
+      }
+      return createStub(backend, value[0]);
     },
   );
 

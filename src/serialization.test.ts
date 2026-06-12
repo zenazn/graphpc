@@ -7,6 +7,7 @@ import {
   ConnectionLostError,
 } from "./errors";
 import { Reference } from "./ref";
+import { PathArg } from "./path-arg";
 
 test("roundtrip arrays and objects", () => {
   const s = createSerializer();
@@ -234,4 +235,106 @@ test("custom reducers/revivers", () => {
   const result = s.parse(s.stringify(new Foo(42))) as Foo;
   expect(result).toBeInstanceOf(Foo);
   expect(result.x).toBe(42);
+});
+
+// -- Untrusted payload validation --
+// The server parses client-controlled wire data with these revivers; a
+// crafted payload must be rejected at parse time, not blindly cast.
+// NOTE: expect(fn).toThrow() passes in bun when fn *returns* an Error —
+// and these revivers return Errors by design — so we catch explicitly.
+
+function parseRejects(s: { parse(x: string): unknown }, wire: string): boolean {
+  try {
+    s.parse(wire);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+test("reviver rejects RpcError payload with non-string fields", () => {
+  const s = createSerializer();
+  const wire = s.stringify(new RpcError("CODE", "msg")).replace('"CODE"', "42");
+  expect(parseRejects(s, wire)).toBe(true);
+});
+
+test("reviver rejects ResolvedRef payload with invalid path segments", () => {
+  const s = createSerializer();
+  const wire = s.stringify(new Reference(["a"], { x: 1 })).replace('"a"', "42");
+  expect(parseRejects(s, wire)).toBe(true);
+});
+
+test("reviver rejects ResolvedRef payload with non-object data", () => {
+  const s = createSerializer();
+  const wire = s
+    .stringify(new Reference(["a"], { x: 1 }))
+    .replace('{"x":', '["x",');
+  expect(parseRejects(s, wire)).toBe(true);
+});
+
+test("reviver rejects NodePath payload with invalid segments", () => {
+  const s = createSerializer();
+  const wire = s.stringify(new PathArg(["a"])).replace('"a"', "42");
+  expect(parseRejects(s, wire)).toBe(true);
+});
+
+test("reviver rejects ValidationError payload with malformed issues", () => {
+  const s = createSerializer();
+  const wire = s
+    .stringify(new ValidationError([{ message: "bad" }]))
+    .replace('"bad"', "42");
+  expect(parseRejects(s, wire)).toBe(true);
+});
+
+test("reviver rejects EdgeNotFoundError payload with non-string edge", () => {
+  const s = createSerializer();
+  const wire = s.stringify(new EdgeNotFoundError("e")).replace('"e"', "42");
+  expect(parseRejects(s, wire)).toBe(true);
+});
+
+test("valid built-in payloads still round-trip", () => {
+  const s = createSerializer();
+  const err = s.parse(s.stringify(new RpcError("CODE", "msg"))) as RpcError;
+  expect(err.code).toBe("CODE");
+  const ref = s.parse(
+    s.stringify(new Reference(["a", ["b", 1]], { x: 1 })),
+  ) as Reference<unknown>;
+  expect(ref.path).toEqual(["a", ["b", 1]]);
+  expect(ref.data).toEqual({ x: 1 });
+});
+
+// -- handles() must agree with what stringify can actually encode --
+
+test("handles() ignores user reducers shadowed by builtins", () => {
+  class FakeValidationError extends Error {}
+  const s = createSerializer({
+    reducers: {
+      // Shadowed: the builtin ValidationError reducer wins at stringify time.
+      ValidationError: (v) => v instanceof FakeValidationError && [v.message],
+      // Not shadowed: genuinely handled.
+      FakeError: (v) => v instanceof FakeValidationError && [v.message],
+    },
+    revivers: {
+      FakeError: () => new FakeValidationError(),
+    },
+  });
+  const err = new FakeValidationError("boom");
+  expect(s.handles(err)).toBe(true); // via FakeError
+
+  const shadowedOnly = createSerializer({
+    reducers: {
+      ValidationError: (v) => v instanceof FakeValidationError && [v.message],
+    },
+    revivers: {},
+  });
+  // The only reducer claiming this value is shadowed, so stringify would
+  // fail — handles() must say so.
+  expect(shadowedOnly.handles(err)).toBe(false);
+  let stringifyThrew = false;
+  try {
+    shadowedOnly.stringify(err);
+  } catch {
+    stringifyThrew = true;
+  }
+  expect(stringifyThrew).toBe(true);
 });
