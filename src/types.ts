@@ -315,8 +315,25 @@ type RpcNav<T> = {
       : never]: RpcStub<T[K]>;
 };
 
+/**
+ * Single-field reads on a stub: each data field is awaitable individually
+ * (`await post.title` sends one `get` op) without loading the whole node.
+ */
+type RpcFieldReads<T> = {
+  readonly [K in keyof T as K extends typeof nodeTag
+    ? never
+    : T[K] extends Function
+      ? never
+      : IsNode<T[K]> extends true
+        ? never
+        : K]: PromiseLike<UnwrapReferences<T[K]>>;
+};
+
+/** What awaiting a node (or unwrapping a Reference) yields: data + navigation. */
+export type RpcData<T> = RpcDataOf<T> & RpcNav<T>;
+
 /** The stub type for a server class T */
-export type RpcStub<T> = RpcNav<T> & PromiseLike<RpcDataOf<T> & RpcNav<T>>;
+export type RpcStub<T> = RpcNav<T> & RpcFieldReads<T> & PromiseLike<RpcData<T>>;
 
 type RpcObservableSubscription<T> = {
   subscribe(
@@ -359,6 +376,7 @@ type RpcObservableResolved<T> = RpcDataOf<T> &
 
 /** Observable wrapper around an RpcStub. Adds .subscribe() and Symbol.observable. */
 export type RpcObservable<T> = RpcObservableNav<T> &
+  RpcFieldReads<T> &
   PromiseLike<RpcObservableResolved<T>> &
   RpcObservableSubscription<T>;
 

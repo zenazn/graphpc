@@ -234,16 +234,12 @@ api.posts.get();
 // @ts-expect-error get() accepts exactly 1 argument
 api.posts.get("1", "extra");
 
-// -- Primitive properties are not navigable on stubs (must await) --
-// @ts-expect-error version is a string primitive, not in RpcNav
-api.version;
-
-// -- Leaf node primitives are not navigable --
-// @ts-expect-error value is a number, not navigable on the stub
-leaf.value;
-
-// @ts-expect-error label is a string, not navigable on the stub
-leaf.label;
+// -- Primitive properties on stubs are thenable field reads, not values --
+{
+  const _version: PromiseLike<string> = api.version;
+  const _value: PromiseLike<number> = leaf.value;
+  const _label: PromiseLike<string> = leaf.label;
+}
 
 // -- Data properties are readonly after await --
 async function _negativeReadonly() {
@@ -504,4 +500,27 @@ async function _refDataPropNotRaw() {
   const item = await feedItem;
   // @ts-expect-error author is unwrapped to a data proxy, not a raw Reference
   const _raw: Reference<User> = item.author;
+}
+
+// ===========================================================================
+// Single-field reads on stubs (documented: `const t = await post.title`)
+// ===========================================================================
+
+// -- POSITIVE: data fields are awaitable on the stub --
+async function _fieldReads() {
+  const _title: string = await api.posts.get("1").title;
+  const _version: string = await api.version;
+  const _value: number = await leaf.value;
+}
+
+// -- POSITIVE: field reads unwrap References --
+async function _fieldReadUnwrapsRefs() {
+  const author = await feedItem.author;
+  const _name: string = author.name;
+}
+
+// -- NEGATIVE: a field read is a thenable, not the value --
+{
+  // @ts-expect-error must await the field read to get the value
+  const _wrong: string = api.version;
 }

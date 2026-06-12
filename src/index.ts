@@ -72,6 +72,7 @@ export type {
   RpcObservable,
   RpcStream,
   RpcDataOf,
+  RpcData,
   ClientOptions,
   ReconnectOptions,
   LoopProtectionOptions,
