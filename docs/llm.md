@@ -10,7 +10,7 @@ Use this as a cheatsheet. Canonical behavior lives in linked docs.
 - `@edge(...)` defines navigation. Client traversal is synchronous (no immediate network call).
 - `@method(...)` defines RPC calls. Client calls always return Promises.
 - `@stream(...)` defines server-push async generators. Client receives `RpcStream<T>`.
-- `await stub` fetches node data fields (public properties + getters, including inherited ones).
+- `await stub` fetches node data fields (public properties + getters, including inherited ones); `await stub.field` fetches one field.
 - `@hidden(predicate)` removes members from that connection's schema and blocks runtime access.
 
 ## Minimal Shape
