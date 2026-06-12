@@ -95,7 +95,7 @@ Operational policy (redaction/reporting): [Production Guide](production.md).
 
 ## Production (`production.md`)
 
-- Set limits: `tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, `maxDepth`, `rateLimit`, payload size.
+- Set limits: `tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, `maxDepth`, `rateLimit`; payload size at the transport layer (not a graphpc option).
 - Set `maxOperationTimeout`; use `abortSignal()` in long-running work (timeout does not kill handlers that ignore it).
 - Log `operationError` with `errorId`.
 - Use `connection` / `disconnect` / `operation` events for observability.
@@ -127,5 +127,5 @@ Operational policy (redaction/reporting): [Production Guide](production.md).
 
 - No codegen. Types flow from `createClient<typeof server>`.
 - `Path<T>` params map to `PathArg` client-side.
-- `Reference<T>` method returns unwrap to data+stub hybrids client-side.
+- `Reference<T>` unwraps (recursively, incl. containers and data fields) to data+stub hybrids client-side.
 - `RpcStream<T>` maps `@stream` generators to async iterables on the client.

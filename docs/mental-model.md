@@ -84,8 +84,12 @@ Public properties and getters (including inherited ones) are loaded by awaiting 
 
 ```typescript
 class Post extends Node {
-  title: string;
-  body: string;
+  constructor(
+    public title: string,
+    public body: string,
+  ) {
+    super();
+  }
 
   get summary(): string {
     return this.body.slice(0, 80);

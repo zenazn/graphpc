@@ -63,9 +63,10 @@ await post.updateTitle("New"); // RPC method call
 2. [Mental Model](docs/mental-model.md)
 3. [Decorators](docs/decorators.md)
 4. [Identity and References](docs/identity.md)
-5. [Authentication and Authorization](docs/auth.md)
-6. [Common Patterns](docs/patterns.md)
-7. [Documentation Index](docs/index.md)
+5. [Runtime Lifecycle and Resilience](docs/runtime.md)
+6. [Authentication and Authorization](docs/auth.md)
+7. [Common Patterns](docs/patterns.md)
+8. [Documentation Index](docs/index.md) — full reading guide
 
 ## Install
 

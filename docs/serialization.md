@@ -50,7 +50,10 @@ const customTypes = {
     NotFound: (v: unknown) => v instanceof NotFound && [v.resource, v.id],
   },
   revivers: {
-    NotFound: ([resource, id]: [string, string]) => new NotFound(resource, id),
+    NotFound: (v: unknown) => {
+      const [resource, id] = v as [string, string];
+      return new NotFound(resource, id);
+    },
   },
 };
 
@@ -71,7 +74,7 @@ A reducer receives a value and returns either:
 
 ### Reviver Contract
 
-A reviver receives the array produced by the reducer and returns the reconstituted instance.
+A reviver receives the array produced by the reducer and returns the reconstituted instance. Type the parameter as `unknown` and cast inside — `SerializerOptions` requires `(value: unknown) => unknown`, so a tuple-typed parameter fails to typecheck under strict TypeScript.
 
 ## Error Serialization
 
@@ -82,7 +85,7 @@ Only **thrown** values are serialized into the `error` field of a response. A va
 | `return value`   | `data`     | Promise resolves with `value` |
 | `throw error`    | `error`    | Promise rejects with `error`  |
 
-Thrown values are serialized using the registered reducers — `RpcError` instances, registered custom types, and built-in types all survive the round-trip as actual class instances. Any thrown value that no reducer handles is wrapped in an `RpcError` with a code indicating the operation type (`EDGE_ERROR`, `GET_ERROR`, or `DATA_ERROR`). The error's string representation is preserved as the message, but `instanceof CustomError` will fail on the client, and any structured fields are lost.
+Two kinds of thrown values survive the round-trip as actual class instances: `RpcError` and its subclasses (which covers every built-in GraphPC error), and registered custom types. Any other thrown value — including built-ins like `Date` or `Map`, which pass through fine as _returned_ data but not as errors — is wrapped in an `RpcError` with a code indicating the operation type (`EDGE_ERROR`, `GET_ERROR`, `DATA_ERROR`, or `STREAM_ERROR`). The thrown value's string form becomes the wrapped message (unless [redaction](production.md#error-redaction) replaces it with `"Internal server error"` in production); `instanceof CustomError` will fail on the client, and any structured fields are lost.
 
 Client and server **must** agree on the set of registered custom types. If they disagree (e.g., a reducer exists on the server but no matching reviver on the client), deserialization will fail.
 

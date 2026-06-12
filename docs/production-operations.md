@@ -65,7 +65,7 @@ server.on("operation", handlerB); // inner
 | `signal`    | `AbortSignal`                                 | Aborts on timeout/close   |
 | `messageId` | `number`                                      | Internal correlation id   |
 
-`OperationResult.error` (if present) contains the original server error, before redaction.
+`OperationResult.error` (if present) contains the pre-redaction error response. Thrown values that aren't `RpcError`s or registered custom types arrive here already wrapped (`EDGE_ERROR`/`GET_ERROR`/`DATA_ERROR`/`STREAM_ERROR`); the original thrown object is available on the `operationError` event.
 
 ### OpenTelemetry Integration
 
@@ -159,47 +159,13 @@ Signal model:
 - per-operation controller aborts when timeout triggers
 - `abortSignal()` is the combined signal
 
-**Handlers that ignore the signal keep running.** The timeout responds to the client and fires the signal, but cannot kill the handler. If a handler does CPU-bound work or calls an API that doesn't accept a signal, the handler continues consuming resources after the client has moved on:
-
-```typescript
-// BAD: timeout has no effect — handler keeps running
-@method(z.string())
-async search(query: string): Promise<Result[]> {
-  return db.query("SELECT * FROM huge_table WHERE ...", [query]);
-}
-
-// GOOD: passes signal — handler aborts cooperatively
-@method(z.string())
-async search(query: string): Promise<Result[]> {
-  return db.query("SELECT * FROM huge_table WHERE ...", [query], {
-    signal: abortSignal(),
-  });
-}
-```
+Handlers that ignore the signal keep running after the client has moved on — see [Production Guide — Operation Timeout](production.md#operation-timeout) for the policy and the footgun.
 
 ## Rate Limiting
 
-### Built-in Per-Connection Rate Limiting
+The built-in per-connection token bucket (defaults, the `RATE_LIMITED` error, and configuration) is covered in [Production Guide — Rate Limiting](production.md#rate-limiting). This page covers the instrumentation and enforcement patterns around it.
 
-Every connection is protected by a token bucket rate limiter, enabled by default. It prevents runaway clients (e.g., infinite invalidation loops) from overwhelming the server.
-
-```typescript
-const server = createServer(
-  {
-    rateLimit: {
-      bucketSize: 200, // max burst capacity (default)
-      refillRate: 50, // tokens per second (default)
-    },
-  },
-  (ctx) => new Api(),
-);
-```
-
-When a connection exhausts its tokens, individual operations are rejected with a `RATE_LIMITED` error (code `"RATE_LIMITED"`). The connection stays open — other in-flight operations and subscriptions are unaffected.
-
-Disable with `rateLimit: false`.
-
-#### `rateLimit` Event
+### `rateLimit` Event
 
 Fires each time an operation is rejected. Use it for metrics and alerting.
 

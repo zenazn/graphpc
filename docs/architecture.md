@@ -27,7 +27,7 @@ Your application provides:
 At runtime, GraphPC separates **navigation** from **execution**:
 
 - Navigation (`@edge`) is local path construction on the client.
-- Execution (`await node`, `await node.field`, `node.method()`) is remote RPC.
+- Execution (`await node`, `await node.field`, `await node.method()`) is remote RPC.
 - Streams (`@stream`) are server-push data feeds over the same connection.
 
 This keeps graph traversal cheap while making network boundaries explicit.
@@ -43,7 +43,7 @@ Caching is persistent — the client cache survives reconnects:
 - freshness is managed via `invalidate()`, `evict()`, and `ref()` returns
 - referential identity is preserved across reconnects
 
-Design implication: the persistent cache provides stable references for UI frameworks, while `invalidate()` and `evict()` give explicit control over freshness.
+Design implication: the persistent cache provides stable references for UI frameworks, while `invalidate()` and `evict()` give explicit control over freshness. Exact rules: [Caching and Invalidation](caching.md).
 
 ## Concurrency Boundary
 
@@ -64,7 +64,7 @@ GraphPC uses WebSockets with both request/response and server-push capabilities:
 - reconnect preserves the persistent cache and replays in-flight operations
 - pending operations can replay depending on reconnect behavior
 
-Design implication: model GraphPC as resilient RPC with server-push streaming for real-time data feeds.
+Design implication: model GraphPC as resilient RPC with server-push streaming for real-time data feeds. Exact replay semantics: [Reconnection](reconnection.md).
 
 ## Authorization Boundary
 

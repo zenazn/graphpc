@@ -101,11 +101,9 @@ client.hydrate(window.__rpc);
 
 When hydration ends:
 
-- **Method call results** recorded during SSR are dropped from the cache. Methods are not cached during live operation, so keeping SSR-recorded results would be incorrect.
-- **All other data** (edge traversals, node data, property reads) stays in the persistent cache and continues to serve reads.
-- The next cache miss that requires live data opens a WebSocket connection.
-
-For exact cache and timeout behavior, see [Caching and Invalidation](caching.md#hydration).
+- **Method call and single-field read results** recorded during SSR are dropped from the cache. Neither is cached during live operation, so keeping SSR-recorded results would be incorrect. (A field read whose node was also fully loaded during SSR keeps being served from that node's data.)
+- **Full-node data** stays in the persistent cache and continues to serve reads.
+- The next read opens a WebSocket connection. Persistent-cache hits don't re-send their data over the wire, but live operation always runs against a connection.
 
 For the end-to-end runtime timeline (SSR -> hydration -> persistent cache -> reconnect), see [Runtime Lifecycle and Resilience](runtime.md).
 
@@ -115,9 +113,7 @@ The SSR client records:
 
 - **Edge traversals**: property accesses and method calls on `@edge` members
 - **Data fetches**: `await` on a node proxy (records the node's public properties)
-- **Method calls**: calls to `@method` members (records the arguments and return value)
-
-Plain property access (non-edge, non-method) is not recorded — it delegates directly to the real object.
+- **Method calls and single-field reads**: `await node.method(...)` and `await node.field` (records the name, arguments, and result — replayed during hydration, dropped when it ends)
 
 Streams (`@stream` members) are not tracked during SSR and are not included in the hydration payload.
 
@@ -142,7 +138,7 @@ Because `SSRClient` extends `RpcClient`, components can be typed to accept `RpcC
 ```typescript
 import type { RpcClient } from "graphpc";
 
-function PostView({ client }: { client: RpcClient<typeof server> }) {
+async function PostView({ client }: { client: RpcClient<typeof server> }) {
   const post = await client.root.posts.get("42");
   return <div>{post.title}</div>;
 }

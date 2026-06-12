@@ -150,7 +150,7 @@ if (nextCursor) {
 
 With cursor-based pagination, a page's contents are stable — the same cursor always returns the same data. This makes items a natural fit for a data property rather than a method. Storing pre-resolved references as properties means `await page` fetches everything in one shot: metadata, items (with their data), and the next cursor.
 
-The client navigates to the next page via `posts.page(nextCursor)` — the same edge used to load the first page. Each page is independently addressable: `posts.page("abc123")` works for deep linking, SSR, and hydration via the `[canonicalPath]` static. Pages are cached by path, so revisiting a page is a cache hit.
+The client navigates to the next page via `posts.page(nextCursor)` — the same edge used to load the first page. Each page is independently addressable: `posts.page("abc123")` is an ordinary edge path, so it works for deep linking, SSR, and hydration like any other node. Pages are cached by path, so revisiting a page is a cache hit. (The `[canonicalPath]` static on `Post` is what lets the page return its items as `ref()`s — it plays no role in addressing the page itself.)
 
 Use the page-node approach when pages need caching, component integration with `use()` / `await`, or meaningful metadata (counts, facets).
 
@@ -199,40 +199,42 @@ GraphPC's graph-based API maps naturally to component trees. Each component rece
 
 ### The Pattern
 
-Consider a blog app with a graph like `Api -> PostsService -> Post -> CommentsService -> Comment`. Each component takes a stub for the part of the graph it cares about:
+Consider a blog app with a graph like `Api -> PostsService -> Post -> CommentsService -> Comment`. Each component takes the part of the graph it cares about:
 
 - `<App>` receives `client.root` (`RpcStub<Api>`)
 - `<PostList>` receives `RpcStub<PostsService>`, calls `.page()` to get posts
-- `<PostCard>` receives `RpcStub<Post>`, awaits it for data, renders
+- `<PostCard>` receives one page item — an unwrapped reference, typed `RpcData<Post>`, with its data already loaded
 
-Component boundaries align with graph boundaries. The prop type tells you exactly what data and methods a component can access — if a `<PostCard>` takes `RpcStub<Post>`, it can read `title` and `body`, call `updateTitle()`, and navigate to `.comments`, but it can't access other posts or unrelated API surfaces.
+Component boundaries align with graph boundaries. The prop type tells you exactly what a component can access — a `<PostCard>` holding `RpcData<Post>` can read `title` and `body` directly, call `updateTitle()`, and navigate to `.comments`, but it can't reach other posts or unrelated API surfaces.
 
 ### React Example
 
-Using React 19's `use()` hook:
+Using React 19's `use()` hook. `use()` requires a promise that stays identical across re-renders, and awaiting a stub creates a fresh promise each time — so memoize the promise; the wire message and cached data are shared either way:
 
 ```tsx
+import { Suspense, use, useMemo } from "react";
+import type { RpcData, RpcStub } from "graphpc/client";
+
 function PostList({ posts }: { posts: RpcStub<PostsService> }) {
-  const page = posts.page();
-  const { items } = use(page);
+  const pagePromise = useMemo(() => posts.page().then((p) => p), [posts]);
+  const { items } = use(pagePromise);
 
   return (
     <div>
       {items.map((item) => (
-        <Suspense key={item.id} fallback={<Skeleton />}>
-          <PostCard item={item} />
-        </Suspense>
+        <PostCard key={item.id} item={item} />
       ))}
     </div>
   );
 }
 
-function PostCard({ item }: { item: RpcStub<Post> }) {
-  const { title, body } = use(item);
+// Page items arrive as references with data pre-loaded — plain values,
+// nothing to suspend on.
+function PostCard({ item }: { item: RpcData<Post> }) {
   return (
     <article>
-      <h2>{title}</h2>
-      <p>{body}</p>
+      <h2>{item.title}</h2>
+      <p>{item.body}</p>
     </article>
   );
 }
@@ -256,19 +258,15 @@ Using `await` expressions (requires `experimental.async` in your Svelte config):
 </script>
 
 {#each items as item (item.id)}
-  <svelte:boundary>
-    <PostCard {item} />
-    {#snippet pending()}<Skeleton />{/snippet}
-  </svelte:boundary>
+  <PostCard {item} />
 {/each}
 
 <!-- PostCard.svelte -->
 <script lang="ts">
-  let { item }: { item: RpcStub<Post> } = $props();
-  const { title, body } = await item;
+  let { item }: { item: RpcData<Post> } = $props();
 </script>
 
-<article><h2>{title}</h2><p>{body}</p></article>
+<article><h2>{item.title}</h2><p>{item.body}</p></article>
 ```
 
 > The [`experimental.async`](https://svelte.dev/docs/svelte/await-expressions) flag enables top-level `await` in component scripts and is expected to become stable in Svelte 6.
@@ -277,15 +275,15 @@ For reactive Svelte patterns using `$derived`, wrap stubs with `toObservable()` 
 
 The same pattern applies to Solid (`createResource` or `createAsync`), Vue (`async setup` + `<Suspense>`), and other component frameworks — any model that supports async data loading and component composition.
 
-### Promise Stability
+### What's Stable (and What Isn't)
 
-React's `use()` and similar APIs require stable promise identity across re-renders. GraphPC provides this naturally:
+GraphPC gives you two strong identities and one deliberate non-identity:
 
-- **Edge navigation is synchronous** — `client.root.posts.get("1")` always returns the same stub object. No network call, no new promise.
-- **Persistent cache** — awaiting a stub returns the same promise within the cache. Two `use(post)` calls in the same render tree share one wire message.
-- **Referential stability** — stubs passed as props are stable objects. The promises they produce are stable because of coalescing (see [Caching and Invalidation](caching.md#coalescing-rules)).
+- **Stubs are stable** — `client.root.posts.get("1")` returns the same stub object on every access. No network call, no allocation churn.
+- **Resolved values are stable** — awaiting the same node returns the same data proxy until it's invalidated or evicted; concurrent awaits coalesce into one wire message (see [Caching and Invalidation](caching.md#coalescing-rules)).
+- **Promises are not stable** — every `await`/`.then()` on a stub creates a fresh promise object, even on a cache hit. APIs that key off promise identity (React's `use()`) need you to memoize the promise, as in the React example above, or to await in a parent/loader and pass resolved data down.
 
-This is why edge-based pagination (pages as graph nodes) matters for this pattern. An edge like `.page()` returns a stable stub, and `use(page)` reads from the persistent cache — one stable promise for metadata and items together. A method-based approach like `.list()` returns a new promise each call, breaking `use()`. See the [Pages as Graph Nodes](#pages-as-graph-nodes) section above.
+This is why edge-based pagination (pages as graph nodes) matters for this pattern: `.page()` is cached by path, so re-awaiting it is a cache hit returning the same data. A method-based `.list()` re-executes on every await — there is nothing to cache or share. See [Pages as Graph Nodes](#pages-as-graph-nodes) above.
 
 ### Coalescing and Waterfalls
 
@@ -295,21 +293,29 @@ The natural code style — parent awaits, renders children, children await — c
 - **References help**: page items arrive as references with data pre-loaded, so `<PostCard>` components render immediately — no additional waterfall for item data.
 - **Cache lifetime**: the idle timeout won't fire during a render cycle. In-flight requests keep the connection alive, and frameworks schedule rendering back-to-back as promises resolve — there's no risk of the connection closing mid-render.
 
-For most UIs, the waterfall depth is shallow (2-3 levels) and the user experience is good enough with Suspense fallbacks. With the page-node pattern, items arrive as references with data pre-loaded, so the first level of rendering is waterfall-free. Further edge navigation (e.g., each post loading its comments) creates the next level. For the few cases where that matters, pre-fetch in a parent component:
+For most UIs, the waterfall depth is shallow (2-3 levels) and the user experience is good enough with Suspense fallbacks. With the page-node pattern, items arrive as references with data pre-loaded, so the first level of rendering is waterfall-free. Further edge navigation (e.g., each post loading its comments) creates the next level.
+
+When a deeper level matters, the graph-side fix is best: put the data on the page itself (a `commentCount` data property on `Post` costs nothing extra to carry in each reference). When you can't change the graph, pre-fetch in the parent — one memoized promise covering the page and the follow-up calls:
 
 ```tsx
 // Eliminates the comments waterfall by fetching counts alongside posts
 function PostList({ posts }: { posts: RpcStub<PostsService> }) {
-  const { items } = use(posts.page());
-  // Items have data from references, but sub-edge data needs fetching.
-  // Pre-fetch comment counts in parallel:
-  const counts = use(Promise.all(items.map((item) => item.comments.count())));
+  const dataPromise = useMemo(async () => {
+    const { items } = await posts.page();
+    const counts = await Promise.all(
+      items.map((item) => item.comments.count()),
+    );
+    return { items, counts };
+  }, [posts]);
+  const { items, counts } = use(dataPromise);
 
   return items.map((item, i) => (
     <PostCard key={item.id} item={item} commentCount={counts[i]} />
   ));
 }
 ```
+
+(Method calls are never cached, so the `count()` calls re-send whenever the memo key changes — another reason to prefer the data-property fix.)
 
 ### What References Give You
 

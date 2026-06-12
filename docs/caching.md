@@ -144,6 +144,8 @@ unsubscribe();
 
 The callback value is the stub itself (which does not change). The notification is the trigger for re-derivation -- the subscriber should re-read data from the stub.
 
+Subscriber notifications are rate-limited per path to break invalidation feedback loops; see [Production Operations — Client-Side Loop Protection](production-operations.md#client-side-loop-protection).
+
 ### Invalidation propagation
 
 Invalidating a path notifies:
@@ -191,16 +193,22 @@ toStub(obs); // back to raw stub
 
 When `root.posts(4)` is invalidated, the `$oRoot` subscription fires, `$derived` re-evaluates the async expression, and the `await` returns fresh data because the cache was marked stale.
 
-**React** — use `subscribe()` directly with `useSyncExternalStore`:
+**React** — use `subscribe()` with `useSyncExternalStore`. The stub's identity never changes (that's the point of the persistent cache), so the snapshot must be something that _does_ change — a version counter the subscription bumps:
 
 ```tsx
 import { subscribe } from "graphpc/client";
-import { useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 
-function useSubscribe(stub: RpcStub<any>) {
+/** Re-renders the component each time `stub`'s subtree is invalidated. */
+function useInvalidations(stub: unknown): number {
+  const version = useRef(0);
   return useSyncExternalStore(
-    (cb) => subscribe(stub, cb),
-    () => stub,
+    (onChange) =>
+      subscribe(stub, () => {
+        version.current++;
+        onChange();
+      }),
+    () => version.current,
   );
 }
 ```
@@ -256,41 +264,6 @@ Alternatively, use `invalidate(stub)` after a mutation if you don't need immedia
 
 ## Hydration
 
-Hydration seeds the persistent cache with SSR payload data. During the hydration phase:
+Hydration serves reads from the SSR payload before any connection exists, then seeds the persistent cache: full-node data from SSR persists; SSR-recorded `@method` and single-field read results replay during the hydration window only and are dropped when it ends. After hydration, the next read opens the WebSocket.
 
-- Edge traversals and node data from SSR are loaded into the persistent cache
-- SSR-recorded `@method` call results are available during hydration only
-- After hydration ends (`endHydration()` or timeout), method call results are dropped — all other data stays in the persistent cache
-
-|                      | Hydration phase              | Live                                 |
-| -------------------- | ---------------------------- | ------------------------------------ |
-| **Data source**      | SSR payload (`window.__rpc`) | WebSocket responses                  |
-| **Default timeout**  | 250ms (client-side)          | Server's `idleTimeout` (server-side) |
-| **Transport needed** | No                           | Yes                                  |
-| **Methods cached**   | Yes (SSR-recorded results)   | Never                                |
-| **Ends when**        | `endHydration()` or timeout  | Connection closes                    |
-
-When hydration ends, the next cache miss triggers a WebSocket connection. See [SSR and Hydration](ssr-and-hydration.md) for how the payload is generated and consumed.
-
-## Configuration
-
-**Server** — `idleTimeout` controls how long a connection stays open after the last request completes:
-
-```typescript
-const server = createServer(
-  { idleTimeout: 120_000 }, // 2 minutes of inactivity -> close (default: 60s)
-  (ctx) => new Api(),
-);
-```
-
-**Client** — `hydrationTimeout` controls how long the hydration phase lasts after the last cache hit:
-
-```typescript
-const client = createClient<typeof server>(
-  { hydrationTimeout: 500 }, // 500ms hydration window
-  () => new WebSocket("ws://localhost:3000"),
-);
-client.hydrate(window.__rpc);
-```
-
-For guidance on choosing values, see [Production Guide](production.md).
+Payload generation, the hydration window, and its timeout live in [SSR and Hydration](ssr-and-hydration.md). The server-side `idleTimeout` is covered in [Production Guide — Connection Limits](production.md#connection-limits).

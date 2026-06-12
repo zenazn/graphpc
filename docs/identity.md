@@ -77,13 +77,7 @@ class PostsPage extends Node {
 
 ### References and Caching
 
-When a `Reference<T>` arrives on the client, GraphPC updates the persistent cache at that canonical path:
-
-- node data is overwritten with fresh data
-- per-property caches for that node are invalidated
-- cached descendants are invalidated so future traversals re-resolve
-
-This is the primary read-after-write mechanism. Alternatively, use `invalidate(stub)` to explicitly mark data as stale.
+An arriving `Reference<T>` refreshes the persistent cache at its canonical path — this is the primary read-after-write mechanism. Exact cache effects: [Caching — Read-After-Write](caching.md#read-after-write).
 
 ### References and Authorization
 

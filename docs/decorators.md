@@ -171,7 +171,7 @@ The returned `RpcStream<T>` is an async iterable. It ends when:
 
 ### Streams survive invalidation
 
-Streams survive invalidation. A running stream is a source of data, not cached data. When a node is invalidated, any active stream on that node continues running. Invalidation marks the node's data as stale and notifies observers, but the async generator keeps yielding.
+A running stream is a source of data, not cached data, so invalidating its node does not interrupt it — see [Caching — Streams survive invalidation](caching.md#streams-survive-invalidation).
 
 ### Backpressure
 
@@ -180,19 +180,9 @@ Streams use credit-based flow control. The client sends `stream_credit` messages
 ### Reconnect behavior
 
 - **Without a resume callback**: on disconnect, the pending `next()` returns `{ done: true }`. The `for await` loop exits cleanly.
-- **With a resume callback**: on disconnect, the pending `next()` blocks. On reconnect, `resume()` is called to get a new underlying stream, and the loop continues transparently. `resume()` must synchronously open a stream on the same client; see [Reconnection — Stream Behavior on Disconnect](reconnection.md#stream-behavior-on-disconnect).
+- **With a resume callback**: on disconnect, the pending `next()` blocks. On reconnect, `resume()` is called to get a new underlying stream, and the loop continues transparently.
 
-To opt in to auto-resume, assign a `resume` callback on the stream object. The cursor must reflect the most recent successfully consumed message:
-
-```typescript
-let cursor: string | undefined;
-const stream = client.root.notifications.updates(cursor);
-stream.resume = () => client.root.notifications.updates(cursor);
-
-for await (const msg of stream) {
-  cursor = msg.id; // update cursor as messages are consumed
-}
-```
+To opt in, assign `stream.resume` — the contract and a worked cursor example live in [Reconnection — Stream Behavior on Disconnect](reconnection.md#stream-behavior-on-disconnect).
 
 ## `@hidden`
 
@@ -206,25 +196,9 @@ get admin(): AdminPanel {
 }
 ```
 
-When hidden, the edge or method is absent from the schema sent to the client, and any attempt to access it returns the same error as a nonexistent edge/method (no information leakage).
-
 ### Type safety
 
-Augment the `Register` interface to type your request context:
-
-```typescript
-// env.d.ts
-declare module "graphpc" {
-  interface Register {
-    context: {
-      userId: string;
-      isAdmin: boolean;
-    };
-  }
-}
-```
-
-The predicate can base its decision on the context:
+The predicate's `ctx` parameter is typed from the `Register` interface augmentation — see [Auth — Context as the Authentication Layer](auth.md#context-as-the-authentication-layer) for how to declare it.
 
 ```typescript
 @hidden((ctx) => !ctx.isAdmin) // ctx is typed from Register
@@ -253,23 +227,9 @@ secretToken = "sk-...";  // data field — hidden from non-admins
 
 ### Error behavior
 
-When hidden, the edge or method is absent from the schema sent to the client, and any attempt to access it returns the same error as a nonexistent edge or method — no information leakage. For protocol-level details, see [Error Handling](errors.md#hidden-member-nuance).
+When hidden, the member is absent from the schema sent to the client, and any access attempt returns the same error as a nonexistent edge or method — no information leakage. For protocol-level details, see [Error Handling](errors.md#hidden-member-nuance).
 
-For the full story — context as the authentication layer, session revocation, and how `@hidden` fits into the authorization model — see [Authentication and Authorization](auth.md).
-
-### Providing context
-
-`createServer` returns a server instance with a `handle` method. Every connection must provide a context:
-
-```typescript
-const server = createServer({}, (ctx) => new Api());
-server.handle(serverTransport, {
-  userId: session.userId,
-  isAdmin: session.role === "admin",
-});
-```
-
-A common way to populate the context is by examining request cookies or headers.
+For the full story — providing the context at connection time, session revocation, and how `@hidden` fits into the authorization model — see [Authentication and Authorization](auth.md).
 
 ## Validation
 

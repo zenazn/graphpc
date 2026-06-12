@@ -1,10 +1,12 @@
 # Protocol Internals
 
-> This document is for project contributors and protocol implementors. If you're building an API, start with [Getting Started](getting-started.md), [Mental Model](mental-model.md), and [Architecture](architecture.md).
+> This document is mostly for project contributors and protocol implementors. If you're building an API, start with [Getting Started](getting-started.md), [Mental Model](mental-model.md), and [Architecture](architecture.md). One section here is broadly useful: [Transport Interface](#transport-interface) covers wiring GraphPC to non-Bun servers (Node `ws`, custom transports).
 
 When to read this page: when you need wire-level behavior, token mechanics, and exact operation semantics.
 
 This page is protocol-focused. For app-level guidance, prefer [Mental Model](mental-model.md), [Caching and Invalidation](caching.md), and [Reconnection](reconnection.md).
+
+**Framing**: every frame on the wire is encoded with [devalue](serialization.md), not plain JSON — the message shapes below show the _decoded_ form. A protocol implementor must devalue-encode outbound frames and devalue-decode inbound ones; sending the literal JSON shown here will fail to parse.
 
 ## Connection Setup
 
@@ -239,13 +241,15 @@ Responses may also arrive out of order for `edge` operations. The server process
 
 ## Node Coalescing
 
-For a given path, a node must be created exactly once per connection. The server maintains a `nodeCache` mapping cache keys (stringified paths) to entries. Each entry has a lazy resolve function; the first `getNode()` call triggers resolution and caches the resulting promise, and subsequent calls return the same promise. If two operations race to resolve the same node, the first call creates the promise and the second receives the same instance.
+For a given path, the server creates one node per connection _while its cache entry lives_. The server maintains a `nodeCache` mapping cache keys (stringified paths) to entries. Each entry has a lazy resolve function; the first `getNode()` call triggers resolution and caches the resulting promise, and subsequent calls return the same promise. If two operations race to resolve the same node, the first call creates the promise and the second receives the same instance.
 
-This guarantees:
+While the entry is cached, this guarantees:
 
-- **Stable object identity** — same path -> same object reference within a connection
-- **Exactly-once side effects** — edge resolution side effects execute only once per path
+- **Stable object identity** — same path -> same object reference
+- **One resolution** — edge resolution side effects execute once per cached entry
 - **Correct concurrent behavior** — concurrent `get`/`data` handlers that trigger `ref()` with overlapping paths coalesce safely
+
+The cache is not permanent: LRU TTL eviction (see [Token Window](#token-window)), token-window expiry, and `ref()` re-resolution can all drop an entry mid-connection, and the next operation transparently re-resolves it — re-running the edge resolver and producing a new object. Don't rely on per-connection exactly-once edge execution; see [Auth — Edge Getter Caching](auth.md#edge-getter-caching-and-authorization-safety).
 
 ## Pipelining
 
@@ -426,56 +430,26 @@ Bun.serve({
 
 ### Testing
 
-For testing, use `mockConnect(server, ctx)` which creates a connected mock transport pair and returns the client-side transport:
-
-```typescript
-import { mockConnect } from "graphpc";
-import { createClient } from "graphpc/client";
-
-const client = createClient<typeof server>({}, () => mockConnect(server, ctx));
-```
-
-For advanced tests that need to spy on raw wire messages, use `createMockTransportPair()` directly.
+`mockConnect(server, ctx)` creates a connected mock transport pair; `createMockTransportPair()` gives raw wire access. See [Testing](testing.md).
 
 ## Idle Timeout
 
-The server can be configured with an `idleTimeout` (default: 60000ms). After no pending operations and no new messages for the timeout duration, the server closes the connection and garbage collects all token state.
-
-```typescript
-const server = createServer({ idleTimeout: 120_000 }, (ctx) => new Api()); // 2 minutes
-```
+The server can be configured with an `idleTimeout` (default: 60000ms). After no pending operations, **no active streams**, and no new messages for the timeout duration, the server closes the connection and garbage collects all token state. A connection with an open stream is never idle-closed; the timer restarts when its last stream ends. Configuration guidance: [Production Guide — Connection Limits](production.md#connection-limits).
 
 ## Max Pending Ops
 
-The server limits the number of concurrently executing operations per connection via `maxPendingOps` (default: 20). This bounds how many operations are running user code (edge resolution, method calls, data collection) at the same time. Token resolution (`waitFor`) does not count against this limit — only the actual resolve/execute phase does.
+The server limits the number of concurrently executing operations per connection via `maxPendingOps` (default: 20). This bounds how many operations are running user code (edge resolution, method calls, data collection) at the same time. For `get`/`data`/`stream_start`, waiting for the target token to resolve (`waitForToken`) happens _before_ a slot is acquired and does not count against the limit. `edge` operations acquire their slot first and hold it while resolving — so a pipelined chain of edges waiting on a slow parent does occupy slots.
 
-```typescript
-const server = createServer({ maxPendingOps: 50 }, (ctx) => new Api());
-```
-
-When all slots are occupied, new operations wait for a slot to free up after completing token resolution. This provides natural backpressure: the server processes work at a bounded rate, and the client's pending promises resolve as capacity becomes available. The `tokenWindow` limit bounds edge traversals specifically — `maxPendingOps` bounds all operation types (`edge`, `get`, `data`, and `stream_start`).
+When all slots are occupied, new operations wait for a slot to free up. This provides natural backpressure: the server processes work at a bounded rate, and the client's pending promises resolve as capacity becomes available. The `tokenWindow` limit bounds edge traversals specifically — `maxPendingOps` bounds all operation types (`edge`, `get`, `data`, and `stream_start`). Configuration guidance: [Production Guide — Connection Limits](production.md#connection-limits).
 
 Operations waiting for a slot are processed in FIFO order as slots free up.
 
 ## Max Queued Ops
 
-`maxQueuedOps` (default: 1000) bounds the total number of in-flight messages per connection — messages that have been received but not yet responded to. If a new message arrives and the count exceeds the limit, the connection is closed immediately.
-
-```typescript
-const server = createServer({ maxQueuedOps: 500 }, (ctx) => new Api());
-```
-
-This protects the server from misbehaving clients that send messages far faster than they can be processed. Each in-flight message holds a parsed message object and a promise chain. Without a bound, a flooding client could cause unbounded memory growth.
+`maxQueuedOps` (default: 1000) bounds the total number of in-flight messages per connection — messages that have been received but not yet responded to. If a new message arrives and the count exceeds the limit, the connection is closed immediately. This protects the server from clients that send messages faster than they can be processed: each in-flight message holds a parsed message object and a promise chain, so without a bound a flooding client could cause unbounded memory growth.
 
 ## Max Operation Timeout
 
 `maxOperationTimeout` (default: 30,000ms, 0 = disabled) sets a per-operation time limit. When the timeout fires, the server sends an `OPERATION_TIMEOUT` error to the client and aborts the operation's abort signal. The handler continues running in the background (does not release its concurrency slot until it finishes).
 
-```typescript
-const server = createServer(
-  { maxOperationTimeout: 10_000 },
-  (ctx) => new Api(),
-);
-```
-
-For edge operations, pipelined operations that depend on a timed-out edge fail when they attempt to resolve the parent token. See [Production Guide — Operation Timeout](production.md#operation-timeout).
+For edge operations, pipelined operations that depend on a timed-out edge fail when they attempt to resolve the parent token. Configuration and the cooperative-cancellation footgun: [Production Guide — Operation Timeout](production.md#operation-timeout).

@@ -211,7 +211,7 @@ createServer(
 );
 ```
 
-Pings do not count as application activity — a connection with no real traffic still times out via `idleTimeout` even if pings succeed. Real messages reset the ping timer, so active connections are not pinged unnecessarily.
+Pings do not count as application activity — a connection with no real traffic still times out via `idleTimeout` even if pings succeed. Request messages (edge/get/data/stream_start) reset the ping timer; stream flow-control messages do not, so a connection that is only consuming a stream is still pinged on schedule (harmless — its pongs keep it alive).
 
 ## Rate Limiting
 

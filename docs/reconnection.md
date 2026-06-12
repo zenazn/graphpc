@@ -215,12 +215,12 @@ When a connection drops while a mutation is in-flight, the client replays it aft
 
 ### What the Library Guarantees
 
-| Guarantee              | Provided?                                             |
-| ---------------------- | ----------------------------------------------------- |
-| At-least-once delivery | Yes — pending requests replay on reconnect            |
-| At-most-once delivery  | No — no deduplication of replayed requests            |
-| Duplicate detection    | No — the server treats replayed requests as new       |
-| Ordering preservation  | Yes — replayed requests maintain their original order |
+| Guarantee              | Provided?                                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| At-least-once delivery | Yes — pending requests replay on reconnect                                                                                                  |
+| At-most-once delivery  | No — no deduplication of replayed requests                                                                                                  |
+| Duplicate detection    | No — the server treats replayed requests as new                                                                                             |
+| Ordering preservation  | Partial — replays are issued in their original order, but requests on independent paths may interleave on the wire (as in normal operation) |
 
 ### When This Matters
 

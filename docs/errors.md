@@ -9,7 +9,7 @@ GraphPC provides error classes that all extend `RpcError`:
 | Error                      | Code                    | When it occurs                                                            |
 | -------------------------- | ----------------------- | ------------------------------------------------------------------------- |
 | `RpcError`                 | varies                  | Base class for all RPC errors; also wraps non-registered thrown values    |
-| `ValidationError`          | `VALIDATION_ERROR`      | `@edge` or `@method` argument fails schema validation                     |
+| `ValidationError`          | `VALIDATION_ERROR`      | `@edge`, `@method`, or `@stream` argument fails schema validation         |
 | `EdgeNotFoundError`        | `EDGE_NOT_FOUND`        | Server handled an `edge` op for a missing or hidden edge                  |
 | `MethodNotFoundError`      | `METHOD_NOT_FOUND`      | Server handled a `get` op for a missing or hidden member                  |
 | `ConnectionLostError`      | `CONNECTION_LOST`       | All reconnect attempts exhausted                                          |
@@ -18,7 +18,7 @@ GraphPC provides error classes that all extend `RpcError`:
 | `RateLimitError`           | `RATE_LIMITED`          | Per-connection token bucket exhausted                                     |
 | `PathDepthExceededError`   | `PATH_DEPTH_EXCEEDED`   | Edge traversal exceeded `maxDepth` limit                                  |
 
-When a token expires, the client automatically replays the path to obtain a fresh token — this is transparent to application code. `TokenExpiredError` only surfaces to the caller if the auto-replay circuit breaker trips (after 5 consecutive replay failures on the same path). See [Internals — Token Window](internals.md#token-window).
+Token expiry is normally invisible — the client replays the path automatically. `TokenExpiredError` surfaces only after five automatic replays of the same path fail in a row. See [Internals — Token Window](internals.md#token-window).
 
 When the stream limit is exceeded, the server returns a `StreamLimitExceededError` for the new stream request. Existing streams are unaffected.
 
@@ -49,8 +49,10 @@ const customTypes = {
       v instanceof InsufficientFunds && [v.required, v.available],
   },
   revivers: {
-    InsufficientFunds: ([req, avail]: [number, number]) =>
-      new InsufficientFunds(req, avail),
+    InsufficientFunds: (v: unknown) => {
+      const [req, avail] = v as [number, number];
+      return new InsufficientFunds(req, avail);
+    },
   },
 };
 
@@ -59,7 +61,7 @@ const client = createClient<typeof server>(customTypes, () => transport);
 // Use client.root.* for graph navigation
 ```
 
-**What if a custom error type isn't registered?** The error is wrapped in a generic `RpcError` before serialization. The `message` is preserved, but `instanceof InsufficientFunds` will fail on the client and structured fields (`required`, `available`) are lost. Always register custom types on both sides — and keep them in sync, since a mismatch causes deserialization to fail. In production, unregistered errors are also subject to [Error Redaction](#error-redaction).
+**What if a custom error type isn't registered?** The error is wrapped in a generic `RpcError` before serialization: the wrapped message is the thrown value's string form (for an `Error`, that's `"Error: Need 5, have 3"` — name prefix included), `instanceof InsufficientFunds` fails on the client, and structured fields (`required`, `available`) are lost. Always register custom types on both sides — and keep them in sync, since a mismatch causes deserialization to fail. In production, unregistered errors are also subject to [Error Redaction](#error-redaction).
 
 See [Serialization](serialization.md) for the full reducer/reviver contract.
 
@@ -67,25 +69,28 @@ See [Serialization](serialization.md) for the full reducer/reviver contract.
 
 Here's what the client receives for every failure mode:
 
-| Failure                                     | Client receives                                                                                                   | `instanceof`               |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| `@edge`/`@method` argument fails validation | `ValidationError` with `.issues`                                                                                  | `ValidationError`          |
-| Edge throws a registered custom error       | The custom error instance                                                                                         | Custom class               |
-| Edge throws a non-registered custom error   | `RpcError` (message preserved)                                                                                    | `RpcError` only            |
-| Edge throws any other value                 | `RpcError` with code `EDGE_ERROR`                                                                                 | `RpcError`                 |
-| Method throws a registered custom error     | The custom error instance                                                                                         | Custom class               |
-| Method throws a non-registered custom error | `RpcError` (message preserved)                                                                                    | `RpcError` only            |
-| Method throws any other value               | `RpcError` with code `GET_ERROR`                                                                                  | `RpcError`                 |
-| Data op throws any other value              | `RpcError` with code `DATA_ERROR`                                                                                 | `RpcError`                 |
-| `@hidden` edge via forced `edge` op         | `EdgeNotFoundError`                                                                                               | `EdgeNotFoundError`        |
-| `@hidden` edge via normal proxy access      | Usually `MethodNotFoundError` (can be `RpcError` `INVALID_PATH` for deeper paths, e.g. `root.admin.secretData()`) | Varies                     |
-| `@hidden` method accessed                   | `MethodNotFoundError`                                                                                             | `MethodNotFoundError`      |
-| Operation on failed edge's token            | Original error (propagated)                                                                                       | Varies                     |
-| All reconnect attempts fail                 | `ConnectionLostError`                                                                                             | `ConnectionLostError`      |
-| Token replay circuit breaker tripped        | `TokenExpiredError`                                                                                               | `TokenExpiredError`        |
-| Too many concurrent streams                 | `StreamLimitExceededError`                                                                                        | `StreamLimitExceededError` |
-| Per-connection rate limit exceeded          | `RateLimitError`                                                                                                  | `RateLimitError`           |
-| Edge traversal too deep                     | `PathDepthExceededError`                                                                                          | `PathDepthExceededError`   |
+| Failure                                                   | Client receives                                                                                                   | `instanceof`               |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `@edge`/`@method`/`@stream` argument fails validation     | `ValidationError` with `.issues`                                                                                  | `ValidationError`          |
+| Edge throws a registered custom error                     | The custom error instance                                                                                         | Custom class               |
+| Edge throws a non-registered custom error                 | `RpcError` (message text embedded, see above)                                                                     | `RpcError` only            |
+| Edge throws any other value                               | `RpcError` with code `EDGE_ERROR`                                                                                 | `RpcError`                 |
+| Method throws a registered custom error                   | The custom error instance                                                                                         | Custom class               |
+| Method throws a non-registered custom error               | `RpcError` (message text embedded, see above)                                                                     | `RpcError` only            |
+| Method throws any other value                             | `RpcError` with code `GET_ERROR`                                                                                  | `RpcError`                 |
+| Data op throws any other value                            | `RpcError` with code `DATA_ERROR`                                                                                 | `RpcError`                 |
+| Stream throws an unregistered value (start or mid-stream) | `RpcError` with code `STREAM_ERROR`, rejecting the pending `next()`                                               | `RpcError`                 |
+| Operation exceeds `maxOperationTimeout`                   | `RpcError` with code `OPERATION_TIMEOUT`                                                                          | `RpcError`                 |
+| `stream.resume()` fails to open a stream on reconnect     | `RpcError` with code `RESUME_FAILED`, rejecting the held `next()`                                                 | `RpcError`                 |
+| `@hidden` edge via forced `edge` op                       | `EdgeNotFoundError`                                                                                               | `EdgeNotFoundError`        |
+| `@hidden` edge via normal proxy access                    | Usually `MethodNotFoundError` (can be `RpcError` `INVALID_PATH` for deeper paths, e.g. `root.admin.secretData()`) | Varies                     |
+| `@hidden` method or stream accessed                       | `MethodNotFoundError`                                                                                             | `MethodNotFoundError`      |
+| Operation on failed edge's token                          | Original error (propagated)                                                                                       | Varies                     |
+| All reconnect attempts fail                               | `ConnectionLostError` (also rejects held stream `next()` calls and `client.ready`)                                | `ConnectionLostError`      |
+| Token replay circuit breaker tripped                      | `TokenExpiredError`                                                                                               | `TokenExpiredError`        |
+| Too many concurrent streams                               | `StreamLimitExceededError`                                                                                        | `StreamLimitExceededError` |
+| Per-connection rate limit exceeded                        | `RateLimitError`                                                                                                  | `RateLimitError`           |
+| Edge traversal too deep                                   | `PathDepthExceededError`                                                                                          | `PathDepthExceededError`   |
 
 ### Hidden-member nuance
 

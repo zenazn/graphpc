@@ -133,11 +133,13 @@ Bun.serve({
     if (srv.upgrade(req, { data: {} })) return;
     return new Response("Upgrade required", { status: 426 });
   },
-  websocket: server.wsHandlers((data) => data),
+  websocket: server.wsHandlers<{}>((data) => data),
 });
 ```
 
-This creates the typed server and binds it to a WebSocket transport.
+This creates the typed server and binds it to a WebSocket transport. The type parameter on `wsHandlers` is the upgrade `data` your `fetch` handler attaches; the callback turns it into the connection context (here both are empty — see [Authentication](auth.md) for real contexts).
+
+Not on Bun? `server.handle(transport, ctx)` accepts any WebSocket-shaped transport, including Node's `ws` — see [Protocol Internals — Transport Interface](internals.md#transport-interface).
 
 ### 4. Connect a client
 

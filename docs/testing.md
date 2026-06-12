@@ -64,7 +64,10 @@ const customTypes = {
     NotFound: (v: unknown) => v instanceof NotFound && [v.resource, v.id],
   },
   revivers: {
-    NotFound: ([resource, id]: [string, string]) => new NotFound(resource, id),
+    NotFound: (v: unknown) => {
+      const [resource, id] = v as [string, string];
+      return new NotFound(resource, id);
+    },
   },
 };
 
@@ -147,13 +150,15 @@ test("admin edge is visible to admin", async () => {
 });
 ```
 
-If you need protocol-level coverage, you can force a raw `edge` message and assert `EdgeNotFoundError`:
+If you need protocol-level coverage, you can force a raw `edge` message and assert `EdgeNotFoundError`. Frames are devalue-encoded, not plain JSON — encode with devalue's `stringify` (a `JSON.stringify` frame fails to parse and the server closes the connection):
 
 ```typescript
 // Pseudocode shape:
 // 1) Open a mock transport pair
 // 2) Call server.handle(serverTransport, nonAdminCtx)
-// 3) Send raw client message: { op: "edge", tok: 0, edge: "admin" }
+// 3) Send a raw client message, devalue-encoded:
+//      import { stringify } from "devalue";
+//      clientTransport.send(stringify({ op: "edge", tok: 0, edge: "admin" }));
 // 4) Assert the response is EDGE_NOT_FOUND
 ```
 

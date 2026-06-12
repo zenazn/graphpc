@@ -54,7 +54,9 @@ Bun.serve({
       data: { userId: session.userId, role: session.role },
     });
   },
-  websocket: rpc.wsHandlers<{ userId: string; role: string }>((data) => data),
+  websocket: rpc.wsHandlers<{ userId: string; role: "admin" | "user" }>(
+    (data) => data,
+  ),
 });
 ```
 
@@ -77,9 +79,10 @@ Bun.serve({
       },
     });
   },
-  websocket: rpc.wsHandlers<{ userId: string | null; role: string | null }>(
-    (data) => data,
-  ),
+  websocket: rpc.wsHandlers<{
+    userId: string | null;
+    role: "admin" | "user" | null;
+  }>((data) => data),
 });
 ```
 
@@ -87,7 +90,7 @@ Authentication is deferred to the edge that requires it — the `me` edge checks
 
 ## Context Lifetime
 
-The same context object is shared across every request on a connection — it's stable for the connection's lifetime. Do not mutate it mid-connection: the schema was already built using the original values, edge getters that already ran with the original context are cached and will not re-execute, and the server does not expect it to change. If a user's session or role changes, revoke the connection instead (see [Session revocation](#session-revocation) below).
+The same context object is shared across every request on a connection — it's stable for the connection's lifetime. Do not mutate it mid-connection: the schema was already built from the original values, and resolved nodes may or may not be re-resolved later (the server can evict and transparently rebuild cached nodes mid-connection), so a mutated context produces a graph view inconsistent with the connection's schema. If a user's session or role changes, revoke the connection instead (see [Session revocation](#session-revocation) below).
 
 ## The Capability Model
 
@@ -99,7 +102,24 @@ Authorization in GraphPC follows a capability model. Holding a reference to an o
 
 ## Edge Getters as Authorization Boundaries
 
-Edge getters control what parts of the graph a client can reach. The context (populated at connection time) carries the caller's identity; edge getters use it to make authorization decisions:
+Edge getters control what parts of the graph a client can reach. The context (populated at connection time) carries the caller's identity; edge getters use it to make authorization decisions.
+
+GraphPC has no built-in `Unauthorized`/`Forbidden` — the samples on this page use these app-defined errors. Subclassing `RpcError` keeps the code and message intact across the wire; register them as [custom error types](errors.md#custom-error-types) if you also want client-side `instanceof`:
+
+```typescript
+import { RpcError } from "graphpc";
+
+class Unauthorized extends RpcError {
+  constructor() {
+    super("UNAUTHORIZED", "Authentication required");
+  }
+}
+class Forbidden extends RpcError {
+  constructor() {
+    super("FORBIDDEN", "Access denied");
+  }
+}
+```
 
 ```typescript
 class Api extends Node {
@@ -275,12 +295,12 @@ This follows the capability model: the `.writable` edge is the authorization bou
 
 ## Edge Getter Caching and Authorization Safety
 
-Edge getters run **once per path** within a connection. When the server resolves a path like `root.users.get("42")`, it caches the resulting node instance for the duration of the connection. Subsequent requests to the same path reuse the cached instance — the getter doesn't run again.
+The server caches resolved nodes per path, so repeated requests to `root.users.get("42")` normally reuse one node instance. Don't count on exactly-once execution, though: the server may evict an idle node (LRU TTL, token-window churn, or a `ref()` return) and transparently re-resolve it on the next request — re-running the edge getter, and its authorization check, mid-connection.
 
-This is safe because:
+Two properties make this safe:
 
-1. **Context is stable per connection** — the authorization decision only needs to run once, since the context (and therefore the user's identity and permissions) won't change mid-connection.
-2. **Each connection has its own node cache** — nodes are never shared across connections. Two users resolving the same path get separate node instances, each authorized independently by their connection's edge getter. When a connection closes, the cache is discarded and edge getters run again on the next connection.
+1. **Getters only ever run with their own connection's context** — the context is stable for the connection's lifetime, so a re-run makes the same authorization decision as the first run. (This is also why mutating the context is forbidden — see [Context Lifetime](#context-lifetime).)
+2. **Each connection has its own node cache** — nodes are never shared across connections. Two users resolving the same path get separate node instances, each authorized independently by their connection's edge getter.
 
 ```typescript
 class Api extends Node {
@@ -288,13 +308,14 @@ class Api extends Node {
   get me(): AuthenticatedUser {
     const ctx = getContext();
     if (!ctx.userId) throw new Unauthorized();
-    // This runs once per connection — subsequent traversals reuse the cached node
+    // Runs whenever this path is (re-)resolved — always with this
+    // connection's context, so it always reaches the same decision.
     return new AuthenticatedUser(ctx.userId);
   }
 }
 ```
 
-There's no cross-user leakage. Connection A's cached `AuthenticatedUser("u1")` is invisible to connection B, which has its own cache and its own `AuthenticatedUser("u2")`.
+There's no cross-user leakage. Connection A's cached `AuthenticatedUser("u1")` is invisible to connection B, which has its own cache and its own `AuthenticatedUser("u2")`. Write edge getters as pure functions of the context — cheap, side-effect-free authorization checks that can safely run any number of times.
 
 ## Impersonation
 

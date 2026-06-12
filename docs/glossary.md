@@ -16,7 +16,7 @@ A navigable relationship from one node to another node. Edge navigation on the c
 
 ### Method (`@method`)
 
-A callable operation on a node that returns data over RPC. When client code calls a `@method`, GraphPC always sends a request to the server to execute it there.
+A callable operation on a node that returns data over RPC. During live operation, every `@method` call sends a request to the server; during SSR and the hydration window, recorded results are replayed instead (see [SSR and Hydration](ssr-and-hydration.md)).
 
 ### Stream (`@stream`)
 
@@ -82,7 +82,7 @@ See also: [Caching and Invalidation](caching.md)
 
 ### Token window
 
-The server-side sliding window of valid tokens. Tokens outside the window are expired, but the client handles this transparently by replaying the path to obtain a fresh token. App code is unaware of token management. `TokenExpiredError` only surfaces if the replay circuit breaker trips (5 consecutive failures on the same path).
+The server-side sliding window of valid tokens. Tokens outside the window are expired, but the client handles this transparently by replaying the path to obtain a fresh token. App code is unaware of token management.
 
 See also: [Protocol Internals](internals.md#token-window), [Production Guide](production.md)
 

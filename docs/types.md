@@ -63,13 +63,21 @@ client.root.notifications.updates(); // RpcStream<Notification>
 
 ### `await stub` returns data + stubs
 
-Awaiting a stub fetches node data fields and still exposes edge/method stubs.
+Awaiting a stub fetches node data fields and still exposes edge/method stubs. The awaited shape has a name: `RpcData<T>` — useful for typing component props that receive awaited nodes or unwrapped references.
 
 ```typescript
 const user = client.root.users.get("42");
-const data = await user;
+const data = await user; // RpcData<User>
 data.name; // data field
 await data.save(); // method call still works
+```
+
+### Single-field reads are thenable
+
+Each data field on a stub is a `PromiseLike` of its value — awaiting it sends one `get` op without loading the whole node.
+
+```typescript
+const name = await client.root.users.get("42").name; // string
 ```
 
 ## Why `extends Node` Is Required
