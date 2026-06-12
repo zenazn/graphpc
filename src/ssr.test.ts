@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { z } from "zod";
 import { edge, method } from "./decorators";
 import { Node, canonicalPath, type RpcClient } from "./types";
-import { ref, pathTo, type Reference } from "./ref";
+import { ref, pathTo, isReference, type Reference } from "./ref";
 import type { Path } from "./node-path";
 import { createSSRClient } from "./ssr";
 import { createSerializer } from "./serialization";
@@ -812,4 +812,122 @@ test("SSRClient is assignable to RpcClient and ready resolves immediately", asyn
 
   // Has SSRClient-specific method
   expect(typeof client.generateHydrationData).toBe("function");
+});
+
+// -- SSR execution semantics --
+
+test("SSR executes a method once per distinct call per render pass", async () => {
+  let executions = 0;
+  class CounterService extends Node {
+    @method
+    async bump(): Promise<number> {
+      return ++executions;
+    }
+  }
+  class CounterApi extends Node {
+    @edge(CounterService)
+    get counters(): CounterService {
+      return new CounterService();
+    }
+  }
+  const counterGpc = createServer({}, () => new CounterApi());
+  const client = createSSRClient<typeof counterGpc>(new CounterApi(), {});
+
+  const call = client.root.counters.bump();
+  const first = await call;
+  const second = await call; // re-await of the same call expression
+  const third = await client.root.counters.bump(); // same path + args
+
+  // One execution; every awaiter sees the result the hydrated client will replay.
+  expect(executions).toBe(1);
+  expect(first).toBe(1);
+  expect(second).toBe(1);
+  expect(third).toBe(1);
+
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
+  const callEntries = data.data.filter((d) => d.length === 4);
+  expect(callEntries.length).toBe(1);
+  expect(callEntries[0]![3]).toBe(1);
+});
+
+// Self-contained graph for data-fetch revival tests.
+class RevivalPost extends Node {
+  constructor(
+    public id: string,
+    public title: string,
+  ) {
+    super();
+  }
+
+  static [canonicalPath](root: RevivalApi, id: string) {
+    return root.revivalPosts.get(id);
+  }
+
+  @method
+  async shout(): Promise<string> {
+    return this.title.toUpperCase();
+  }
+}
+
+class RevivalPosts extends Node {
+  @edge(RevivalPost, z.string())
+  get(id: string): RevivalPost {
+    return new RevivalPost(id, `Post ${id}`);
+  }
+}
+
+class FeaturedHolder extends Node {
+  best!: Reference<RevivalPost>;
+}
+
+class RevivalApi extends Node {
+  @edge(RevivalPosts)
+  get revivalPosts(): RevivalPosts {
+    return new RevivalPosts();
+  }
+
+  @edge(FeaturedHolder)
+  async featured(): Promise<FeaturedHolder> {
+    const holder = new FeaturedHolder();
+    holder.best = await ref(RevivalPost, "1");
+    return holder;
+  }
+}
+
+const revivalGpc = createServer({}, () => new RevivalApi());
+
+test("SSR data fetch revives Reference properties into navigable proxies", async () => {
+  const client = createSSRClient<typeof revivalGpc>(new RevivalApi(), {});
+
+  const holder = await client.root.featured();
+  const best = holder.best as unknown as {
+    id: string;
+    title: string;
+    shout(): Promise<string>;
+  };
+
+  // Same as the live client: a Reference data property is a data proxy...
+  expect(best.title).toBe("Post 1");
+  // ...that supports continued navigation.
+  expect(await best.shout()).toBe("POST 1");
+
+  // The hydration payload still records the raw Reference so the
+  // hydrating client revives it through its own pipeline.
+  const data = createSerializer().parse(
+    client.generateHydrationData(),
+  ) as HydrationWire;
+  const holderEntry = data.data.find(
+    (d) => d.length === 2 && isReference((d[1] as { best?: unknown }).best),
+  );
+  expect(holderEntry).toBeDefined();
+});
+
+test("SSR data fetches have stable identity per node", async () => {
+  const client = createSSRClient<typeof revivalGpc>(new RevivalApi(), {});
+
+  const a = await client.root.revivalPosts.get("1");
+  const b = await client.root.revivalPosts.get("1");
+  expect(a).toBe(b);
 });

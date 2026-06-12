@@ -94,9 +94,13 @@ export function createSSRClient<S extends ServerInstance<any>>(
     "root",
     createCacheEntry(() => Promise.resolve(root as object), root as object),
   );
-  // Dedup sets for data/call entries
-  const recordedData = new Set<number>();
-  const recordedCalls = new Set<string>();
+  // Memoized results. A render pass is a deterministic snapshot: each
+  // distinct call (token + method + args) executes once and every awaiter
+  // sees the recorded result — exactly what the hydrated client will replay.
+  // Data fetches likewise keep one proxy per node, mirroring the live
+  // client's referential identity.
+  const callResults = new Map<string, Promise<unknown>>();
+  const dataResults = new Map<number, unknown>();
 
   const session: Session = {
     ctx,
@@ -161,34 +165,42 @@ export function createSSRClient<S extends ServerInstance<any>>(
         const { node, token } = await walkAndRecord(edgePath);
 
         if (terminal) {
-          const result = await resolveGet(
-            node,
-            terminal.name,
-            terminal.args,
-            ctx,
-          );
           const callKey = `${token}:${terminal.name}:${formatValue(terminal.args, options?.reducers)}`;
-          if (!recordedCalls.has(callKey)) {
-            recordedCalls.add(callKey);
+          const memoized = callResults.get(callKey);
+          if (memoized) return memoized;
+          const promise = (async () => {
+            const result = await resolveGet(
+              node,
+              terminal.name,
+              terminal.args,
+              ctx,
+            );
             callEntries.push({
               token,
               method: terminal.name,
               args: terminal.args,
               result,
             });
-          }
-          // Transform the result through the same serde pipeline the
-          // regular client uses — References become data+stub proxies,
-          // Paths become stubs, and any user-registered types round-trip
-          // correctly. This prevents SSR/client divergence.
-          return resultSerializer.parse(serializer.stringify(result));
+            // Transform the result through the same serde pipeline the
+            // regular client uses — References become data+stub proxies,
+            // Paths become stubs, and any user-registered types round-trip
+            // correctly. This prevents SSR/client divergence.
+            return resultSerializer.parse(serializer.stringify(result));
+          })();
+          callResults.set(callKey, promise);
+          return promise;
         } else {
+          if (dataResults.has(token)) return dataResults.get(token);
           const data = resolveData(node, ctx);
-          if (!recordedData.has(token)) {
-            recordedData.add(token);
-            dataEntries.push({ token, value: data });
-          }
-          return createDataProxy(backend, edgePath, data);
+          // Record the raw data (References stay References in the payload),
+          // but hand the caller the same revived view the live client builds.
+          dataEntries.push({ token, value: data });
+          const revived = resultSerializer.parse(
+            serializer.stringify(data),
+          ) as Record<string, unknown>;
+          const proxy = createDataProxy(backend, edgePath, revived);
+          dataResults.set(token, proxy);
+          return proxy;
         }
       });
     },

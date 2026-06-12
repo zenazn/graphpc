@@ -41,6 +41,8 @@ const posts = await user.posts.list(); // Calls method, records result
 
 The client delegates to the real objects — all data is live and correct. The recording is transparent.
 
+A render pass is a deterministic snapshot. Each distinct method call (same path and arguments) executes **once**; re-awaiting the same call returns the recorded result, which is exactly what the hydrated client will replay. Awaiting the same node twice returns the same data object. Results pass through the same serialization pipeline as the live client, so `Reference` and `Path` values are navigable proxies and custom types round-trip — components behave identically in both environments.
+
 ### Generating Hydration Data
 
 After rendering, call `client.generateHydrationData()` to get a string containing a valid JavaScript expression:
@@ -121,7 +123,7 @@ Streams (`@stream` members) are not tracked during SSR and are not included in t
 
 ### Method Call Replay During Hydration
 
-During SSR, each `@method` call's arguments and return value are captured in the hydration payload. During the hydration phase, the same call (same path + args) is replayed from cache instead of the network.
+During SSR, each distinct `@method` call executes once, and its arguments and return value are captured in the hydration payload. During the hydration phase, the same call (same path + args) is replayed from cache instead of the network.
 
 ```typescript
 // SSR — recorded: path=posts.list, args=[], result=[{title:"Hello World"}]
