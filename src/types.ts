@@ -369,7 +369,12 @@ export type ClientEvent = keyof ClientEventMap;
 
 export interface RpcClient<S extends ServerInstance<any>> {
   readonly root: RpcStub<RootOf<S>>;
-  /** Resolves once the client has received the hello message and is ready to issue operations. */
+  /**
+   * Resolves once the client has received the hello message and is ready to
+   * issue operations. Rejects with `ConnectionLostError` once reconnection
+   * attempts are exhausted, or with an `RpcError` if the client is closed
+   * before connecting.
+   */
   readonly ready: Promise<void>;
   on<E extends ClientEvent>(event: E, handler: ClientEventMap[E]): void;
   off<E extends ClientEvent>(event: E, handler: ClientEventMap[E]): void;

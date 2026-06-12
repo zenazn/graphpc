@@ -58,7 +58,7 @@ Details: [SSR and Hydration](ssr-and-hydration.md).
 - Persistent cache survives reconnects — same nodes, same promises, same referential identity.
 - Idle disconnects reconnect lazily (next operation).
 - In-flight disconnects reconnect eagerly with backoff and replay pending work.
-- Retry exhaustion emits `reconnectFailed` and rejects pending/new operations with `ConnectionLostError`.
+- Retry exhaustion emits `reconnectFailed` and rejects pending/new operations (including held stream `next()` calls and `client.ready`) with `ConnectionLostError`.
 - `client.reconnect()` resets retries and immediately tries again.
 
 Details: [Reconnection](reconnection.md).

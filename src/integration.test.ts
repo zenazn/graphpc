@@ -4254,6 +4254,81 @@ test("cancel before stream_start response still sends stream_cancel", async () =
   }
 
   const clientToServer: WireMessage[] = [];
+  // Hold back server→client messages on demand so the cancel provably races
+  // an in-flight stream_start (sent, but its response not yet delivered).
+  let hold = false;
+  const held: Array<() => void> = [];
+  const gpc = createServer({ idleTimeout: 0 }, () => new CancelTestRoot());
+  const client = createClient<typeof gpc>({}, () => {
+    const inner = mockConnect(gpc, {});
+    const originalSend = inner.send.bind(inner);
+    const originalAdd = inner.addEventListener.bind(inner);
+    return {
+      ...inner,
+      send(data: string) {
+        clientToServer.push(serializer.parse(data) as WireMessage);
+        originalSend(data);
+      },
+      addEventListener(
+        type: "message" | "close" | "error",
+        listener: (e: { data: string }) => void,
+      ) {
+        if (type === "message") {
+          originalAdd("message", (e) => {
+            if (hold) held.push(() => listener(e));
+            else listener(e);
+          });
+        } else {
+          originalAdd(type, listener as never);
+        }
+      },
+    } as Transport;
+  });
+
+  await client.ready;
+
+  hold = true;
+  const handle = client.root.target.data();
+  while (!clientToServer.some((m) => m.op === "stream_start")) await flush();
+
+  handle.cancel(); // stream_start is on the wire; its response is held
+  hold = false;
+  for (const release of held.splice(0)) release();
+
+  await flush();
+  await flush();
+  expect(clientToServer.some((m) => m.op === "stream_cancel")).toBe(true);
+
+  await flush();
+  await flush();
+  expect(generatorStopped).toBe(true);
+
+  client.close();
+});
+
+test("cancel before stream_start is sent suppresses the start entirely", async () => {
+  let generatorStarted = false;
+
+  class CancelTarget extends Node {
+    @stream
+    async *data(signal: AbortSignal): AsyncGenerator<number> {
+      generatorStarted = true;
+      let i = 0;
+      while (!signal.aborted) {
+        yield i++;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+
+  class CancelTestRoot extends Node {
+    @edge(CancelTarget)
+    get target(): CancelTarget {
+      return new CancelTarget();
+    }
+  }
+
+  const clientToServer: WireMessage[] = [];
   const gpc = createServer({ idleTimeout: 0 }, () => new CancelTestRoot());
   const client = createClient<typeof gpc>({}, () => {
     const inner = mockConnect(gpc, {});
@@ -4270,18 +4345,13 @@ test("cancel before stream_start response still sends stream_cancel", async () =
   await client.ready;
 
   const handle = client.root.target.data();
-  handle.cancel();
+  handle.cancel(); // cancelled before the start ever hits the wire
 
   await flush();
   await flush();
-  await flush();
-  await flush();
 
-  expect(clientToServer.some((m) => m.op === "stream_cancel")).toBe(true);
-
-  await flush();
-  await flush();
-  expect(generatorStopped).toBe(true);
+  expect(clientToServer.some((m) => m.op === "stream_start")).toBe(false);
+  expect(generatorStarted).toBe(false);
 
   client.close();
 });

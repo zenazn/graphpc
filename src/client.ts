@@ -226,7 +226,26 @@ export function createClient<S extends ServerInstance<any>>(
 
   let ready: Promise<void>;
   let resolveReady: () => void;
-  ready = new Promise<void>((r) => (resolveReady = r));
+  let rejectReady: (err: unknown) => void;
+  let readySettled = false;
+
+  function makeReady() {
+    readySettled = false;
+    ready = new Promise<void>((resolve, reject) => {
+      resolveReady = () => {
+        readySettled = true;
+        resolve();
+      };
+      rejectReady = (err: unknown) => {
+        readySettled = true;
+        reject(err);
+      };
+    });
+    // All internal work parked on `ready` handles rejection; this silencer
+    // only prevents an "unhandled rejection" report when nothing is parked.
+    ready.catch(() => {});
+  }
+  makeReady();
 
   // --- Event emitter ---
   const listeners: { [K in ClientEvent]: Set<() => void> } = {
@@ -479,15 +498,22 @@ export function createClient<S extends ServerInstance<any>>(
     tokenBirthCount = new Map();
     tokenBirthCount.set(0, 0);
     // NOTE: liveDataCache, getCache, dataLoadCache are NOT cleared — persistent cache
-    ready = new Promise<void>((r) => (resolveReady = r));
+    // Keep an unsettled `ready` so work parked on it survives; only replace it
+    // once it has settled (after a hello, or after exhaustion/close rejected it).
+    if (readySettled) makeReady();
   }
 
   // --- Streams ---
   const activeClientStreams = new Map<number, ClientStreamState>();
   // Map from stream_start message ID → streamState, for registering on response
   const pendingStreamStarts = new Map<number, ClientStreamState>();
-  // Queue of old stream states awaiting rebinding during resume
-  const resumeQueue: ClientStreamState[] = [];
+  // Streams whose stream_start has not been answered yet (parked or in flight).
+  const startingStreams = new Set<ClientStreamState>();
+  // Set synchronously around a resume() call so the openStream it makes
+  // rebinds the old stream state instead of creating a fresh one. This makes
+  // resume rebinding deterministic — it can never attach to an unrelated
+  // openStream call, no matter how concurrent opens interleave.
+  let resumeRebind: ClientStreamState | null = null;
 
   interface ClientStreamState {
     sid: number;
@@ -598,19 +624,14 @@ export function createClient<S extends ServerInstance<any>>(
         if ("error" in msg) {
           const errorId = (msg as { errorId?: string }).errorId;
           if (errorId) setErrorUuid(msg.error, errorId);
-          // Also fail the stream state
-          const streamState = pendingStreamStarts.get(msg.re);
-          if (streamState) {
-            pendingStreamStarts.delete(msg.re);
-            streamState.done = true;
-            streamState.error = msg.error;
-          }
+          // The handler's reject closure fails the stream state.
           handler.reject(msg.error);
         } else {
           // Register the stream state immediately so stream_data can find it
           const streamState = pendingStreamStarts.get(msg.re);
           if (streamState) {
             pendingStreamStarts.delete(msg.re);
+            startingStreams.delete(streamState);
             streamState.sid = msg.sid;
             // If cancelled while waiting for stream_start, send cancel now
             if (streamState.cancelled) {
@@ -702,6 +723,14 @@ export function createClient<S extends ServerInstance<any>>(
 
   function handleDisconnect() {
     if (closed) return;
+    if (isReconnecting) {
+      // A reconnect attempt's transport died before the handshake completed.
+      // Connection state was already cleared when the established connection
+      // dropped (and `ready` must survive — work is parked on it), so just
+      // continue the backoff schedule. No repeat 'disconnect' event.
+      scheduleReconnect();
+      return;
+    }
 
     // Handle active streams on disconnect
     for (const stream of activeClientStreams.values()) {
@@ -726,17 +755,21 @@ export function createClient<S extends ServerInstance<any>>(
       }
     }
 
+    emit("disconnect");
+
     if (reconnectConfig) {
+      // Reset connection state *before* rejecting in-flight handlers: their
+      // rejection handlers may re-park work on `ready`, which must already be
+      // the fresh, unsettled promise for the next connection.
+      const stalePending = pending;
+      clearConnectionState();
       const sentinel = new ReconnectingError();
-      for (const handler of pending.values()) {
+      for (const handler of stalePending.values()) {
         handler.reject(sentinel);
       }
-      pending.clear();
+      stalePending.clear();
 
-      emit("disconnect");
-      clearConnectionState();
-
-      if (pendingTerminals.size > 0 || hasResumableStreams()) {
+      if (pendingTerminals.size > 0 || hasPendingStreamWork()) {
         isReconnecting = true;
         scheduleReconnect();
       } else {
@@ -755,16 +788,19 @@ export function createClient<S extends ServerInstance<any>>(
     }
   }
 
-  function hasResumableStreams(): boolean {
+  function hasPendingStreamWork(): boolean {
     for (const stream of activeClientStreams.values()) {
       if (stream.resume && !stream.cancelled && !stream.done) return true;
+    }
+    for (const stream of startingStreams) {
+      if (!stream.cancelled && !stream.done) return true;
     }
     return false;
   }
 
   function cancelReconnectIfIdle() {
     if (!isReconnecting) return;
-    if (pendingTerminals.size > 0 || hasResumableStreams()) return;
+    if (pendingTerminals.size > 0 || hasPendingStreamWork()) return;
     scheduler?.cancel();
     isReconnecting = false;
     exhausted = false;
@@ -787,6 +823,28 @@ export function createClient<S extends ServerInstance<any>>(
         pt.reject(err);
       }
       pendingTerminals.clear();
+      // Streams held open across the reconnect window can never resume now.
+      for (const stream of activeClientStreams.values()) {
+        stream.done = true;
+        stream.error = err;
+        if (stream.pending) {
+          stream.pending.reject(err);
+          stream.pending = null;
+        }
+      }
+      activeClientStreams.clear();
+      for (const stream of startingStreams) {
+        stream.done = true;
+        stream.error = err;
+        if (stream.pending) {
+          stream.pending.reject(err);
+          stream.pending = null;
+        }
+      }
+      startingStreams.clear();
+      // Anything still parked on `ready` (and anyone awaiting client.ready)
+      // must not hang forever.
+      rejectReady(err);
     }
   }
 
@@ -815,31 +873,42 @@ export function createClient<S extends ServerInstance<any>>(
       issueOperation(pt);
     }
 
-    // Resume streams: call resume(), which calls openStream() to create a
-    // new server-side stream. We queue the old state so that when openStream
-    // registers in pendingStreamStarts, the stream_start handler binds the
-    // old state instead of the new one.
+    // Resume streams: call resume(), which synchronously calls openStream()
+    // to create a new server-side stream. `resumeRebind` is set for the
+    // duration of the call, so the openStream it makes adopts the old state —
+    // held next() promises and buffered values carry over to the new stream.
     const streamsToResume = [...activeClientStreams.values()].filter(
       (s) => s.resume && !s.cancelled,
     );
     for (const oldState of streamsToResume) {
       activeClientStreams.delete(oldState.sid);
-      if (oldState.resume) {
-        // Queue the old state for rebinding when the next stream registers
-        oldState.sid = 0;
-        oldState.consumed = 0;
-        oldState.framesSinceGrant = 0;
-        oldState.lastGrantSize = oldState.windowSize;
-        resumeQueue.push(oldState);
-        try {
-          oldState.resume(); // triggers openStream → stream_start to server
-        } catch (err) {
-          // resume() threw — reject the held next()
-          resumeQueue.splice(resumeQueue.indexOf(oldState), 1);
-          if (oldState.pending) {
-            oldState.pending.reject(err);
-            oldState.pending = null;
-          }
+      oldState.sid = 0;
+      oldState.consumed = 0;
+      resumeRebind = oldState;
+      let thrown: unknown;
+      let didThrow = false;
+      try {
+        oldState.resume!(); // triggers openStream → stream_start to server
+      } catch (err) {
+        didThrow = true;
+        thrown = err;
+      }
+      const claimed = resumeRebind === null; // openStream consumed it
+      resumeRebind = null;
+      if (!claimed) {
+        // resume() never opened a stream on this client — the held next()
+        // would hang forever, so fail it instead.
+        const err = didThrow
+          ? thrown
+          : new RpcError(
+              "RESUME_FAILED",
+              "stream.resume() must synchronously open a stream on this client",
+            );
+        oldState.done = true;
+        oldState.error = err;
+        if (oldState.pending) {
+          oldState.pending.reject(err);
+          oldState.pending = null;
         }
       }
     }
@@ -1219,8 +1288,14 @@ export function createClient<S extends ServerInstance<any>>(
     ): RpcStream<unknown> {
       ensureConnected();
 
+      // If this openStream was made synchronously by a resume() callback,
+      // adopt the old stream's state: its held next(), buffered values, and
+      // grown credit window carry over to the new server-side stream.
+      const rebound = resumeRebind;
+      resumeRebind = null;
+
       const initialCredits = 8;
-      const streamState: ClientStreamState = {
+      const streamState: ClientStreamState = rebound ?? {
         sid: 0, // will be set when server responds
         windowSize: initialCredits,
         consumed: 0,
@@ -1233,17 +1308,46 @@ export function createClient<S extends ServerInstance<any>>(
         cancelled: false,
         creditTimer: null,
       };
+      startingStreams.add(streamState);
+
+      const failStart = (err: unknown) => {
+        startingStreams.delete(streamState);
+        streamState.done = true;
+        streamState.error = err;
+        if (streamState.pending) {
+          streamState.pending.reject(err);
+          streamState.pending = null;
+        }
+      };
+
+      const onStartError = (err: unknown) => {
+        if (streamState.cancelled || streamState.done) {
+          startingStreams.delete(streamState);
+          return;
+        }
+        if (err instanceof ReconnectingError) {
+          // The connection died before the stream was established. Re-issue
+          // the start on the next connection, like any in-flight operation.
+          park();
+          return;
+        }
+        failStart(err);
+      };
 
       // Send stream_start and register for early data
-      ready.then(async () => {
+      const start = async () => {
+        if (streamState.cancelled || streamState.done) {
+          startingStreams.delete(streamState);
+          return;
+        }
         const token = await resolveEdgePath(path);
-
-        // If there's a resume pending, use the old state instead of the new one
-        const isResume = resumeQueue.length > 0;
-        const effectiveState = isResume ? resumeQueue.shift()! : streamState;
-        const startCredits = effectiveState.windowSize;
-        effectiveState.framesSinceGrant = 0;
-        effectiveState.lastGrantSize = startCredits;
+        if (streamState.cancelled || streamState.done) {
+          startingStreams.delete(streamState);
+          return;
+        }
+        const startCredits = streamState.windowSize;
+        streamState.framesSinceGrant = 0;
+        streamState.lastGrantSize = startCredits;
 
         const msg: ClientMessage = {
           op: "stream_start",
@@ -1253,35 +1357,20 @@ export function createClient<S extends ServerInstance<any>>(
           ...(args.length > 0 && { args }),
         };
 
-        const failStart = (err: unknown) => {
-          effectiveState.done = true;
-          effectiveState.error = err;
-          if (effectiveState.pending) {
-            effectiveState.pending.reject(err);
-            effectiveState.pending = null;
-          }
-        };
-
         // Serialize before consuming a message id. Correlation is positional,
         // so an unserializable stream argument must fail the stream rather than
         // advance the counter and desync every later response.
-        let wire: string;
-        try {
-          wire = serializer.stringify(msg);
-        } catch (err) {
-          failStart(err);
-          return;
-        }
+        const wire = serializer.stringify(msg);
 
         const msgId = nextMessageId++;
         // Pre-register so stream_start handler can associate data immediately
-        pendingStreamStarts.set(msgId, effectiveState);
+        pendingStreamStarts.set(msgId, streamState);
 
         pending.set(msgId, {
           resolve: () => {},
           reject: (err: unknown) => {
             pendingStreamStarts.delete(msgId);
-            failStart(err);
+            onStartError(err);
           },
         });
         try {
@@ -1289,9 +1378,14 @@ export function createClient<S extends ServerInstance<any>>(
         } catch (err) {
           pending.delete(msgId);
           pendingStreamStarts.delete(msgId);
-          failStart(err);
+          throw err;
         }
-      });
+      };
+
+      const park = () => {
+        ready.then(start).then(undefined, onStartError);
+      };
+      park();
 
       const stream: RpcStream<unknown> = {
         [Symbol.asyncIterator]() {
@@ -1322,6 +1416,7 @@ export function createClient<S extends ServerInstance<any>>(
             return(): Promise<IteratorResult<unknown>> {
               if (!streamState.cancelled) {
                 streamState.cancelled = true;
+                startingStreams.delete(streamState);
                 if (streamState.sid !== 0) {
                   // Already have a server-assigned SID — cancel immediately
                   if (transport) {
@@ -1489,6 +1584,17 @@ export function createClient<S extends ServerInstance<any>>(
       }
     }
     activeClientStreams.clear();
+    for (const stream of startingStreams) {
+      stream.cancelled = true;
+      stream.done = true;
+      if (stream.pending) {
+        stream.pending.reject(err);
+        stream.pending = null;
+      }
+    }
+    startingStreams.clear();
+    // Anyone awaiting client.ready (or work parked on it) must not hang.
+    rejectReady(err);
 
     if (transport) transport.close();
   }

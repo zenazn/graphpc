@@ -180,7 +180,7 @@ Streams use credit-based flow control. The client sends `stream_credit` messages
 ### Reconnect behavior
 
 - **Without a resume callback**: on disconnect, the pending `next()` returns `{ done: true }`. The `for await` loop exits cleanly.
-- **With a resume callback**: on disconnect, the pending `next()` blocks. On reconnect, `resume()` is called to get a new underlying stream, and the loop continues transparently.
+- **With a resume callback**: on disconnect, the pending `next()` blocks. On reconnect, `resume()` is called to get a new underlying stream, and the loop continues transparently. `resume()` must synchronously open a stream on the same client; see [Reconnection — Stream Behavior on Disconnect](reconnection.md#stream-behavior-on-disconnect).
 
 To opt in to auto-resume, assign a `resume` callback on the stream object. The cursor must reflect the most recent successfully consumed message:
 

@@ -83,9 +83,11 @@ client.off("disconnect", handler);
 
 | Event               | Fires when                                              |
 | ------------------- | ------------------------------------------------------- |
-| `'disconnect'`      | The transport closes unexpectedly                       |
+| `'disconnect'`      | An established connection closes unexpectedly           |
 | `'reconnect'`       | A new transport connects and the server sends its hello |
 | `'reconnectFailed'` | All `maxRetries` attempts have been exhausted           |
+
+`'disconnect'` fires once per disconnection. Reconnect attempts that fail before completing the handshake do not re-fire it.
 
 ## Lazy vs Eager Reconnection
 
@@ -129,6 +131,10 @@ for await (const msg of stream) {
 }
 ```
 
+`resume()` must synchronously open and return a new stream on the same client — the stream it opens becomes the continuation of the old one. If `resume()` throws, the held `next()` rejects with that error; if it returns without opening a stream, the held `next()` rejects with an `RpcError` (code `RESUME_FAILED`).
+
+A stream that was still being established when the connection dropped (its open had been sent but not yet acknowledged) is re-issued on the new connection automatically, like any other in-flight request.
+
 See [Decorators — @stream](decorators.md#stream) for the full stream API.
 
 ## Replay Behavior
@@ -155,7 +161,7 @@ If the server-side state has changed (node deleted, edge now hidden), the lazy r
 If all reconnect attempts fail, the client:
 
 1. Emits a `'reconnectFailed'` event.
-2. Rejects all queued promises with a `ConnectionLostError`.
+2. Rejects all queued promises with a `ConnectionLostError` — including held stream `next()` calls and anything awaiting `client.ready`.
 
 ```typescript
 import { ConnectionLostError } from "graphpc";
