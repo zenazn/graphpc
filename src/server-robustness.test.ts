@@ -6,6 +6,7 @@ import { Node } from "./types";
 import { edge, method, stream } from "./decorators";
 import { getContext } from "./context";
 import { RpcError } from "./errors";
+import { fakeTimers } from "./test-utils";
 
 class CustomRpcError extends RpcError {
   constructor() {
@@ -266,4 +267,35 @@ test("getContext() works inside a stream across credit-driven resumes", async ()
   expect(
     frames.every((f) => (f.data as { who?: string }).who === "alice"),
   ).toBe(true);
+});
+
+test("ops on live tokens succeed after LRU eviction (entry rebuild restores refcounts)", async () => {
+  const timers = fakeTimers();
+  const { ct, recv } = connect({ lruTTL: 1, timers });
+  await flush();
+  recv.length = 0;
+
+  // Two live tokens for the same path.
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "feed" })); // → token 1
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "feed" })); // → token 2
+  await flush(); // real time advances past the 1ms TTL
+
+  timers.fireAll(); // LRU sweep evicts the unpinned entry
+  await flush();
+  recv.length = 0;
+
+  // Both tokens are still in the window; each op must transparently rebuild
+  // the evicted entry and succeed.
+  ct.send(ser.stringify({ op: "data", tok: 1 }));
+  ct.send(ser.stringify({ op: "data", tok: 2 }));
+  await flush();
+
+  const parsed = recv.map(
+    (r) => ser.parse(r) as { op: string; error?: unknown },
+  );
+  const datas = parsed.filter((m) => m.op === "data");
+  expect(datas).toHaveLength(2);
+  for (const d of datas) {
+    expect("error" in d).toBe(false);
+  }
 });

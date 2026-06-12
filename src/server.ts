@@ -539,6 +539,18 @@ function createHandler(
     const tokenPaths = new Map<number, string>();
     tokenPaths.set(0, "root");
 
+    // Count of in-window tokens per path — lets an entry rebuild restore its
+    // tokenRefCount in O(1) instead of scanning the whole token window.
+    // Bounded by the window size W.
+    const pathTokenCount = new Map<string, number>();
+    pathTokenCount.set("root", 1);
+
+    function bumpPathTokenCount(path: string, delta: number) {
+      const next = (pathTokenCount.get(path) ?? 0) + delta;
+      if (next <= 0) pathTokenCount.delete(path);
+      else pathTokenCount.set(path, next);
+    }
+
     // Fix 1: track depth per token for O(1) depth checks
     const tokenDepths = new Map<number, number>();
     tokenDepths.set(0, 0);
@@ -564,6 +576,7 @@ function createHandler(
           tokenPaths.delete(oldTok);
           tokenDepths.delete(oldTok);
           tokenTypeIndex.delete(oldTok);
+          bumpPathTokenCount(oldPath, -1);
         }
         const oldEntry = pathIndex.get(oldPath);
         if (oldEntry) {
@@ -586,6 +599,7 @@ function createHandler(
 
       tokenRing[slot] = path;
       tokenPaths.set(tok, path);
+      bumpPathTokenCount(path, 1);
 
       const entry = pathIndex.get(path);
       if (entry) {
@@ -778,12 +792,8 @@ function createHandler(
           currentEntry = nextEntry;
         }
         entry = currentEntry;
-        // Restore tokenRefCount: count valid tokens that reference this path
-        let refCount = 0;
-        for (const [, tp] of tokenPaths) {
-          if (tp === path) refCount++;
-        }
-        entry.tokenRefCount = refCount;
+        // Restore tokenRefCount: valid tokens that reference this path
+        entry.tokenRefCount = pathTokenCount.get(path) ?? 0;
         const node = await getEntryNode(entry);
         return { entry, node };
       }
@@ -1941,6 +1951,7 @@ function createHandler(
       slotQueue.length = 0;
       tokenStates.clear();
       tokenPaths.clear();
+      pathTokenCount.clear();
       tokenDepths.clear();
       tokenTypeIndex.clear();
       pathIndex.clear();
