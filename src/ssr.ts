@@ -151,6 +151,8 @@ export function createSSRClient<S extends ServerInstance<any>>(
   }
 
   const backend: ProxyBackend = {
+    reducers: options?.reducers,
+
     resolve(path: PathSegments): Promise<unknown> {
       return runWithSession(session, async () => {
         const {

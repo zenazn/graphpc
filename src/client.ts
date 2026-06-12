@@ -1194,6 +1194,8 @@ export function createClient<S extends ServerInstance<any>>(
   }
 
   const backend: ProxyBackend = {
+    reducers: options.reducers,
+
     resolve(path: PathSegments): Promise<unknown> {
       if (closed) {
         return Promise.reject(new RpcError("CLIENT_CLOSED", "Client closed"));

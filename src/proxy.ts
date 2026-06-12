@@ -8,6 +8,7 @@
  */
 
 import { formatPath, formatValue } from "./format";
+import type { Reducers } from "./format";
 import type { PathSegments } from "./path";
 import type { Schema } from "./protocol";
 import { RpcError } from "./errors";
@@ -25,6 +26,11 @@ export interface ProxyBackend {
     args: unknown[],
   ): RpcStream<unknown>;
   isStream?(name: string, parentPath: PathSegments): boolean;
+  /**
+   * Custom serializer reducers, used when formatting call arguments into
+   * cache keys so distinct custom-typed values produce distinct keys.
+   */
+  reducers?: Reducers;
 }
 
 /**
@@ -192,7 +198,7 @@ export function createEdgeAccessor(
     if (backend.isStream?.(name, parentPath)) {
       return backend.openStream!(parentPath, name, args);
     }
-    const key = args.map((a) => formatValue(a)).join(",");
+    const key = args.map((a) => formatValue(a, backend.reducers)).join(",");
     const cached = callCache.get(key);
     if (cached) return cached;
     const callPath: PathSegments = [...parentPath, [name, ...args]];

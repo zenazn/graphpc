@@ -10,7 +10,7 @@
 
 import type { PathSegments, PathSegment } from "./path";
 
-type Reducers = Record<string, (value: unknown) => false | unknown[]>;
+export type Reducers = Record<string, (value: unknown) => false | unknown[]>;
 
 const IS_IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
