@@ -1274,6 +1274,11 @@ export function createClient<S extends ServerInstance<any>>(
           issueOperation(pt);
           return;
         }
+        // Any other terminal rejection clears the replay counter too — otherwise
+        // a path that saw a few TokenExpired replays then failed with a
+        // different error leaks its counter and trips the circuit breaker
+        // prematurely on a later, genuine expiry.
+        replayAttempts.delete(pathKey(pt.path));
         pendingTerminals.delete(pt);
         pt.reject(err);
       },
