@@ -75,3 +75,36 @@ test.skipIf(!built)(
     expect(offenders).toEqual([]);
   },
 );
+
+test.skipIf(!built)(
+  "declaration-file relative imports resolve to an emitted declaration",
+  () => {
+    // Stronger than the extension check: a rewritten specifier like "./foo.js"
+    // must actually resolve to a "./foo.d.ts" (or "./foo/index.d.ts" for a
+    // directory import) in dist. Catches the fix-dts directory-import footgun
+    // where "./dir" is wrongly rewritten to "./dir.js" instead of
+    // "./dir/index.js" — which the extension-only check would pass.
+    const unresolved: string[] = [];
+    const specifier = /(?:\bfrom\s*|\bimport\s*\(\s*)"(\.\.?\/[^"]+)"/g;
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (entry.name.endsWith(".d.ts")) {
+          const source = readFileSync(path, "utf8");
+          for (const match of source.matchAll(specifier)) {
+            const spec = match[1]!;
+            if (!/\.[cm]?js$/.test(spec)) continue; // only runtime-form specifiers
+            const base = join(dirname(path), spec).replace(/\.[cm]?js$/, "");
+            const candidates = [`${base}.d.ts`, join(base, "index.d.ts")];
+            if (!candidates.some((c) => existsSync(c))) {
+              unresolved.push(`${path}: ${spec}`);
+            }
+          }
+        }
+      }
+    };
+    walk(distDir);
+    expect(unresolved).toEqual([]);
+  },
+);
