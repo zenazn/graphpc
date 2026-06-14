@@ -15,6 +15,20 @@ import type { Context } from "./types";
 const BLOCKED_NAMES = new Set(["constructor", "__proto__", "prototype"]);
 
 /**
+ * Derive the class used for security metadata (@edge/@method/@stream/@hidden)
+ * from the node's real prototype rather than its writable `constructor`
+ * property. A node whose `constructor` was reassigned (a mixin, a shallow-merge
+ * bug, Object.create with a patched constructor) would otherwise have its
+ * authorization checks evaluated against the wrong — possibly empty — class
+ * while the real members are still served off the prototype chain (fail-open).
+ * Falls back to Object (empty metadata, fail-closed) for null-prototype nodes.
+ */
+function metaClassOf(node: object): new (...args: any[]) => object {
+  const proto = Object.getPrototypeOf(node);
+  return (proto?.constructor ?? Object) as new (...args: any[]) => object;
+}
+
+/**
  * Resolve an edge traversal on a node, returning the child node.
  */
 export async function resolveEdge(
@@ -27,7 +41,7 @@ export async function resolveEdge(
     throw new EdgeNotFoundError(edgeName);
   }
 
-  const cls = parent.constructor as new (...args: any[]) => object;
+  const cls = metaClassOf(parent);
 
   if (isHidden(cls, edgeName, ctx)) {
     throw new EdgeNotFoundError(edgeName);
@@ -78,7 +92,7 @@ export function resolveData(
   node: object,
   ctx: Context,
 ): Record<string, unknown> {
-  const cls = node.constructor as new (...args: any[]) => object;
+  const cls = metaClassOf(node);
   const edges = getEdges(cls);
   const methods = getMethods(cls);
   const streams = getStreams(cls);
@@ -147,7 +161,7 @@ export async function resolveGet(
     throw new MethodNotFoundError(name);
   }
 
-  const cls = node.constructor as new (...args: any[]) => object;
+  const cls = metaClassOf(node);
 
   // 2. Hidden check
   if (isHidden(cls, name, ctx)) {
@@ -234,7 +248,7 @@ export async function resolveStream(
     throw new MethodNotFoundError(name);
   }
 
-  const cls = node.constructor as new (...args: any[]) => object;
+  const cls = metaClassOf(node);
 
   if (isHidden(cls, name, ctx)) {
     throw new MethodNotFoundError(name);

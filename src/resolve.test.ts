@@ -615,3 +615,44 @@ test("resolveStream: throws for blocked names", async () => {
     resolveStream(node, "prototype", [], ac.signal, {}),
   ).rejects.toBeInstanceOf(MethodNotFoundError);
 });
+
+// -- Metadata is keyed off the prototype, not the writable `constructor` --
+
+test("a reassigned `constructor` does not bypass @hidden / @edge enforcement", async () => {
+  class Decoy extends Node {} // no decorated members
+
+  class Secret extends Node {
+    visible = "ok";
+
+    @hidden(() => true)
+    get token(): string {
+      return "TOP-SECRET";
+    }
+
+    @edge(Decoy)
+    get adminPanel(): Decoy {
+      return new Decoy();
+    }
+  }
+
+  const node = new Secret();
+  // Simulate a mixin / shallow-merge that points `constructor` at another class.
+  Object.defineProperty(node, "constructor", {
+    value: Decoy,
+    configurable: true,
+  });
+  expect(node.constructor).toBe(Decoy);
+
+  // @hidden getter must still be hidden (metadata read from Secret's prototype).
+  const data = resolveData(node, {});
+  expect(data.visible).toBe("ok");
+  expect("token" in data).toBe(false);
+
+  // get op must still reject the hidden member and the edge member.
+  await expect(resolveGet(node, "token", [], {})).rejects.toBeInstanceOf(
+    MethodNotFoundError,
+  );
+  await expect(resolveGet(node, "adminPanel", [], {})).rejects.toBeInstanceOf(
+    MethodNotFoundError,
+  );
+});
