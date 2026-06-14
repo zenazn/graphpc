@@ -1411,6 +1411,9 @@ function createHandler(
           try {
             result = await stream.iterator.next();
           } catch (err) {
+            // The client may have cancelled while next() was pending; the
+            // cancel already tore the stream down, so don't emit a frame.
+            if (stream.cancelled) return;
             // Stream threw — send end with error
             let error = err;
             if (!(err instanceof RpcError) && !serializer.handles(err)) {
@@ -1429,6 +1432,11 @@ function createHandler(
             cleanupStream(stream);
             return;
           }
+
+          // Re-check cancellation after the (possibly slow) next() resolved:
+          // a stream_cancel that landed while we were parked must not produce a
+          // post-cancel stream_data / stream_end frame.
+          if (stream.cancelled) return;
 
           if (result.done) {
             // Stream completed naturally
@@ -1456,7 +1464,12 @@ function createHandler(
     }
 
     function cleanupStream(stream: ActiveStream) {
-      activeStreams.delete(stream.sid);
+      // Idempotent: a stream_cancel can race the pump's own done/throw cleanup
+      // (and the connection-close teardown). Only the first call that actually
+      // removes the stream from the registry runs the teardown, so
+      // activeStreamCount / pinCount can't be decremented twice (which would
+      // drive them negative and defeat maxStreams / leak LRU entries).
+      if (!activeStreams.delete(stream.sid)) return;
       activeStreamCount--;
       stream.cancelled = true;
       if (stream.resumeTimer) {
