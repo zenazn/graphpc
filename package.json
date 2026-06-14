@@ -39,7 +39,8 @@
     "docs"
   ],
   "scripts": {
-    "build": "bun run build:entries && bun run build:eslint && bun run build:types",
+    "clean": "bun -e 'import {rmSync} from \"node:fs\"; rmSync(\"dist\",{recursive:true,force:true})'",
+    "build": "bun run clean && bun run build:entries && bun run build:eslint && bun run build:types",
     "build:entries": "bun build src/index.ts src/client-entry.ts --outdir dist --target node --format esm --splitting --external @typescript-eslint/utils --external devalue --external @standard-schema/spec",
     "build:eslint": "bun build src/eslint/index.ts --outdir dist/eslint --target node --format esm --external @typescript-eslint/utils",
     "build:types": "tsc -p tsconfig.build.json && bun scripts/fix-dts-extensions.ts",
