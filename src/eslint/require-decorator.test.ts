@@ -106,6 +106,34 @@ tester.run("require-decorator", requireDecorator, {
         }
       `,
     },
+    // TS method overload signatures must not be flagged (only the impl can be
+    // decorated, and it is).
+    {
+      code: `
+        import { Node, method } from "graphpc";
+
+        class Api extends Node {
+          foo(a: string): number;
+          foo(a: number): number;
+          @method
+          foo(a: any): number { return 1; }
+        }
+      `,
+    },
+    // Namespace import: extends graphpc.Node, decorated with @graphpc.method.
+    {
+      code: `
+        import * as graphpc from "graphpc";
+
+        class Api extends graphpc.Node {
+          @graphpc.method
+          async ping() { return "pong"; }
+
+          @graphpc.edge(Svc)
+          get svc() { return new Svc(); }
+        }
+      `,
+    },
   ],
 
   invalid: [
@@ -197,6 +225,55 @@ tester.run("require-decorator", requireDecorator, {
         {
           messageId: "missingDecorator",
           data: { name: "doStuff", className: "Api" },
+        },
+      ],
+    },
+    // Class expression extending Node — undecorated method must be flagged.
+    {
+      code: `
+        import { Node } from "graphpc";
+
+        const Api = class extends Node {
+          doStuff() { return 1; }
+        };
+      `,
+      errors: [
+        {
+          messageId: "missingDecorator",
+          data: { name: "doStuff", className: "(anonymous)" },
+        },
+      ],
+    },
+    // Namespace import: extends graphpc.Node with an undecorated method.
+    {
+      code: `
+        import * as graphpc from "graphpc";
+
+        class Api extends graphpc.Node {
+          doStuff() { return 1; }
+        }
+      `,
+      errors: [
+        {
+          messageId: "missingDecorator",
+          data: { name: "doStuff", className: "Api" },
+        },
+      ],
+    },
+    // Overloaded method whose implementation lacks a decorator → exactly one error.
+    {
+      code: `
+        import { Node } from "graphpc";
+
+        class Api extends Node {
+          foo(a: string): number;
+          foo(a: any): number { return 1; }
+        }
+      `,
+      errors: [
+        {
+          messageId: "missingDecorator",
+          data: { name: "foo", className: "Api" },
         },
       ],
     },
