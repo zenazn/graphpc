@@ -17,7 +17,7 @@ import {
   PathDepthExceededError,
   EdgeNotFoundError,
 } from "./errors";
-import { formatSegment } from "./format";
+import { formatKeySegment } from "./format";
 import type { OperationResult, RateLimitInfo } from "./hooks";
 import type { PathSegment } from "./path";
 import type {
@@ -56,6 +56,7 @@ export interface ServerOptions extends SerializerOptions {
   maxQueuedOps?: number; // max queued operations before closing connection
   maxOperationTimeout?: number; // ms before aborting a single operation (0 = disabled)
   maxStreams?: number; // max concurrent streams per client (default: 32)
+  maxMessageBytes?: number; // max decoded inbound message size; over this the connection is closed (0 = disabled, default)
   maxCredits?: number; // max credits per stream the server will honor (default: 256)
   maxDepth?: number; // max edge traversal depth per connection (default: 64)
   redactErrors?: boolean; // redact unregistered errors (default: auto-detect from NODE_ENV)
@@ -388,6 +389,7 @@ function createHandler(
     const maxStreams = options.maxStreams ?? 32;
     const maxCredits = options.maxCredits ?? 256;
     const maxDepth = options.maxDepth ?? 64;
+    const maxMessageBytes = options.maxMessageBytes ?? 0;
 
     // -- Token ring buffer --
     // Slot index = tok % W. Each slot stores a path string (or null).
@@ -1480,6 +1482,21 @@ function createHandler(
     transport.addEventListener("message", (event) => {
       const raw = eventDataToString(event.data);
 
+      // Reject oversized frames before doing any parse/format work. This bounds
+      // the synchronous decode + cache-key formatting cost a single message can
+      // impose. Set maxMessageBytes (or, equivalently, a transport-level
+      // maxPayload) in production — see docs/production.md.
+      if (maxMessageBytes > 0 && raw.length > maxMessageBytes) {
+        emitError(
+          new RpcError(
+            "MESSAGE_TOO_LARGE",
+            `Inbound message of ${raw.length} exceeds maxMessageBytes (${maxMessageBytes})`,
+          ),
+        );
+        transport.close();
+        return;
+      }
+
       let msg: ClientMessage;
       try {
         msg = parseClientMessage(serializer.parse(raw));
@@ -1641,7 +1658,7 @@ function createHandler(
                     ? [msg.edge, ...msg.args]
                     : msg.edge;
                 const fullKey =
-                  parentPath + formatSegment(seg, options.reducers);
+                  parentPath + formatKeySegment(seg, options.reducers);
 
                 claimToken = allocateToken(fullKey);
                 tokenStates.set(claimToken, createTokenState());

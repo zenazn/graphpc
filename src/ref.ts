@@ -2,7 +2,7 @@
  * async ref(), recording proxy, and walkPath.
  */
 
-import { formatSegment, isDescendantPathKey } from "./format";
+import { formatKeySegment, isDescendantPathKey } from "./format";
 import type { PathSegments, PathSegment } from "./path";
 import { canonicalPath, Node, type CanonicalArgs, type Context } from "./types";
 import {
@@ -52,7 +52,7 @@ function ensurePathEntries(
   let cacheKey = "root";
   for (const seg of path) {
     const parentKey = cacheKey;
-    cacheKey += formatSegment(seg, reducers);
+    cacheKey += formatKeySegment(seg, reducers);
     if (!cache.has(cacheKey)) {
       const edgeName = typeof seg === "string" ? seg : seg[0];
       const args = typeof seg === "string" ? [] : (seg.slice(1) as unknown[]);

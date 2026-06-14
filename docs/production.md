@@ -127,10 +127,12 @@ See deep usage patterns: [Production Operations — Abort Signals](production-op
 
 ## Message Size Limits
 
-GraphPC does not enforce payload size limits — configure them at the transport layer. If a message exceeds the limit, the transport drops the connection silently.
+The most effective payload cap is at the transport layer — configure it there. If a message exceeds the transport limit, the connection is dropped silently.
 
 - Bun: `maxPayloadLength` (default 16MB)
 - ws: `maxPayload` (default 100MB)
+
+As defense-in-depth, GraphPC also accepts a `maxMessageBytes` server option (default `0` = disabled): a decoded inbound frame larger than this closes the connection before any parse/cache-key work. Set it (or a transport cap, ideally both) in production. Note that even without it, the server bounds the size of the cache key it derives from any single edge argument, so an oversized argument cannot bloat per-connection key storage.
 
 Always set an explicit limit. For many APIs, 1MB is a reasonable starting point:
 
@@ -151,17 +153,18 @@ If a method deterministically returns data larger than the limit, every call wil
 
 ## Connection Limits
 
-| Option          | Default           | Description                                         |
-| --------------- | ----------------- | --------------------------------------------------- |
-| `tokenWindow`   | 10000             | Sliding window of valid tokens                      |
-| `maxStreams`    | 32                | Max concurrent streams per connection               |
-| `maxCredits`    | 256               | Max stream credits the server will honor at once    |
-| `maxPendingOps` | 20                | Max concurrent executing operations                 |
-| `maxQueuedOps`  | 1000              | Max total in-flight messages before close           |
-| `maxDepth`      | 64                | Max edge traversal depth per connection             |
-| `idleTimeout`   | 60000ms           | Inactivity timeout before closing connection        |
-| `lruTTL`        | 60000ms           | Idle time before an unpinned server node is evicted |
-| `rateLimit`     | 200 burst, 50/sec | Per-connection token bucket (`false` to disable)    |
+| Option            | Default           | Description                                         |
+| ----------------- | ----------------- | --------------------------------------------------- |
+| `tokenWindow`     | 10000             | Sliding window of valid tokens                      |
+| `maxStreams`      | 32                | Max concurrent streams per connection               |
+| `maxMessageBytes` | 0 (disabled)      | Max decoded inbound frame size before close         |
+| `maxCredits`      | 256               | Max stream credits the server will honor at once    |
+| `maxPendingOps`   | 20                | Max concurrent executing operations                 |
+| `maxQueuedOps`    | 1000              | Max total in-flight messages before close           |
+| `maxDepth`        | 64                | Max edge traversal depth per connection             |
+| `idleTimeout`     | 60000ms           | Inactivity timeout before closing connection        |
+| `lruTTL`          | 60000ms           | Idle time before an unpinned server node is evicted |
+| `rateLimit`       | 200 burst, 50/sec | Per-connection token bucket (`false` to disable)    |
 
 ```typescript
 createServer(

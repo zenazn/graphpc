@@ -74,6 +74,52 @@ export function formatSegment(seg: PathSegment, reducers?: Reducers): string {
   return fmtSegment(seg, seen, reducers, reducerEntries);
 }
 
+/**
+ * Max length of a single formatted path segment when used as a cache key.
+ * Untrusted edge arguments can be arbitrarily large; a segment longer than
+ * this is truncated and disambiguated with a hash of its full content, so
+ * retained key memory stays bounded (O(maxDepth × cap) per token) regardless
+ * of argument size — while distinct arguments still map to distinct keys.
+ */
+export const KEY_SEGMENT_MAX_LEN = 1024;
+
+/**
+ * cyrb53 — fast, well-distributed non-cryptographic string hash. Used only to
+ * keep truncated cache keys distinct; not a security primitive.
+ */
+function hashString(s: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/**
+ * Format a path segment for use as a server-side cache key, bounding the
+ * output length. For normal-sized segments this is byte-identical to
+ * `formatSegment`; only pathologically large segments are truncated (and a
+ * content hash + original length appended) so they cannot bloat the server's
+ * per-token key storage. Truncation preserves the descendant-prefix property
+ * relied on by `isDescendantPathKey` (a child key is still the parent key
+ * followed by a `.`/`[` segment).
+ */
+export function formatKeySegment(
+  seg: PathSegment,
+  reducers?: Reducers,
+): string {
+  const s = formatSegment(seg, reducers);
+  if (s.length <= KEY_SEGMENT_MAX_LEN) return s;
+  return s.slice(0, KEY_SEGMENT_MAX_LEN) + "#" + hashString(s) + "~" + s.length;
+}
+
 function fmtSegment(
   seg: PathSegment,
   seen: Map<object, number>,
