@@ -266,10 +266,18 @@ test("reviver rejects ResolvedRef payload with invalid path segments", () => {
 
 test("reviver rejects ResolvedRef payload with non-object data", () => {
   const s = createSerializer();
-  const wire = s
-    .stringify(new Reference(["a"], { x: 1 }))
-    .replace('{"x":', '["x",');
-  expect(parseRejects(s, wire)).toBe(true);
+  // Well-formed wires whose data slot is a non-plain-object — these actually
+  // reach the reviver's isPlainData(v[1]) guard (the old test mutated the JSON
+  // into a parse error, so it passed for the wrong reason).
+  const arrayData = s.stringify(
+    new Reference(["a"], [] as unknown as Record<string, unknown>),
+  );
+  expect(parseRejects(s, arrayData)).toBe(true);
+
+  const primitiveData = s.stringify(
+    new Reference(["a"], 5 as unknown as Record<string, unknown>),
+  );
+  expect(parseRejects(s, primitiveData)).toBe(true);
 });
 
 test("reviver rejects NodePath payload with invalid segments", () => {
