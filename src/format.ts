@@ -28,12 +28,28 @@ const TYPED_ARRAY_TAGS = new Set([
   "BigUint64Array",
 ]);
 
+/**
+ * Recover from stack exhaustion on pathologically deep input. fmt() has no
+ * depth bound (a depth counter would have to thread through every branch); a
+ * RangeError here means the value nested deeper than the engine's call stack.
+ * Returning a sentinel keeps every caller — including logging/metrics that
+ * format untrusted args outside a request's try/catch — from crashing.
+ */
+function safeFmt(produce: () => string): string {
+  try {
+    return produce();
+  } catch (e) {
+    if (e instanceof RangeError) return "[unformattable: too deeply nested]";
+    throw e;
+  }
+}
+
 export function formatValue(value: unknown, reducers?: Reducers): string {
   const seen = new Map<object, number>();
   const reducerEntries = reducers
     ? Object.getOwnPropertyNames(reducers)
     : undefined;
-  return fmt(value, seen, reducers, reducerEntries);
+  return safeFmt(() => fmt(value, seen, reducers, reducerEntries));
 }
 
 export function formatPath(path: PathSegments, reducers?: Reducers): string {
@@ -41,11 +57,13 @@ export function formatPath(path: PathSegments, reducers?: Reducers): string {
   const reducerEntries = reducers
     ? Object.getOwnPropertyNames(reducers)
     : undefined;
-  let out = "root";
-  for (const seg of path) {
-    out += fmtSegment(seg, seen, reducers, reducerEntries);
-  }
-  return out;
+  return safeFmt(() => {
+    let out = "root";
+    for (const seg of path) {
+      out += fmtSegment(seg, seen, reducers, reducerEntries);
+    }
+    return out;
+  });
 }
 
 /**
@@ -71,7 +89,7 @@ export function formatSegment(seg: PathSegment, reducers?: Reducers): string {
   const reducerEntries = reducers
     ? Object.getOwnPropertyNames(reducers)
     : undefined;
-  return fmtSegment(seg, seen, reducers, reducerEntries);
+  return safeFmt(() => fmtSegment(seg, seen, reducers, reducerEntries));
 }
 
 /**

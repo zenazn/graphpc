@@ -535,3 +535,25 @@ describe("formatSegment", () => {
     );
   });
 });
+
+describe("formatValue stack-exhaustion recovery", () => {
+  test("deeply nested input returns a sentinel instead of throwing RangeError", () => {
+    let deep: unknown = 0;
+    for (let i = 0; i < 60_000; i++) deep = [deep];
+    let out = "";
+    expect(() => {
+      out = formatValue(deep);
+    }).not.toThrow();
+    expect(out).toBe("[unformattable: too deeply nested]");
+  });
+
+  test("formatSegment (cache-key path) also recovers from deep args", () => {
+    let deep: unknown = 0;
+    for (let i = 0; i < 60_000; i++) deep = [deep];
+    let out = "";
+    expect(() => {
+      out = formatSegment(["e", deep] as [string, unknown]);
+    }).not.toThrow();
+    expect(out).toContain("unformattable");
+  });
+});
