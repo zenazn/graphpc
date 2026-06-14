@@ -8,7 +8,7 @@ import { ref } from "./ref";
 import { Reference } from "./reference";
 import { createSerializer } from "./serialization";
 import { createServer } from "./server";
-import { flush, mockConnect } from "./test-utils";
+import { fakeTimers, flush, mockConnect } from "./test-utils";
 import { canonicalPath, Node } from "./types";
 
 const serializer = createSerializer();
@@ -119,7 +119,20 @@ test("bogus edge name returns EdgeNotFoundError without wasting server resources
 
 // -- Fix 5: spurious pong ignored --
 
-test("pong without a pending ping is ignored", async () => {
+test("a spurious pong does not reset the ping cycle (half-open detection survives)", async () => {
+  // Pinging must be ENABLED to exercise the guard — the old version disabled it
+  // (pingInterval: 0), so the pong handler was a guaranteed no-op and the test
+  // proved nothing. Count timer arms to detect a spurious pong wrongly
+  // clearing+restarting the ping timer (which would defeat half-open
+  // detection); delay/pending alone can't tell a reset apart from no-op.
+  const timers = fakeTimers();
+  let setCount = 0;
+  const origSet = timers.setTimeout;
+  timers.setTimeout = ((fn: () => void, ms: number) => {
+    setCount++;
+    return origSet(fn, ms);
+  }) as typeof timers.setTimeout;
+
   const [st, ct] = createMockTransportPair();
   let closed = false;
   ct.addEventListener("close", () => {
@@ -127,19 +140,39 @@ test("pong without a pending ping is ignored", async () => {
   });
 
   const server = createServer(
-    { pingInterval: 0, rateLimit: false, idleTimeout: 0 },
+    {
+      pingInterval: 5000,
+      pingTimeout: 2000,
+      idleTimeout: 0,
+      lruTTL: 0,
+      rateLimit: false,
+      timers,
+    },
     () => new Api(),
   );
   server.handle(st, {});
   await flush();
 
-  // Send spurious pongs — should be silently ignored, not reset the ping timer
+  // Exactly one timer (the ping interval) is armed.
+  expect(timers.pending()).toBe(1);
+  const baseline = setCount;
+
+  // Spurious pongs (no ping outstanding) must be a no-op — they must NOT
+  // clear and re-arm the ping timer.
   ct.send(serializer.stringify({ op: "pong" }));
   ct.send(serializer.stringify({ op: "pong" }));
   ct.send(serializer.stringify({ op: "pong" }));
   await flush();
+  expect(setCount).toBe(baseline); // no new timer armed by the spurious pongs
+  expect(timers.pending()).toBe(1);
 
+  // Half-open detection still works: ping fires, no pong → connection closes.
+  timers.fire(); // ping → arms the pong timeout
+  await flush();
   expect(closed).toBe(false);
+  timers.fire(); // pong timeout → close
+  await flush();
+  expect(closed).toBe(true);
 });
 
 // -- Fix 5: fire-and-forget messages consume fractional rate-limit tokens --
