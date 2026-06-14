@@ -25,9 +25,12 @@ test("first attempt has delay=0", () => {
 
 test("subsequent attempts use exponential backoff", () => {
   const ft = fakeTimers();
+  // random=1 → jitter resolves to the full base delay, so the documented
+  // exponential progression is asserted at its upper bound.
   const scheduler = new ReconnectScheduler(
     { maxRetries: 5, initialDelay: 100, maxDelay: 10000, multiplier: 2 },
     ft,
+    () => 1,
   );
 
   const delays: number[] = [];
@@ -55,11 +58,35 @@ test("subsequent attempts use exponential backoff", () => {
   expect(delays).toEqual([0, 100, 200, 400]);
 });
 
+test("applies equal jitter to backoff attempts (spread across [base/2, base))", () => {
+  for (const [r, expected] of [
+    [0, 50],
+    [1, 100],
+    [0.5, 75],
+  ] as const) {
+    const ft = fakeTimers();
+    const scheduler = new ReconnectScheduler(
+      { maxRetries: 5, initialDelay: 100, maxDelay: 10000, multiplier: 2 },
+      ft,
+      () => r,
+    );
+    // First attempt is always immediate, regardless of jitter.
+    scheduler.schedule(() => {});
+    expect(ft.getDelay()).toBe(0);
+    ft.fire(); // attempt 0→1, base delay is now 100 (initialDelay)
+    // Second attempt: base 100, jittered to [50, 100].
+    scheduler.schedule(() => {});
+    expect(ft.getDelay()).toBe(expected);
+    scheduler.cancel();
+  }
+});
+
 test("maxDelay caps computed delay", () => {
   const ft = fakeTimers();
   const scheduler = new ReconnectScheduler(
     { maxRetries: 10, initialDelay: 1000, maxDelay: 2000, multiplier: 10 },
     ft,
+    () => 1, // jitter at upper bound: asserts the cap on the base delay
   );
 
   const delays: number[] = [];
@@ -164,6 +191,7 @@ test("re-entrant schedule from onAttempt works correctly", () => {
   const scheduler = new ReconnectScheduler(
     { maxRetries: 3, initialDelay: 100, maxDelay: 10000, multiplier: 2 },
     ft,
+    () => 1, // jitter at upper bound for a deterministic delay assertion
   );
 
   const delays: number[] = [];

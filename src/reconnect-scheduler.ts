@@ -21,10 +21,16 @@ export class ReconnectScheduler {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly config: ReconnectConfig;
   private readonly timers: Timers;
+  private readonly random: () => number;
 
-  constructor(config: ReconnectConfig, timers?: Partial<Timers>) {
+  constructor(
+    config: ReconnectConfig,
+    timers?: Partial<Timers>,
+    random: () => number = Math.random,
+  ) {
     this.config = config;
     this.delay = config.initialDelay;
+    this.random = random;
     const defaults = defaultTimers();
     this.timers = {
       setTimeout: timers?.setTimeout ?? defaults.setTimeout,
@@ -42,7 +48,14 @@ export class ReconnectScheduler {
       return false;
     }
 
-    const currentDelay = this.attempt === 0 ? 0 : this.delay;
+    // Equal jitter on backoff attempts: spread the scheduled delay across
+    // [base/2, base) so a fleet of clients dropped by a server restart does not
+    // reconnect in lockstep (a self-inflicted thundering herd that can keep a
+    // recovering server down). The first attempt stays immediate so a single
+    // client still recovers fast.
+    const baseDelay = this.attempt === 0 ? 0 : this.delay;
+    const currentDelay =
+      baseDelay <= 0 ? 0 : baseDelay / 2 + this.random() * (baseDelay / 2);
 
     this.timer = this.timers.setTimeout(() => {
       this.timer = undefined;

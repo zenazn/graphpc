@@ -23,10 +23,11 @@ const client = createClient<typeof server>(
 
 ## Reconnection Strategy
 
-The client reconnects with exponential backoff:
+The client reconnects with exponential backoff and jitter:
 
 - The first reconnect attempt fires immediately (zero delay).
-- The second attempt uses `initialDelay` as its delay, then each subsequent attempt multiplies the previous delay by `multiplier`, up to `maxDelay`.
+- The second attempt's base delay is `initialDelay`, then each subsequent attempt multiplies the previous base by `multiplier`, up to `maxDelay`.
+- Each non-immediate attempt applies **equal jitter**: the actual delay is drawn uniformly from `[base/2, base)`. This spreads reconnects so a fleet of clients dropped by the same event (a server restart or network blip) does not stampede the recovering server in lockstep.
 - After exhausting all attempts, the client gives up.
 
 Defaults:
