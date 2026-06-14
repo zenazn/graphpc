@@ -542,12 +542,21 @@ export function createClient<S extends ServerInstance<any>>(
       const raw = eventDataToString(event.data);
       let msg: ServerMessage;
       try {
+        // Collect ref() invalidations from this message and apply them in one
+        // combined pass after parse, instead of per-ref during parse.
+        deferredRefs = [];
         msg = parseServerMessage(serializer.parse(raw));
       } catch {
+        deferredRefs = null;
         try {
           t.close();
         } catch {}
         return;
+      }
+      const batchedRefs = deferredRefs;
+      deferredRefs = null;
+      if (batchedRefs && batchedRefs.length > 0) {
+        applyRefInvalidation(batchedRefs);
       }
       // Respond to server ping — liveness check, not app traffic
       if (msg.op === "ping") {
@@ -1499,6 +1508,69 @@ export function createClient<S extends ServerInstance<any>>(
     },
   };
 
+  // Batched ref() invalidation. The ResolvedRef reviver runs once per ref in a
+  // message; doing the full descendant-invalidation + subscriber-notification
+  // scans per ref is O(refs × cacheSize). Instead the reviver records each ref
+  // here and a single post-parse pass invalidates all descendants in one sweep
+  // per cache and notifies each subscriber at most once.
+  let deferredRefs: Array<{ key: string; path: PathSegments }> | null = null;
+  function applyRefInvalidation(
+    refs: Array<{ key: string; path: PathSegments }>,
+  ) {
+    if (refs.length === 0) return;
+    const refKeys = refs.map((r) => r.key);
+    const refKeySet = new Set(refKeys);
+    const ownPrefixes = refKeys.map((k) => k + ":");
+    const isDescOfAny = (k: string) =>
+      refKeys.some((rk) => isDescendantPathKey(rk, k));
+
+    // Evict cached descendant edges (and their token mappings).
+    for (const edgeKey of resolvedEdges.keys()) {
+      if (isDescOfAny(edgeKey)) {
+        resolvedEdges.delete(edgeKey);
+        const tok = pathToTokenSync.get(edgeKey);
+        if (tok !== undefined) {
+          pathToTokenSync.delete(edgeKey);
+          tokenBirthCount.delete(tok);
+        }
+      }
+    }
+    // Invalidate descendants. Fresh data for the refs themselves (refKeySet)
+    // must survive a sibling ref's descendant sweep, so it is excluded here.
+    for (const k of liveDataCache.keys()) {
+      if (!refKeySet.has(k) && isDescOfAny(k)) liveDataCache.delete(k);
+    }
+    for (const k of dataProxyCache.keys()) {
+      if (!refKeySet.has(k) && isDescOfAny(k)) dataProxyCache.delete(k);
+    }
+    for (const k of dataLoadCache.keys()) {
+      if (isDescOfAny(k)) dataLoadCache.delete(k);
+    }
+    // Property-read caches: clear each ref's own-node entries (key
+    // "<nodeKey>:<field>") and any descendant entries, in one pass.
+    for (const k of getCache.keys()) {
+      if (ownPrefixes.some((p) => k.startsWith(p)) || isDescOfAny(k)) {
+        getCache.delete(k);
+      }
+    }
+
+    // Notify each affected subscriber exactly once: the refs, their ancestors,
+    // and any cached descendants.
+    const toNotify = new Set<string>();
+    for (const { key, path } of refs) {
+      toNotify.add(key);
+      let ancestorPath = path.slice();
+      while (ancestorPath.length > 0) {
+        ancestorPath = ancestorPath.slice(0, -1);
+        toNotify.add(pathKey(ancestorPath));
+      }
+    }
+    for (const subKey of pathSubscribers.keys()) {
+      if (isDescOfAny(subKey)) toNotify.add(subKey);
+    }
+    for (const key of toNotify) notifyPath(key);
+  }
+
   // Override serializer to produce data proxies for references and paths at parse time
   serializer = createClientSerializer(
     options,
@@ -1515,51 +1587,17 @@ export function createClient<S extends ServerInstance<any>>(
       }
       const [path, data] = value as [PathSegments, Record<string, unknown>];
       const refPathKey = pathKey(path);
-      // Update persistent cache
+      // Fresh own-node data lands immediately so the returned proxy is current.
       liveDataCache.set(refPathKey, data);
       dataProxyCache.delete(refPathKey);
-      // Clear property caches
-      const prefix = refPathKey + ":";
-      for (const key of getCache.keys()) {
-        if (key.startsWith(prefix)) getCache.delete(key);
-      }
       dataLoadCache.delete(refPathKey);
-
-      // Evict cached descendant edges
-      for (const edgeKey of resolvedEdges.keys()) {
-        if (isDescendantPathKey(refPathKey, edgeKey)) {
-          resolvedEdges.delete(edgeKey);
-          const tok = pathToTokenSync.get(edgeKey);
-          if (tok !== undefined) {
-            pathToTokenSync.delete(edgeKey);
-            tokenBirthCount.delete(tok);
-          }
-        }
-      }
-      // Invalidate descendants in all caches
-      for (const k of liveDataCache.keys()) {
-        if (isDescendantPathKey(refPathKey, k)) liveDataCache.delete(k);
-      }
-      for (const k of dataProxyCache.keys()) {
-        if (isDescendantPathKey(refPathKey, k)) dataProxyCache.delete(k);
-      }
-      for (const k of dataLoadCache.keys()) {
-        if (isDescendantPathKey(refPathKey, k)) dataLoadCache.delete(k);
-      }
-      for (const k of getCache.keys()) {
-        if (isDescendantPathKey(refPathKey, k)) getCache.delete(k);
-      }
-
-      // Notify subscribers (invalidation propagation)
-      notifyPath(refPathKey);
-      for (const subKey of pathSubscribers.keys()) {
-        if (isDescendantPathKey(refPathKey, subKey)) notifyPath(subKey);
-      }
-      // Notify ancestors
-      let ancestorPath = path.slice();
-      while (ancestorPath.length > 0) {
-        ancestorPath = ancestorPath.slice(0, -1);
-        notifyPath(pathKey(ancestorPath));
+      // The expensive descendant-invalidation + notification scans are batched:
+      // recorded here and flushed once per message (see applyRefInvalidation).
+      // Outside a batch (hydration), apply immediately.
+      if (deferredRefs) {
+        deferredRefs.push({ key: refPathKey, path });
+      } else {
+        applyRefInvalidation([{ key: refPathKey, path }]);
       }
 
       return createDataProxy(backend, path, data);
