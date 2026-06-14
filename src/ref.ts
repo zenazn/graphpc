@@ -116,9 +116,12 @@ export async function ref<
   leafEntry.rejected = false;
   leafEntry.version++;
 
-  // 4. Invalidate settled descendants so they re-resolve through the fresh leaf
+  // 4. Invalidate settled descendants so they re-resolve through the fresh leaf.
+  // A descendant key is strictly longer than the leaf key, so skip shorter/equal
+  // keys (ancestors, siblings, self) before the prefix comparison — this keeps
+  // a ref()-in-a-loop hot path from doing a full string compare per entry.
   for (const [key, entry] of session.nodeCache) {
-    if (isDescendantPathKey(leafKey, key)) {
+    if (key.length > leafKey.length && isDescendantPathKey(leafKey, key)) {
       invalidateEntry(entry);
     }
   }
