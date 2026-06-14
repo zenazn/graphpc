@@ -7,9 +7,12 @@ import type { RateLimitInfo } from "./hooks";
 import { createMockTransportPair } from "./protocol";
 import { ref } from "./ref";
 import { Reference } from "./reference";
+import { createSerializer } from "./serialization";
 import { createServer } from "./server";
-import { flush, mockConnect } from "./test-utils";
+import { flush, mockConnect, type WireMessage } from "./test-utils";
 import { canonicalPath, Node } from "./types";
+
+const serializer = createSerializer();
 
 // -- Test API --
 
@@ -160,32 +163,45 @@ test("server rateLimit: false disables rate limiting", async () => {
 });
 
 test("server rate limit rejects edge operations correctly", async () => {
+  // Drive the edge op at the wire level: the rate-limit path for an `edge` op
+  // must allocate a poisoned token and route RATE_LIMITED into an `edge` reply
+  // (not a get/data reply) so the client stub settles rather than hangs. The
+  // old test only asserted a subsequent get(ping) was limited and proved
+  // nothing about the edge branch.
+  const [st, ct] = createMockTransportPair();
+  const received: WireMessage[] = [];
+  ct.addEventListener("message", (e) =>
+    received.push(serializer.parse(e.data) as WireMessage),
+  );
   const server = createServer(
-    { rateLimit: { bucketSize: 1, refillRate: 0 } },
+    {
+      rateLimit: { bucketSize: 1, refillRate: 0 },
+      idleTimeout: 0,
+      pingInterval: 0,
+    },
     () => new Api(),
   );
-  const client = createClient<typeof server>({ loopProtection: false }, () =>
-    mockConnect(server, {}),
+  server.handle(st, {});
+  await flush();
+
+  // Drain the single token with one edge op.
+  ct.send(serializer.stringify({ op: "edge", tok: 0, edge: "get", args: ["1"] }));
+  await flush();
+  received.length = 0;
+
+  // The next edge op is rate-limited.
+  ct.send(serializer.stringify({ op: "edge", tok: 0, edge: "get", args: ["2"] }));
+  await flush();
+
+  const reply = received.find((m) => m.op === "edge");
+  expect(reply, "rate-limited edge must get an edge reply, not silence").toBeDefined();
+  // A token is allocated (poisoned) so the client stub settles.
+  expect(typeof reply!.tok).toBe("number");
+  expect(reply!.tok as number).toBeGreaterThanOrEqual(0);
+  // The error is routed onto the edge reply with the RATE_LIMITED code.
+  expect((reply!.error as { code?: string } | undefined)?.code).toBe(
+    "RATE_LIMITED",
   );
-
-  // First call (edge + data = 2 ops, bucket only has 1)
-  // Actually edge ops are separate messages, so the edge will succeed
-  // and the data op may be rate-limited. Let's just drain the bucket first.
-  try {
-    // This uses up the 1 token on the edge traversal
-    await client.root.get("1");
-    // If we get here, the first call consumed the token, next will fail
-  } catch {
-    // May throw if data op was rate limited — that's fine too
-  }
-
-  // Next call should definitely be rate limited
-  try {
-    await client.root.ping();
-    throw new Error("should have thrown");
-  } catch (err) {
-    expect(err).toBeInstanceOf(RateLimitError);
-  }
 });
 
 test("server rate limit context is per-connection", async () => {
