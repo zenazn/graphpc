@@ -161,7 +161,7 @@ If a method deterministically returns data larger than the limit, every call wil
 | `maxCredits`      | 256               | Max stream credits the server will honor at once    |
 | `maxPendingOps`   | 20                | Max concurrent executing operations                 |
 | `maxQueuedOps`    | 1000              | Max total in-flight messages before close           |
-| `maxDepth`        | 64                | Max edge traversal depth per connection             |
+| `maxDepth`        | 64                | Max edge traversal depth (edge ops AND path() args) |
 | `idleTimeout`     | 60000ms           | Inactivity timeout before closing connection        |
 | `lruTTL`          | 60000ms           | Idle time before an unpinned server node is evicted |
 | `rateLimit`       | 200 burst, 50/sec | Per-connection token bucket (`false` to disable)    |

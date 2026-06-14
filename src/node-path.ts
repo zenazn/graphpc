@@ -85,18 +85,26 @@ export function path<T extends Node>(
           return { issues: [{ message: "Expected a path reference" }] };
         }
 
-        if (input.segments.length > MAX_PATH_DEPTH) {
+        // Plausibility check: walk schema to verify path could lead to cls
+        const session = tryGetSession();
+
+        // Enforce the connection's configured maxDepth (the edge-op path
+        // already does), falling back to the absolute MAX_PATH_DEPTH cap. This
+        // stops a client-supplied path() argument from walking deeper than a
+        // deployment that lowered maxDepth intends.
+        const depthLimit = Math.min(
+          session?.maxDepth ?? MAX_PATH_DEPTH,
+          MAX_PATH_DEPTH,
+        );
+        if (input.segments.length > depthLimit) {
           return {
             issues: [
               {
-                message: `Path exceeds maximum depth of ${MAX_PATH_DEPTH} segments`,
+                message: `Path exceeds maximum depth of ${depthLimit} segments`,
               },
             ],
           };
         }
-
-        // Plausibility check: walk schema to verify path could lead to cls
-        const session = tryGetSession();
         if (session?.schema && session?.classIndex) {
           const targetIndex = session.classIndex.get(cls);
           if (targetIndex === undefined) {

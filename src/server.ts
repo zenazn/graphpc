@@ -1322,6 +1322,7 @@ function createHandler(
               signal: streamAbort.signal,
               schema,
               classIndex,
+              maxDepth,
             },
             sending: false,
             path: [],
@@ -1872,6 +1873,7 @@ function createHandler(
           signal: opSignal,
           schema,
           classIndex,
+          maxDepth,
         },
         async () => {
           try {

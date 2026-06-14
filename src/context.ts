@@ -94,6 +94,7 @@ export interface Session {
   signal: AbortSignal;
   schema?: Schema;
   classIndex?: Map<Function, number>;
+  maxDepth?: number; // connection's configured edge-traversal depth limit
 }
 
 const sessionStorage = new AsyncLocalStorage<Session>();
