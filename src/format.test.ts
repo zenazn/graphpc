@@ -329,6 +329,50 @@ describe("formatValue custom reducers", () => {
   });
 });
 
+// -- Class instances without a reducer (cache-key injectivity) --
+
+describe("formatValue class instances", () => {
+  class PathArgLike {
+    constructor(readonly segments: unknown[]) {}
+  }
+
+  test("class instances render their own properties, not a content-free tag", () => {
+    const out = formatValue(new PathArgLike(["posts", ["get", "42"]]));
+    expect(out).toContain("PathArgLike");
+    expect(out).toContain("segments");
+    expect(out).not.toBe("[Object]");
+  });
+
+  test("distinct class instances produce distinct strings (no key collision)", () => {
+    const a = formatValue(new PathArgLike(["posts", ["get", "alice"]]));
+    const b = formatValue(new PathArgLike(["posts", ["get", "bob"]]));
+    expect(a).not.toBe(b);
+  });
+
+  test("distinct path segment args do not collapse to the same key", () => {
+    // The exploit: a class-instance argument on an edge must not collide.
+    const a = formatSegment(["docByPath", new PathArgLike(["a"])]);
+    const b = formatSegment(["docByPath", new PathArgLike(["b"])]);
+    expect(a).not.toBe(b);
+  });
+
+  test("different classes with the same field shape are distinguished", () => {
+    class A {
+      constructor(readonly v: number) {}
+    }
+    class B {
+      constructor(readonly v: number) {}
+    }
+    expect(formatValue(new A(1))).not.toBe(formatValue(new B(1)));
+  });
+
+  test("identical class instances still coalesce to the same key", () => {
+    const a = formatSegment(["e", new PathArgLike(["x", "y"])]);
+    const b = formatSegment(["e", new PathArgLike(["x", "y"])]);
+    expect(a).toBe(b);
+  });
+});
+
 // -- Path formatting --
 
 describe("formatPath", () => {

@@ -111,7 +111,7 @@ Converts a `Path` (array of segments) into a dotted string prefixed with `root`.
 
 Formats any value into an unambiguous, human-readable string. Every type produces syntactically distinct output — strings are always quoted, numbers are bare, `null`/`undefined`/`true`/`false`/`NaN`/`Infinity` are keywords, etc.
 
-Supported types: all primitives (including `bigint`, `symbol`, `-0`), `Date`, `RegExp`, `URL`, `URLSearchParams`, `Map`, `Set`, arrays (including sparse), objects (including null-prototype), boxed primitives, typed arrays, `ArrayBuffer`, and circular references (shown as `$N`).
+Supported types: all primitives (including `bigint`, `symbol`, `-0`), `Date`, `RegExp`, `URL`, `URLSearchParams`, `Map`, `Set`, arrays (including sparse), objects (including null-prototype), boxed primitives, typed arrays, `ArrayBuffer`, and circular references (shown as `$N`). Class instances without a matching reducer render as `ClassName {prop: value, …}` — their own enumerable properties are included so distinct instances produce distinct strings (important when an instance is used as a cache-key argument).
 
 ### Custom Reducers
 

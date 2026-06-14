@@ -292,27 +292,35 @@ function fmt(
     return "[" + items.join(", ") + "]";
   }
 
-  // Plain objects (with or without prototype)
+  // Plain objects (with or without prototype) and other class instances.
+  // Both render their own enumerable properties so that structurally-distinct
+  // values produce distinct strings. This matters for cache keys: a class
+  // instance (e.g. a PathArg/Path/Reference, or an app domain object passed as
+  // an edge argument) must not collapse to a content-free "[Tag]" — that would
+  // give two different arguments the same key and resolve the wrong node.
   const proto = Object.getPrototypeOf(thing);
-  if (proto === null || proto === Object.prototype) {
-    const prefix = proto === null ? "[Object: null prototype] " : "";
-    const entries: string[] = [];
-    for (const key of Object.keys(thing as Record<string, unknown>)) {
-      const fmtKey = IS_IDENT.test(key) ? key : JSON.stringify(key);
-      entries.push(
-        fmtKey +
-          ": " +
-          fmt(
-            (thing as Record<string, unknown>)[key],
-            seen,
-            reducers,
-            reducerEntries,
-          ),
-      );
-    }
-    return prefix + "{" + entries.join(", ") + "}";
+  const entries: string[] = [];
+  for (const key of Object.keys(thing as Record<string, unknown>)) {
+    const fmtKey = IS_IDENT.test(key) ? key : JSON.stringify(key);
+    entries.push(
+      fmtKey +
+        ": " +
+        fmt(
+          (thing as Record<string, unknown>)[key],
+          seen,
+          reducers,
+          reducerEntries,
+        ),
+    );
   }
+  const body = "{" + entries.join(", ") + "}";
 
-  // Unknown object type
-  return "[" + tag + "]";
+  if (proto === null) return "[Object: null prototype] " + body;
+  if (proto === Object.prototype) return body;
+
+  // Other class instance: prefix with the constructor name so two different
+  // classes with the same field shape still format distinctly.
+  const ctorName =
+    (typeof proto.constructor === "function" && proto.constructor.name) || tag;
+  return ctorName + " " + body;
 }
