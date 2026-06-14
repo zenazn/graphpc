@@ -2,10 +2,11 @@ import { test, expect } from "bun:test";
 import { z } from "zod";
 import { createClient } from "./client";
 import { getContext, abortSignal, abortThisConn } from "./context";
-import { edge, method } from "./decorators";
+import { edge, method, stream } from "./decorators";
 import { RpcError } from "./errors";
 import type { OperationInfo, OperationResult } from "./hooks";
 import { createMockTransportPair } from "./protocol";
+import { createSerializer } from "./serialization";
 import { createServer } from "./server";
 import { flush, mockConnect } from "./test-utils";
 import { Node } from "./types";
@@ -575,4 +576,56 @@ test("abortThisConn() with reconnect triggers reconnection", async () => {
   expect(result2).toBe("survived");
   expect(connectionCount).toBe(2);
   expect(events).toEqual(["disconnect", "reconnect"]);
+});
+
+test("operation handler sees stream_start init errors (result.error)", async () => {
+  class Feed extends Node {
+    @stream
+    async *ticks(signal: AbortSignal): AsyncGenerator<number> {
+      let i = 0;
+      while (!signal.aborted) {
+        yield i++;
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+  }
+  class StreamApi extends Node {
+    @edge(Feed)
+    get feed(): Feed {
+      return new Feed();
+    }
+  }
+
+  const ser = createSerializer();
+  const results: OperationResult[] = [];
+  const server = createServer(
+    { maxStreams: 1, idleTimeout: 0, pingInterval: 0 },
+    () => new StreamApi(),
+  );
+  server.on("operation", async (_c, info, exec) => {
+    const r = await exec();
+    if (info.op === "stream_start") results.push(r);
+    return r;
+  });
+
+  const [st, ct] = createMockTransportPair();
+  server.handle(st, {});
+  await flush();
+
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "feed" })); // token 1
+  await flush();
+  // First stream ok, second exceeds maxStreams: 1.
+  ct.send(
+    ser.stringify({ op: "stream_start", tok: 1, stream: "ticks", credits: 4 }),
+  );
+  await flush();
+  ct.send(
+    ser.stringify({ op: "stream_start", tok: 1, stream: "ticks", credits: 4 }),
+  );
+  await flush();
+
+  expect(results.length).toBe(2);
+  const errored = results.filter((r) => r.error);
+  expect(errored.length).toBe(1);
+  expect((errored[0]!.error as RpcError).code).toBe("STREAM_LIMIT_EXCEEDED");
 });

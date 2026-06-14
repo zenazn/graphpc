@@ -1267,12 +1267,15 @@ function createHandler(
       }
     }
 
+    // Returns the (pre-redaction) error if the stream failed to start, or
+    // undefined on success / when the timeout already responded. The operation
+    // middleware uses this to populate OperationResult.error.
     async function handleStreamStart(
       msg: ClientMessage & { op: "stream_start" },
       re: number,
       sid: number,
       opSignal: AbortSignal,
-    ): Promise<void> {
+    ): Promise<unknown> {
       try {
         if (activeStreamCount >= maxStreams) {
           throw new StreamLimitExceededError();
@@ -1371,7 +1374,7 @@ function createHandler(
         }
       } catch (err) {
         // If the timeout already sent a response, don't double-send
-        if (opSignal.aborted) return;
+        if (opSignal.aborted) return undefined;
         let error = err;
         if (!(err instanceof RpcError) && !serializer.handles(err)) {
           const rpcErr = new RpcError("STREAM_ERROR", String(err));
@@ -1387,6 +1390,7 @@ function createHandler(
         };
         processErrorResponse(response);
         transport.send(serializer.stringify(response));
+        return error;
       } finally {
         // The stream is now either registered (in activeStreams) or failed;
         // either way it is no longer "in flight".
@@ -1888,13 +1892,15 @@ function createHandler(
                     messageId,
                   };
                   let execute: () => Promise<OperationResult> = async () => {
-                    await handleStreamStart(
+                    const error = await handleStreamStart(
                       msg,
                       messageId,
                       claimStreamId,
                       opSignal,
                     );
-                    return {};
+                    // Surface stream-init failures to operation middleware so
+                    // observability (OTel spans, error tracking) sees them.
+                    return error !== undefined ? { error } : {};
                   };
                   for (let i = handlers.length - 1; i >= 0; i--) {
                     const handler = handlers[i]!;
