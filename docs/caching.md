@@ -125,6 +125,21 @@ await post.delete();
 evict(post); // remove from cache entirely
 ```
 
+### Bounding cache size
+
+By default the persistent cache is **unbounded** — it only shrinks via `invalidate()`/`evict()` (or a server `ref()` for an ancestor). A long-lived client (a dashboard or kiosk open for days) that navigates many distinct nodes can therefore grow memory without limit.
+
+Set `maxCacheEntries` to cap it:
+
+```typescript
+const client = createClient<typeof server>(
+  { maxCacheEntries: 50_000 },
+  () => new WebSocket("wss://..."),
+);
+```
+
+Once the cache exceeds the cap, least-recently-inserted nodes are evicted. Nodes with an **active subscriber** (or an in-flight load) are pinned and never evicted, so live UI bindings keep their stable references. An evicted node simply re-fetches on next access — eviction trades the referential-identity guarantee for _cold_ nodes against bounded memory. Leave it unset to keep the default (unbounded) behavior.
+
 ## Reactivity with `subscribe()`
 
 Use `subscribe(stub, callback)` for reactive updates. The callback fires synchronously with the current stub, then again on each invalidation. Returns an unsubscribe function.

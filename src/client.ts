@@ -207,6 +207,7 @@ export function createClient<S extends ServerInstance<any>>(
   let dataProxyCache = new Map<string, object>(); // pathKey → data proxy (referential identity)
   let getCache = new Map<string, Promise<unknown>>(); // pathKey:name → promise
   let dataLoadCache = new Map<string, Promise<unknown>>(); // pathKey → promise
+  const maxCacheEntries = options.maxCacheEntries;
 
   // --- Connection-scoped state (reset on reconnect) ---
   let transport: Transport | null = null;
@@ -379,6 +380,50 @@ export function createClient<S extends ServerInstance<any>>(
         // revival). A throwing subscriber must not abort sibling subscribers or
         // tear down the connection; surface it out-of-band instead.
         console.error("[graphpc] subscriber callback threw:", err);
+      }
+    }
+  }
+
+  // A node is pinned (never evicted by the size bound) while something actively
+  // depends on its referential identity: an open subscriber or an in-flight
+  // data load.
+  function isCacheEntryPinned(nodeKey: string): boolean {
+    const subs = pathSubscribers.get(nodeKey);
+    if (subs && subs.size > 0) return true;
+    return dataLoadCache.has(nodeKey);
+  }
+
+  function evictCachedNode(nodeKey: string): void {
+    liveDataCache.delete(nodeKey);
+    dataProxyCache.delete(nodeKey);
+    const prefix = nodeKey + ":";
+    for (const k of getCache.keys()) {
+      if (k.startsWith(prefix)) getCache.delete(k);
+    }
+  }
+
+  // Opt-in soft cap on the persistent data cache. Evicts least-recently-inserted
+  // unpinned nodes (Map preserves insertion order) once the cache exceeds the
+  // cap. No-op unless maxCacheEntries is configured, so default behavior — and
+  // the documented referential-identity guarantee — is unchanged.
+  function enforceCacheBound(): void {
+    if (maxCacheEntries === undefined) return;
+    if (liveDataCache.size > maxCacheEntries) {
+      for (const key of liveDataCache.keys()) {
+        if (liveDataCache.size <= maxCacheEntries) break;
+        if (isCacheEntryPinned(key)) continue;
+        evictCachedNode(key);
+      }
+    }
+    // Bound property-read promises for nodes that only had single-field reads
+    // (no full-node data entry to count against the cap above).
+    if (getCache.size > maxCacheEntries) {
+      for (const key of getCache.keys()) {
+        if (getCache.size <= maxCacheEntries) break;
+        const sep = key.lastIndexOf(":");
+        const nodeKey = sep === -1 ? key : key.slice(0, sep);
+        if (isCacheEntryPinned(nodeKey)) continue;
+        getCache.delete(key);
       }
     }
   }
@@ -687,6 +732,10 @@ export function createClient<S extends ServerInstance<any>>(
           handler.reject(e);
         }
       }
+
+      // Keep the persistent data cache within its configured bound (no-op
+      // unless maxCacheEntries is set).
+      enforceCacheBound();
     });
 
     t.addEventListener("error", () => {}); // prevent crash with ws (EventEmitter)

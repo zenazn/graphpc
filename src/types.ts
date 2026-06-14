@@ -84,6 +84,12 @@ export interface ClientOptions extends SerializerOptions {
   hydrationTimeout?: number;
   reconnect?: boolean | ReconnectOptions;
   loopProtection?: boolean | LoopProtectionOptions;
+  // Soft cap on the number of node entries kept in the persistent data cache.
+  // Default: unbounded. When set, least-recently-inserted unpinned nodes are
+  // evicted once the cache exceeds the cap; nodes with active subscribers (or
+  // an in-flight load) are pinned and never evicted. Set this for long-lived
+  // clients (dashboards, kiosks) to bound memory. See docs/caching.md.
+  maxCacheEntries?: number;
   timers?: Timers;
 }
 
