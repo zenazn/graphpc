@@ -1304,6 +1304,9 @@ export function createClient<S extends ServerInstance<any>>(
         const segName = typeof seg === "string" ? seg : seg[0];
         const nodeSchema = schema[typeIndex];
         if (!nodeSchema) return false;
+        // Own-property check — see classifyPath: a bare bracket read would
+        // resolve inherited Object.prototype members as edges.
+        if (!Object.hasOwn(nodeSchema.edges, segName)) return false;
         const targetIndex = nodeSchema.edges[segName];
         if (targetIndex === undefined) return false;
         typeIndex = targetIndex;

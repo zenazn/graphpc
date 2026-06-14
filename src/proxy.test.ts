@@ -30,6 +30,26 @@ test("classifyPath throws on extra segments when nodeSchema is missing", () => {
   );
 });
 
+test("classifyPath treats an Object.prototype-named terminal as a terminal, not an edge", () => {
+  // "toString" is a real (inherited) member of the plain `edges` object. A bare
+  // bracket read would mis-classify it as a known edge.
+  for (const name of ["toString", "valueOf", "hasOwnProperty", "constructor"]) {
+    const result = classifyPath([name], schema);
+    expect(result).toEqual({
+      edgePath: [],
+      terminal: { name, args: [] },
+    });
+  }
+});
+
+test("classifyPath treats a proto-named terminal after a real edge as a terminal", () => {
+  const result = classifyPath(["child", "toString"], schema);
+  expect(result).toEqual({
+    edgePath: ["child"],
+    terminal: { name: "toString", args: [] },
+  });
+});
+
 test("classifyPath allows a single terminal segment (no extras)", () => {
   const result = classifyPath(["method"], schema);
   expect(result).toEqual({

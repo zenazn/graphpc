@@ -75,7 +75,13 @@ export function classifyPath(
       };
     }
 
-    const targetIndex = nodeSchema.edges[segName];
+    // Own-property check: `edges` is a plain object, so a bare bracket read
+    // would resolve inherited Object.prototype members (toString, valueOf,
+    // constructor, …) and mis-classify a terminal named like one of them as an
+    // edge — making it unreachable and corrupting typeIndex.
+    const targetIndex = Object.hasOwn(nodeSchema.edges, segName)
+      ? nodeSchema.edges[segName]
+      : undefined;
     if (targetIndex !== undefined) {
       // Known edge — advance type index
       typeIndex = targetIndex;

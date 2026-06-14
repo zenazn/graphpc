@@ -109,7 +109,11 @@ export function path<T extends Node>(
                 issues: [{ message: `Invalid path at "${name}"` }],
               };
             }
-            const next = nodeSchema.edges[name];
+            // Own-property check: a bare bracket read would resolve inherited
+            // Object.prototype members (e.g. "toString") as edges.
+            const next = Object.hasOwn(nodeSchema.edges, name)
+              ? nodeSchema.edges[name]
+              : undefined;
             if (next === undefined) {
               return { issues: [{ message: `"${name}" is not an edge` }] };
             }
