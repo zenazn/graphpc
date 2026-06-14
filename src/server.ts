@@ -104,7 +104,14 @@ export function createServer<TRoot extends object>(
   }
 
   function emitError(err: unknown) {
-    for (const handler of errorHandlers) handler(err);
+    // A throwing user handler must not escape into transport callbacks (the
+    // parse-error path, sendResponse fallback, stream pump catch, …) and crash
+    // the connection/process. Matches the other emit* handler loops.
+    for (const handler of errorHandlers) {
+      try {
+        handler(err);
+      } catch {}
+    }
   }
 
   function emitOperationError(ctx: Context, info: OperationErrorInfo) {

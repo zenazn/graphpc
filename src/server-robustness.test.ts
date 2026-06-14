@@ -299,3 +299,30 @@ test("ops on live tokens succeed after LRU eviction (entry rebuild restores refc
     expect("error" in d).toBe(false);
   }
 });
+
+test("a throwing 'error' handler does not break the handler loop", async () => {
+  const server = createServer(
+    { idleTimeout: 0, pingInterval: 0 },
+    () => new Child(),
+  );
+  const calls: string[] = [];
+  server.on("error", () => {
+    calls.push("first");
+    throw new Error("handler boom");
+  });
+  server.on("error", () => {
+    calls.push("second");
+  });
+
+  const [st, ct] = createMockTransportPair();
+  server.handle(st, {});
+  await flush();
+
+  // Malformed frame drives the parse-error path → emitError.
+  ct.send("not-valid-devalue{{{");
+  await flush();
+
+  // The second handler still ran: the throw from the first didn't break the
+  // loop (and didn't escape into the transport callback).
+  expect(calls).toEqual(["first", "second"]);
+});
