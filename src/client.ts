@@ -668,7 +668,15 @@ export function createClient<S extends ServerInstance<any>>(
       } else if (msg.op === "edge") {
         handler.resolve(msg);
       } else {
-        handler.resolve((msg as { data: unknown }).data);
+        // A throwing resolver (e.g. building a data proxy over a malformed
+        // payload) must not escape the message listener — that would abort
+        // dispatch of every subsequent message and leave the caller hung.
+        // Route it to the handler's reject instead.
+        try {
+          handler.resolve((msg as { data: unknown }).data);
+        } catch (e) {
+          handler.reject(e);
+        }
       }
     });
 
@@ -1117,6 +1125,26 @@ export function createClient<S extends ServerInstance<any>>(
           rejectPending = reject;
           pending.set(msgId, {
             resolve: (data: unknown) => {
+              // The server is trusted (parseServerMessage only checks `op`),
+              // but a malformed/compromised server returning a non-object for a
+              // data load would make createDataProxy throw. Reject cleanly so
+              // the caller settles instead of hanging.
+              if (
+                data === null ||
+                typeof data !== "object" ||
+                Array.isArray(data)
+              ) {
+                if (dataLoadCache.get(edgeKey) === promise) {
+                  dataLoadCache.delete(edgeKey);
+                }
+                reject(
+                  new RpcError(
+                    "PROTOCOL_ERROR",
+                    "data response was not an object",
+                  ),
+                );
+                return;
+              }
               const record = data as Record<string, unknown>;
               const proxy = createDataProxy(backend, edgePath, record);
               // If the path was evicted or invalidated while this load was in
