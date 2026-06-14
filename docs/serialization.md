@@ -27,6 +27,8 @@ GraphPC automatically registers reducers and revivers for:
 
 These survive serialization and deserialization as actual class instances. Built-in names take precedence: if a user-supplied reducer or reviver uses the same name as a built-in, the built-in silently wins.
 
+Built-in types are also matched _before_ your reducers at serialize time, so a broad catch-all reducer (e.g. `v instanceof Error`) can never steal the encoding of a built-in `RpcError`/`Reference`/etc. — their `instanceof` round-trips are always preserved. The one exception is the `RpcError` catch-all, which runs _last_: a custom `RpcError` subclass with its own registered reducer still serializes as that subclass.
+
 ## Custom Types
 
 Register custom reducers (serialize) and revivers (deserialize) for domain-specific types:

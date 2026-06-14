@@ -338,3 +338,29 @@ test("handles() ignores user reducers shadowed by builtins", () => {
   }
   expect(stringifyThrew).toBe(true);
 });
+
+test("a broad user reducer does not steal builtin error encoding (instanceof preserved)", () => {
+  // A catch-all reducer that matches ANY Error — differently named from the
+  // builtins. Builtins must still take precedence at stringify time.
+  const s = createSerializer({
+    reducers: {
+      AnyError: (v) => v instanceof Error && [(v as Error).message],
+    },
+    revivers: {
+      AnyError: (v) => new Error((v as unknown[])[0] as string),
+    },
+  });
+
+  const validation = s.parse(
+    s.stringify(new ValidationError([{ message: "x" }])),
+  );
+  expect(validation).toBeInstanceOf(ValidationError);
+
+  const edge = s.parse(s.stringify(new EdgeNotFoundError("posts")));
+  expect(edge).toBeInstanceOf(EdgeNotFoundError);
+
+  // A genuinely custom (non-builtin) type still round-trips via the user reducer.
+  class Custom extends Error {}
+  const custom = s.parse(s.stringify(new Custom("c")));
+  expect((custom as Error).message).toBe("c");
+});

@@ -29,6 +29,9 @@ export interface SerializerOptions {
   revivers?: Record<string, (value: unknown) => unknown>;
 }
 
+// Specific built-in reducers (everything except the RpcError catch-all). These
+// are tried BEFORE user reducers so a broad user reducer (e.g. a catch-all
+// `v instanceof Error`) cannot steal a built-in type's encoding.
 const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   ResolvedRef: (v) => v instanceof Reference && [v.path, v.data],
   ConnectionLostError: (v) => v instanceof ConnectionLostError && [],
@@ -40,12 +43,21 @@ const builtinReducers: Record<string, (value: unknown) => false | unknown[]> = {
   RateLimitError: (v) => v instanceof RateLimitError && [],
   PathDepthExceededError: (v) => v instanceof PathDepthExceededError && [],
   NodePath: (v) => v instanceof PathArg && [v.segments],
-  // Catch-all for RpcError (and any unregistered subclass), evaluated last so
-  // the specific error reducers above match first. devalue uses the first
-  // reducer that returns truthy. An unregistered subclass round-trips as a
-  // base RpcError with its code and message preserved.
-  RpcError: (v) => v instanceof RpcError && [v.code, v.message],
 };
+
+// Catch-all for RpcError and any unregistered subclass, placed LAST in the
+// reducer order so the specific built-in reducers above AND user-registered
+// custom error reducers (e.g. a CustomRpcError) match first. An unregistered
+// subclass round-trips as a base RpcError with its code and message preserved.
+const rpcErrorReducer = (v: unknown): false | unknown[] =>
+  v instanceof RpcError && [v.code, v.message];
+
+// All names the serializer owns — user reducers using these names are dropped
+// (built-ins win) so handles() never claims a value the serializer can't encode.
+const builtinReducerNames = new Set([
+  ...Object.keys(builtinReducers),
+  "RpcError",
+]);
 
 /**
  * Shape validation for untrusted payloads. The server parses
@@ -146,10 +158,18 @@ export function createSerializer(options: SerializerOptions = {}) {
   // (documented behavior), so handles() must not consult shadowed reducers —
   // it would claim values the serializer cannot actually encode.
   const effectiveUserReducers = Object.entries(userReducers).filter(
-    ([name]) => !Object.hasOwn(builtinReducers, name),
+    ([name]) => !builtinReducerNames.has(name),
   );
+  // Reducer order (devalue uses the first reducer that returns truthy):
+  //   specific built-ins → user reducers → RpcError catch-all.
+  // So a broad user reducer can't steal a specific built-in type, yet a
+  // user-registered custom RpcError subclass still wins over the catch-all.
   const serializer = buildSerializer(
-    { ...userReducers, ...builtinReducers },
+    {
+      ...builtinReducers,
+      ...Object.fromEntries(effectiveUserReducers),
+      RpcError: rpcErrorReducer,
+    },
     { ...options.revivers, ...builtinRevivers },
   );
   return {
@@ -168,8 +188,17 @@ export function createClientSerializer(
   resolvedRefReviver: (value: unknown) => unknown,
   nodePathReviver?: (value: unknown) => unknown,
 ) {
+  // Same reducer ordering as createSerializer (see there): specific built-ins
+  // → user reducers → RpcError catch-all; builtin-named user reducers dropped.
+  const effectiveUserReducers = Object.entries(options.reducers ?? {}).filter(
+    ([name]) => !builtinReducerNames.has(name),
+  );
   return buildSerializer(
-    { ...options.reducers, ...builtinReducers },
+    {
+      ...builtinReducers,
+      ...Object.fromEntries(effectiveUserReducers),
+      RpcError: rpcErrorReducer,
+    },
     {
       ...options.revivers,
       ...builtinRevivers,
