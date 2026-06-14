@@ -690,21 +690,22 @@ function createHandler(
       }
       if (!entry.nodePromise) {
         // Prefer resolving through nodeCache if available (handles ref() invalidation)
-        if (cacheEntry) {
-          entry.nodePromise = getNode(cacheEntry);
-        } else {
-          entry.nodePromise = entry.resolve();
-        }
-        entry.nodePromise.then(
+        const p = cacheEntry ? getNode(cacheEntry) : entry.resolve();
+        entry.nodePromise = p;
+        // Guard the settle callbacks with the promise identity so a stale
+        // resolution can't write node/settled onto a freshly re-resolved entry.
+        p.then(
           (node) => {
-            entry.node = node;
-            entry.settled = true;
+            if (entry.nodePromise === p) {
+              entry.node = node;
+              entry.settled = true;
+            }
           },
           () => {
-            entry.settled = true;
+            if (entry.nodePromise === p) entry.settled = true;
           },
         );
-        entry.nodePromise.catch(() => {});
+        p.catch(() => {});
       }
       return entry.nodePromise;
     }

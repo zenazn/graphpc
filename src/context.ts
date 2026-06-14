@@ -49,15 +49,22 @@ export function getNode(entry: CacheEntry): Promise<object> {
     entry.rejected = false;
   }
   if (!entry.promise) {
-    entry.promise = entry.resolve();
-    entry.promise.catch(() => {});
-    entry.promise.then(
+    const p = entry.resolve();
+    entry.promise = p;
+    p.catch(() => {});
+    // Guard the settle callbacks with the promise identity: if the entry was
+    // re-resolved (e.g. ref() force-invalidates an in-flight entry) before this
+    // promise settles, a stale resolution must not flip settled/rejected on the
+    // newer promise.
+    p.then(
       () => {
-        entry.settled = true;
+        if (entry.promise === p) entry.settled = true;
       },
       () => {
-        entry.settled = true;
-        entry.rejected = true;
+        if (entry.promise === p) {
+          entry.settled = true;
+          entry.rejected = true;
+        }
       },
     );
   }
