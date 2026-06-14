@@ -51,10 +51,17 @@ export class Path<T extends Node> extends PathArg implements PromiseLike<T> {
       session.reducers,
       session.ctx,
     );
-    if (!(node instanceof this.#expectedType)) {
+    if (node == null || !(node instanceof this.#expectedType)) {
+      // An edge can legitimately resolve to null/undefined; building the error
+      // message must not dereference it (a TypeError would surface as a generic
+      // INTERNAL_ERROR instead of the intended ValidationError, and leak the
+      // raw message in non-redacted mode). Optional chaining also covers
+      // null-prototype objects.
+      const got =
+        node == null ? String(node) : (node.constructor?.name ?? "unknown");
       throw new ValidationError([
         {
-          message: `Path resolved to ${node.constructor.name}, expected ${this.#expectedType.name}`,
+          message: `Path resolved to ${got}, expected ${this.#expectedType.name}`,
         },
       ]);
     }
