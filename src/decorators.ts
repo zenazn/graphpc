@@ -41,6 +41,7 @@ interface ClassMeta {
   methods: Map<string, MethodMeta>;
   streams: Map<string, StreamMeta>;
   hidden: Map<string, HiddenPredicate>;
+  thunksResolved?: boolean; // true once getEdges() has resolved lazy @edge thunks
 }
 
 /**
@@ -139,21 +140,26 @@ function collect(cls: Function): ClassMeta {
 export function getEdges(
   cls: new (...args: any[]) => object,
 ): Map<string, EdgeMeta> {
-  const edges = collect(cls).edges;
-  // Resolve any lazy target references (thunks from @edge(() => Class))
-  for (const meta of edges.values()) {
-    if (!(meta.targetType.prototype instanceof Node)) {
-      meta.targetType = (
-        meta.targetType as unknown as () => new (...args: any[]) => object
-      )();
+  const classMeta = collect(cls);
+  // Resolve lazy target references (thunks from @edge(() => Class)) once, then
+  // memoize — getEdges is on the per-operation hot path and re-scanning every
+  // edge with `instanceof` on every call is wasted work.
+  if (!classMeta.thunksResolved) {
+    for (const meta of classMeta.edges.values()) {
       if (!(meta.targetType.prototype instanceof Node)) {
-        throw new Error(
-          `@edge thunk for "${meta.name}" did not return a Node subclass`,
-        );
+        meta.targetType = (
+          meta.targetType as unknown as () => new (...args: any[]) => object
+        )();
+        if (!(meta.targetType.prototype instanceof Node)) {
+          throw new Error(
+            `@edge thunk for "${meta.name}" did not return a Node subclass`,
+          );
+        }
       }
     }
+    classMeta.thunksResolved = true;
   }
-  return edges;
+  return classMeta.edges;
 }
 
 export function getMethods(
