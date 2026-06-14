@@ -326,6 +326,8 @@ Streams use credit-based flow control to prevent the server from overwhelming th
 
 This ensures that a fast-producing server does not overwhelm a slow-consuming client. The credit model also means streams are safe for long-lived connections — memory usage is bounded by the credit window.
 
+In addition to credits (which bound the _client's_ willingness to receive), each `stream_data` frame the server sends costs one token from the connection's [rate-limit bucket](production.md#rate-limiting). When the bucket is exhausted the pump pauses and resumes as it refills, so a client cannot use cheap `stream_credit` grants to make the server perform unbounded serialization/egress work. Stream throughput is thus bounded by both the credit window and the rate limiter's `refillRate`.
+
 The server enforces `maxStreams` (default: 32) concurrent streams per connection. Opening a stream beyond this limit returns a `StreamLimitExceededError`.
 
 ## Failure Semantics

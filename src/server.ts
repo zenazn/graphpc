@@ -837,6 +837,7 @@ function createHandler(
       session: Session; // re-entered around every pump so getContext() works
       sending: boolean; // true while we're in the send loop
       path: string[]; // ancestor paths for pinning
+      resumeTimer: ReturnType<typeof setTimeout> | null; // set while paused on rate limit
     }
 
     const activeStreams = new Map<number, ActiveStream>();
@@ -902,6 +903,11 @@ function createHandler(
       : 0;
     let rlTokens = rlBucketSize;
     let rlLastRefill = Date.now();
+    // Each stream data frame costs one rate-limit token, so stream egress is
+    // bounded by the same per-connection token bucket as every other op. This
+    // stops a client from using cheap stream_credit messages to unlock
+    // unbounded serialize/send work (see scheduleStreamResume / pumpStreamLoop).
+    const streamFrameCost = 1;
 
     function consumeTokens(cost: number = 1): boolean {
       if (!rlEnabled) return true;
@@ -1298,6 +1304,7 @@ function createHandler(
             },
             sending: false,
             path: [],
+            resumeTimer: null,
           };
           // Re-check abort state and the stream limit in the same synchronous
           // span as the increment below. The check at the top of this function
@@ -1362,9 +1369,42 @@ function createHandler(
       return runWithSession(stream.session, () => pumpStreamLoop(stream));
     }
 
+    // Pause a stream whose egress is throttled by the rate limiter and re-pump
+    // it once the bucket has refilled enough for one more frame. Idempotent: a
+    // stream can have at most one pending resume timer.
+    function scheduleStreamResume(stream: ActiveStream) {
+      if (stream.resumeTimer || stream.cancelled) return;
+      // With no refill the bucket never recovers on its own; leave the stream
+      // paused until more credits/cancel/disconnect arrive instead of arming an
+      // infinite timer.
+      if (rlRefillRate <= 0) return;
+      const needed = streamFrameCost - rlTokens;
+      const waitMs = needed > 0 ? Math.ceil((needed / rlRefillRate) * 1000) : 0;
+      stream.resumeTimer = timers.setTimeout(
+        () => {
+          stream.resumeTimer = null;
+          if (stream.cancelled) return;
+          pumpStream(stream).catch((err) => {
+            if (!stream.cancelled) {
+              emitError(err);
+              cleanupStream(stream);
+            }
+          });
+        },
+        Math.max(waitMs, 1),
+      );
+    }
+
     async function pumpStreamLoop(stream: ActiveStream) {
       try {
         while (stream.credits > 0 && !stream.cancelled) {
+          // Meter stream egress against the per-connection token bucket. When
+          // the bucket is empty, pause and resume as it refills so a flood of
+          // credit grants cannot drive unbounded serialize/send work.
+          if (!consumeTokens(streamFrameCost)) {
+            scheduleStreamResume(stream);
+            return;
+          }
           let result: IteratorResult<unknown>;
           try {
             result = await stream.iterator.next();
@@ -1417,6 +1457,10 @@ function createHandler(
       activeStreams.delete(stream.sid);
       activeStreamCount--;
       stream.cancelled = true;
+      if (stream.resumeTimer) {
+        timers.clearTimeout(stream.resumeTimer);
+        stream.resumeTimer = null;
+      }
       stream.abortController.abort();
       connAbort.signal.removeEventListener("abort", stream.onConnAbort);
       // Call return() on iterator for cleanup
@@ -1930,6 +1974,10 @@ function createHandler(
       // Clean up all active streams
       for (const stream of activeStreams.values()) {
         stream.cancelled = true;
+        if (stream.resumeTimer) {
+          timers.clearTimeout(stream.resumeTimer);
+          stream.resumeTimer = null;
+        }
         stream.abortController.abort();
         if (typeof stream.iterator.return === "function") {
           stream.iterator.return().catch(() => {});

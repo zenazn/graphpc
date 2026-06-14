@@ -217,6 +217,8 @@ Pings do not count as application activity — a connection with no real traffic
 
 GraphPC includes a built-in per-connection token bucket rate limiter, **enabled by default** (200 burst, 50/sec refill). It protects against runaway clients (e.g., infinite invalidation loops). Exhausted connections receive `RATE_LIMITED` errors on individual operations — the connection stays open. Stream flow-control messages (`stream_credit`, `stream_cancel`) consume 0.1 tokens each — cheap enough for normal backpressure but still bounded.
 
+**Stream egress is metered too.** Each `stream_data` frame the server pushes costs one token from the same bucket. When the bucket is empty the pump pauses and resumes as the bucket refills, so a client cannot use cheap `stream_credit` grants to drive unbounded serialization/egress work — total per-connection work (ops _and_ stream frames) stays within the configured `refillRate`. Sustained stream throughput is therefore bounded by `refillRate` (with a `bucketSize` burst); size the bucket/refill accordingly for high-throughput streams, or set `rateLimit: false` to disable metering entirely.
+
 ```typescript
 createServer(
   {
