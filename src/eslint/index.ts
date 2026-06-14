@@ -11,14 +11,14 @@
  */
 
 import { requireDecorator } from "./require-decorator";
-import { version } from "../../package.json";
 
 const plugin = {
   meta: {
     name: "graphpc",
-    // Sourced from package.json so ESLint cache invalidation / diagnostics
-    // report the actual installed version (the build inlines it).
-    version,
+    // Keep in lockstep with package.json — enforced by index.test.ts so it
+    // can't silently drift. (Not imported from package.json: that would pull
+    // a repo-root file into the .d.ts build graph and break the dist layout.)
+    version: "0.9.4",
   },
   rules: {
     "require-decorator": requireDecorator,
