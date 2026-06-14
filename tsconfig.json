@@ -11,6 +11,7 @@
     // Bundler mode
     "moduleResolution": "bundler",
     "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
     "noEmit": true,
 
     // Best practices

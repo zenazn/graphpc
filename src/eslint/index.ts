@@ -11,11 +11,14 @@
  */
 
 import { requireDecorator } from "./require-decorator";
+import { version } from "../../package.json";
 
 const plugin = {
   meta: {
     name: "graphpc",
-    version: "0.1.0",
+    // Sourced from package.json so ESLint cache invalidation / diagnostics
+    // report the actual installed version (the build inlines it).
+    version,
   },
   rules: {
     "require-decorator": requireDecorator,
