@@ -231,6 +231,11 @@ export function createDataProxy(
   path: PathSegments,
   data: Record<string, unknown>,
 ): any {
+  // Lazily create the delegate stub once and reuse it. Without this, every
+  // missing-key access (e.g. `(await post).author` in a render loop) built a
+  // fresh stub — a new Proxy plus Maps — so edge accessors reached through a
+  // data proxy had no stable identity and churned allocations.
+  let stub: any;
   return new Proxy(data, {
     get(target, prop) {
       if (prop === STUB_PATH) return path;
@@ -240,7 +245,7 @@ export function createDataProxy(
       // Prevent infinite thenable loop — resolved data is not a promise
       if (prop === "then") return undefined;
       // Delegate to stub for continued edge navigation
-      return (createStub(backend, path) as any)[prop];
+      return (stub ??= createStub(backend, path))[prop];
     },
   });
 }

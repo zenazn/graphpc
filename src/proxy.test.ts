@@ -134,3 +134,16 @@ test("createDataProxy returns own data properties correctly", () => {
   expect(proxy.count).toBe(0);
   expect(proxy.empty).toBe("");
 });
+
+test("createDataProxy returns a stable stub identity for edge navigation", () => {
+  const backend: ProxyBackend = {
+    resolve: () => Promise.resolve({}),
+  };
+  const proxy = createDataProxy(backend, ["posts", ["get", "1"]], {
+    title: "Hello",
+  });
+  // Edge accessors reached through the data proxy share one underlying stub,
+  // so repeated access yields referentially-identical accessors.
+  expect(proxy.author).toBe(proxy.author);
+  expect(proxy.comments).toBe(proxy.comments);
+});
