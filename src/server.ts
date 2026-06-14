@@ -843,6 +843,14 @@ function createHandler(
     }
 
     const activeStreams = new Map<number, ActiveStream>();
+    // Stream ids that have been allocated but not yet registered in
+    // activeStreams (handleStreamStart is still awaiting token/slot/resolve).
+    // A stream_cancel can arrive in this window; we record it here so the
+    // not-yet-registered stream is torn down on registration instead of being
+    // orphaned (which would leak a maxStreams slot). Bounded by the number of
+    // concurrent in-flight stream_start ops.
+    const inFlightStreams = new Set<number>();
+    const cancelledInFlight = new Set<number>();
 
     function pinPath(entry: NodeEntry) {
       let current: NodeEntry | null = entry;
@@ -1334,6 +1342,15 @@ function createHandler(
           // Send success response
           transport.send(serializer.stringify({ op: "stream_start", sid, re }));
 
+          // A stream_cancel may have arrived while this start was in flight
+          // (before the stream was registered). Honor it now by tearing the
+          // freshly-registered stream straight back down — otherwise the
+          // generator would run forever and leak a maxStreams slot.
+          if (cancelledInFlight.delete(sid)) {
+            cleanupStream(stream);
+            return;
+          }
+
           // Start pumping
           pumpStream(stream).catch((err) => {
             if (!stream.cancelled) {
@@ -1362,6 +1379,11 @@ function createHandler(
         };
         processErrorResponse(response);
         transport.send(serializer.stringify(response));
+      } finally {
+        // The stream is now either registered (in activeStreams) or failed;
+        // either way it is no longer "in flight".
+        inFlightStreams.delete(sid);
+        cancelledInFlight.delete(sid);
       }
     }
 
@@ -1554,6 +1576,12 @@ function createHandler(
           const stream = activeStreams.get(msg.sid);
           if (stream) {
             cleanupStream(stream);
+          } else if (inFlightStreams.has(msg.sid)) {
+            // The stream is still starting up; record the cancel so
+            // handleStreamStart tears it down on registration. Only recorded
+            // for genuinely in-flight ids, so an attacker can't grow this set
+            // with arbitrary negative sids.
+            cancelledInFlight.add(msg.sid);
           }
         }
         return;
@@ -1624,6 +1652,9 @@ function createHandler(
       let claimStreamId = 0;
       if (msg.op === "stream_start") {
         claimStreamId = nextStreamId--;
+        // Mark in-flight until handleStreamStart registers or fails it, so a
+        // stream_cancel arriving before registration isn't silently dropped.
+        inFlightStreams.add(claimStreamId);
       }
       // Fix 3: track schema type index per token for synchronous edge validation
       let edgeEarlyReject: RpcError | null = null;
@@ -2015,6 +2046,8 @@ function createHandler(
       }
       activeStreams.clear();
       activeStreamCount = 0;
+      inFlightStreams.clear();
+      cancelledInFlight.clear();
 
       for (const handler of disconnectHandlers) {
         try {

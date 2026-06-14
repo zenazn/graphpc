@@ -164,3 +164,116 @@ test("stream_cancel racing completion does not underflow the stream count", asyn
   );
   await flush();
 });
+
+// -- stream_cancel arriving before the stream is registered --
+
+let edgeGate: { promise: Promise<void>; resolve: () => void };
+function newEdgeGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  edgeGate = { promise, resolve };
+}
+
+class Held extends Node {
+  @stream
+  async *ticker(signal: AbortSignal): AsyncGenerator<number> {
+    let i = 0;
+    while (!signal.aborted) {
+      yield i++;
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }
+}
+
+class GatedApi extends Node {
+  // Async edge method: its token stays unresolved until the gate releases, so
+  // a stream_start targeting it parks in waitForToken — the pre-registration
+  // window an attacker can hit with a predicted sid.
+  @edge(Held)
+  async slow(): Promise<Held> {
+    await edgeGate.promise;
+    return new Held();
+  }
+}
+
+test("stream_cancel before registration does not leak a maxStreams slot", async () => {
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: string[] = [];
+  clientTransport.addEventListener("message", (e) => received.push(e.data));
+  const server = createServer(
+    { maxStreams: 1, idleTimeout: 0, pingInterval: 0, rateLimit: false },
+    () => new GatedApi(),
+  );
+  server.handle(serverTransport, {});
+  await flush();
+  newEdgeGate();
+
+  // Pipeline: traverse the slow edge (token 1, parked) then start a stream on
+  // it. The stream's sid is the predictable -1.
+  clientTransport.send(
+    serializer.stringify({ op: "edge", tok: 0, edge: "slow" }),
+  );
+  clientTransport.send(
+    serializer.stringify({
+      op: "stream_start",
+      tok: 1,
+      stream: "ticker",
+      credits: 8,
+    }),
+  );
+  await flush();
+
+  // Cancel the not-yet-registered stream by its predicted sid.
+  clientTransport.send(serializer.stringify({ op: "stream_cancel", sid: -1 }));
+  await flush();
+
+  // Release the edge so the stream finally registers — and must immediately
+  // tear back down rather than run forever.
+  received.length = 0;
+  edgeGate.resolve();
+  await flush();
+  await flush();
+  await flush();
+
+  // The cancelled stream produced no data...
+  expect(dataCount(received)).toBe(0);
+
+  // ...and the slot is free: a fresh stream opens (slot reclaimed)...
+  newEdgeGate();
+  edgeGate.resolve();
+  received.length = 0;
+  clientTransport.send(
+    serializer.stringify({
+      op: "stream_start",
+      tok: 1,
+      stream: "ticker",
+      credits: 4,
+    }),
+  );
+  await flush();
+  const ok = received
+    .map((r) => serializer.parse(r) as WireMessage)
+    .find((m) => m.op === "stream_start");
+  expect(ok).toBeDefined();
+  expect(ok!.error).toBeUndefined();
+
+  // ...while a second concurrent stream is correctly rejected (cap intact).
+  received.length = 0;
+  clientTransport.send(
+    serializer.stringify({
+      op: "stream_start",
+      tok: 1,
+      stream: "ticker",
+      credits: 4,
+    }),
+  );
+  await flush();
+  const rejected = received
+    .map((r) => serializer.parse(r) as WireMessage)
+    .find((m) => m.op === "stream_start");
+  expect((rejected!.error as { code?: string })?.code).toBe(
+    "STREAM_LIMIT_EXCEEDED",
+  );
+});
