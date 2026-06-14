@@ -81,9 +81,14 @@ export class HydrationCache {
     for (let i = 0; i < parsed.refs.length; i++) {
       const ref = parsed.refs[i]!;
       const token = i + 1;
-      const [parentToken, edge, ...args] = ref;
+      const [parentToken, edge, callArgs] = ref;
       const parentPath = tokenPaths.get(parentToken) ?? [];
-      const segment: PathSegment = args.length > 0 ? [edge, ...args] : edge;
+      // A 3-tuple (callArgs is an array) is a method/call segment — even when
+      // empty — so a zero-arg method edge `child()` reconstructs as a call and
+      // matches the live client's key. A 2-tuple is a getter/property segment.
+      const segment: PathSegment = Array.isArray(callArgs)
+        ? [edge, ...(callArgs as unknown[])]
+        : edge;
       const fullPath = [...parentPath, segment];
       tokenPaths.set(token, fullPath);
       pathToToken.set(formatPath(fullPath, this.reducers), token);

@@ -21,8 +21,8 @@ function makeHydrationData(overrides?: Partial<HydrationData>): HydrationData {
       { edges: {}, streams: [] },
     ],
     refs: [
-      [0, "posts"], // token 1
-      [1, "get", "1"], // token 2
+      [0, "posts"], // token 1 (getter edge)
+      [1, "get", ["1"]], // token 2 (method edge get("1"))
     ],
     data: [
       [2, { id: "1", title: "Hello" }], // data for token 2
@@ -283,7 +283,7 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
       { edges: { byDate: 1 }, streams: [] },
       { edges: {}, streams: [] },
     ],
-    refs: [[0, "byDate", date]],
+    refs: [[0, "byDate", [date]]],
     data: [[1, { found: "date-arg" }]],
   });
   expect(cache1.lookup(formatPath([["byDate", date]]), null).hit).toBe(true);
@@ -298,7 +298,7 @@ test("rich type args (Date, Map) don't collide with their string equivalents", (
       { edges: { lookup: 1 }, streams: [] },
       { edges: {}, streams: [] },
     ],
-    refs: [[0, "lookup", new Map([["a", 1]])]],
+    refs: [[0, "lookup", [new Map([["a", 1]])]]],
     data: [[1, { result: "map-hit" }]],
   });
   const hitKey = formatPath([["lookup", new Map([["a", 1]])]]);

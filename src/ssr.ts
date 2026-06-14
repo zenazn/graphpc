@@ -36,6 +36,7 @@ interface SSRRef {
   parentToken: number;
   edge: string;
   args: unknown[];
+  isCall: boolean; // true for method/call segments (incl. zero-arg), false for getters
 }
 
 interface SSRDataEntry {
@@ -55,7 +56,13 @@ export interface SSRClient<S extends ServerInstance<any>> extends RpcClient<S> {
 }
 
 export interface HydrationData {
-  refs: Array<[parentToken: number, edge: string, ...args: unknown[]]>;
+  // A property/getter edge is a 2-tuple; a method/call edge is a 3-tuple whose
+  // third element is the args array (possibly empty). The args array is what
+  // distinguishes a zero-arg method edge (`child()`) from a getter (`child`).
+  refs: Array<
+    | [parentToken: number, edge: string]
+    | [parentToken: number, edge: string, args: unknown[]]
+  >;
   data: Array<
     | [token: number, value: unknown]
     | [token: number, method: string, args: unknown[], result: unknown]
@@ -141,7 +148,12 @@ export function createSSRClient<S extends ServerInstance<any>>(
 
       const childNode = await resolveEdge(parentNode, edgeName, args, ctx);
       const token = nextToken++;
-      refs.push({ parentToken, edge: edgeName, args });
+      refs.push({
+        parentToken,
+        edge: edgeName,
+        args,
+        isCall: typeof seg !== "string",
+      });
 
       return { node: childNode, token };
     })();
@@ -238,9 +250,7 @@ export function createSSRClient<S extends ServerInstance<any>>(
     generateHydrationData(): string {
       const hydration: HydrationData = {
         refs: refs.map((r) =>
-          r.args.length > 0
-            ? [r.parentToken, r.edge, ...r.args]
-            : [r.parentToken, r.edge],
+          r.isCall ? [r.parentToken, r.edge, r.args] : [r.parentToken, r.edge],
         ),
         data: [
           ...dataEntries.map((d) => [d.token, d.value] as [number, unknown]),

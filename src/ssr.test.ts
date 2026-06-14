@@ -152,7 +152,7 @@ test("SSR tracking proxy records method edge traversal with args", async () => {
   // Should have refs for posts (getter) and get("1") (method with arg)
   expect(data.refs.length).toBe(2);
   expect(data.refs[0]).toEqual([0, "posts"]);
-  expect(data.refs[1]).toEqual([1, "get", "1"]);
+  expect(data.refs[1]).toEqual([1, "get", ["1"]]);
 });
 
 test("SSR tracking proxy records method calls", async () => {
@@ -229,9 +229,9 @@ test("SSR tracking proxy records deep traversals", async () => {
   // Should have 4 refs: posts, get("1"), comments, get("c1")
   expect(data.refs.length).toBe(4);
   expect(data.refs[0]).toEqual([0, "posts"]);
-  expect(data.refs[1]).toEqual([1, "get", "1"]);
+  expect(data.refs[1]).toEqual([1, "get", ["1"]]);
   expect(data.refs[2]).toEqual([2, "comments"]);
-  expect(data.refs[3]).toEqual([3, "get", "c1"]);
+  expect(data.refs[3]).toEqual([3, "get", ["c1"]]);
 });
 
 // -- SSR Reference unwrapping tests --
@@ -930,4 +930,37 @@ test("SSR data fetches have stable identity per node", async () => {
   const a = await client.root.revivalPosts.get("1");
   const b = await client.root.revivalPosts.get("1");
   expect(a).toBe(b);
+});
+
+// -- Zero-arg method edge hydration (call-vs-getter segment fidelity) --
+
+test("hydration: zero-arg method edge round-trips without a cache miss", async () => {
+  class Leaf extends Node {
+    value = 7;
+  }
+  class ZApi extends Node {
+    // Zero-arg method edge — the live client traverses this as `child()` (a
+    // call segment), so SSR/hydration must record it as a call too.
+    @edge(Leaf)
+    child(): Leaf {
+      return new Leaf();
+    }
+  }
+  const zServer = createServer({}, () => new ZApi());
+
+  const ssr = createSSRClient<typeof zServer>(new ZApi(), {});
+  await ssr.root.child(); // traverse + load data during SSR
+
+  const hydrated = createClient<typeof zServer>({}, noopTransport);
+  hydrated.hydrateString(ssr.generateHydrationData());
+
+  // Must resolve from the hydration cache. On a no-op transport a cache miss
+  // hangs forever, so race against a timeout to fail fast.
+  const leaf = await Promise.race([
+    hydrated.root.child(),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("cache miss / hang")), 250),
+    ),
+  ]);
+  expect((leaf as { value: number }).value).toBe(7);
 });
