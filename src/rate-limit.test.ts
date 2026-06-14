@@ -185,16 +185,23 @@ test("server rate limit rejects edge operations correctly", async () => {
   await flush();
 
   // Drain the single token with one edge op.
-  ct.send(serializer.stringify({ op: "edge", tok: 0, edge: "get", args: ["1"] }));
+  ct.send(
+    serializer.stringify({ op: "edge", tok: 0, edge: "get", args: ["1"] }),
+  );
   await flush();
   received.length = 0;
 
   // The next edge op is rate-limited.
-  ct.send(serializer.stringify({ op: "edge", tok: 0, edge: "get", args: ["2"] }));
+  ct.send(
+    serializer.stringify({ op: "edge", tok: 0, edge: "get", args: ["2"] }),
+  );
   await flush();
 
   const reply = received.find((m) => m.op === "edge");
-  expect(reply, "rate-limited edge must get an edge reply, not silence").toBeDefined();
+  expect(
+    reply,
+    "rate-limited edge must get an edge reply, not silence",
+  ).toBeDefined();
   // A token is allocated (poisoned) so the client stub settles.
   expect(typeof reply!.tok).toBe("number");
   expect(reply!.tok as number).toBeGreaterThanOrEqual(0);
