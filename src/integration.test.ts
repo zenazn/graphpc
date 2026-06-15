@@ -3016,6 +3016,67 @@ test("redactErrors: unregistered errors get generic message", async () => {
   }
 });
 
+test("redactErrors defaults to ON when NODE_ENV is unset (fail-safe production default)", async () => {
+  class FailApi extends Node {
+    @method
+    async fail(): Promise<void> {
+      throw new Error("secret internal details");
+    }
+  }
+
+  const prev = process.env.NODE_ENV;
+  delete process.env.NODE_ENV; // simulate a deploy that forgot to set NODE_ENV
+  try {
+    const gpc = createServer(
+      { maxOperationTimeout: 0, idleTimeout: 0 }, // no explicit redactErrors
+      () => new FailApi(),
+    );
+    const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
+    try {
+      await client.root.fail();
+      expect.unreachable("should have thrown");
+    } catch (err: unknown) {
+      const e = err as RpcError;
+      expect(e.code).toBe("GET_ERROR");
+      expect(e.message).toBe("Internal server error");
+      expect(e.message).not.toContain("secret internal details");
+    }
+  } finally {
+    if (prev === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prev;
+  }
+});
+
+test("redactErrors defaults to OFF in development (raw message preserved for DX)", async () => {
+  class FailApi extends Node {
+    @method
+    async fail(): Promise<void> {
+      throw new Error("secret internal details");
+    }
+  }
+
+  const prev = process.env.NODE_ENV;
+  process.env.NODE_ENV = "development";
+  try {
+    const gpc = createServer(
+      { maxOperationTimeout: 0, idleTimeout: 0 },
+      () => new FailApi(),
+    );
+    const client = createClient<typeof gpc>({}, () => mockConnect(gpc, {}));
+    try {
+      await client.root.fail();
+      expect.unreachable("should have thrown");
+    } catch (err: unknown) {
+      const e = err as RpcError;
+      expect(e.code).toBe("GET_ERROR");
+      expect(e.message).toContain("secret internal details");
+    }
+  } finally {
+    if (prev === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prev;
+  }
+});
+
 test("redactErrors: registered errors are never redacted", async () => {
   class NotFound extends Error {
     constructor(

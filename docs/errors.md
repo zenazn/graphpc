@@ -61,7 +61,7 @@ const client = createClient<typeof server>(customTypes, () => transport);
 // Use client.root.* for graph navigation
 ```
 
-**What if a custom error type isn't registered?** The error is wrapped in a generic `RpcError` before serialization: the wrapped message is the thrown value's string form (for an `Error`, that's `"Error: Need 5, have 3"` — name prefix included), `instanceof InsufficientFunds` fails on the client, and structured fields (`required`, `available`) are lost. Always register custom types on both sides — and keep them in sync, since a mismatch causes deserialization to fail. In production, unregistered errors are also subject to [Error Redaction](#error-redaction).
+**What if a custom error type isn't registered?** The error is wrapped in a generic `RpcError` before serialization: the wrapped message is the thrown value's string form (for an `Error`, that's `"Error: Need 5, have 3"` — name prefix included), `instanceof InsufficientFunds` fails on the client, and structured fields (`required`, `available`) are lost. Always register custom types on both sides — and keep them in sync, since a mismatch causes deserialization to fail. By default (everywhere except `NODE_ENV` `"development"`/`"test"`), unregistered errors are also subject to [Error Redaction](#error-redaction), which replaces the wrapped message with `"Internal server error"`.
 
 See [Serialization](serialization.md) for the full reducer/reviver contract.
 
@@ -105,7 +105,7 @@ In normal client proxy usage, hidden edges are absent from the schema, so access
 
 Redaction is an operational concern configured on the server (`redactErrors`) and documented in [Production Guide — Error Redaction](production.md#error-redaction).
 
-Quick rule: built-in errors, registered custom errors, and directly thrown `RpcError` are not redacted; other thrown values can be redacted in production.
+Quick rule: built-in errors, registered custom errors, and directly thrown `RpcError` are not redacted; other thrown values are redacted by default (redaction is off only when `NODE_ENV` is `"development"` or `"test"`, or when `redactErrors` is set explicitly).
 
 ## Error UUIDs (`getErrorUuid`)
 

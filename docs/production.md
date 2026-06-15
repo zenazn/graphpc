@@ -43,7 +43,7 @@ Then add:
 
 ## Error Redaction
 
-GraphPC can redact unregistered errors before they are sent to clients. `redactErrors` defaults to on when `NODE_ENV=production` and off otherwise; set it explicitly to override.
+GraphPC can redact unregistered errors before they are sent to clients. `redactErrors` defaults to **on** (fail-safe), and is only off by default when `NODE_ENV` is `"development"` or `"test"`. So an unset or unrecognized `NODE_ENV` (e.g. a deploy that forgot to set it, or `"staging"`) still redacts. Set it explicitly to override in either direction.
 
 ```typescript
 createServer({ redactErrors: true }, factory);

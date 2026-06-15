@@ -59,7 +59,7 @@ export interface ServerOptions extends SerializerOptions {
   maxMessageBytes?: number; // max decoded inbound message size; over this the connection is closed (0 = disabled, default)
   maxCredits?: number; // max credits per stream the server will honor (default: 256)
   maxDepth?: number; // max edge traversal depth per connection (default: 64)
-  redactErrors?: boolean; // redact unregistered errors (default: auto-detect from NODE_ENV)
+  redactErrors?: boolean; // redact unregistered errors (default: on, except when NODE_ENV is "development" or "test")
   pingInterval?: number; // ms between pings for liveness (default: 30000, 0 = disabled)
   pingTimeout?: number; // ms to wait for pong before closing (default: 10000)
   rateLimit?: RateLimitOptions | false; // per-connection token bucket (default: enabled)
@@ -384,11 +384,18 @@ function createHandler(
 
   const timers = options.timers ?? defaultTimers();
 
+  // Fail-safe default: redact internal error text UNLESS the operator
+  // explicitly opts out or signals a development/test environment. A deploy
+  // that forgets to set NODE_ENV must not leak raw error strings (DB/driver
+  // messages, file paths, PII embedded in thrown errors) to untrusted clients.
+  // Only the well-known dev conventions disable redaction by default; anything
+  // else (unset, "staging", "production", …) redacts.
+  const nodeEnv =
+    typeof process !== "undefined" ? process.env?.NODE_ENV : undefined;
   const redactErrors =
     options.redactErrors !== undefined
       ? options.redactErrors
-      : typeof process !== "undefined" &&
-        process.env?.NODE_ENV === "production";
+      : nodeEnv !== "development" && nodeEnv !== "test";
 
   return (transport: Transport, ctx: Context) => {
     const W = options.tokenWindow ?? 10_000;
