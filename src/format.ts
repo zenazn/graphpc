@@ -9,10 +9,29 @@
  */
 
 import type { PathSegments, PathSegment } from "./path";
+import { ValidationError } from "./errors";
 
 export type Reducers = Record<string, (value: unknown) => false | unknown[]>;
 
 const IS_IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * Hard recursion bound for fmt(). Set far below the engine's call-stack limit
+ * so that over-nesting raises a deterministic, catchable signal at a fixed
+ * depth instead of a RangeError that fires at a runtime-dependent depth.
+ *
+ * This determinism is load-bearing for cache-key correctness: formatKeySegment
+ * must never collapse two structurally distinct arguments to the same key (that
+ * would resolve the wrong node — see the object branch of fmt). The previous
+ * code returned a constant "[unformattable]" sentinel whenever the recursion
+ * happened to overflow the stack, so two distinct deep args could alias one
+ * NodeEntry. With a fixed bound, formatKeySegment can reliably detect and reject
+ * un-keyable input rather than emit a non-injective key.
+ */
+const MAX_FMT_DEPTH = 1000;
+
+/** Thrown by fmt() when input nests deeper than MAX_FMT_DEPTH. */
+class FormatDepthError extends Error {}
 
 const TYPED_ARRAY_TAGS = new Set([
   "Int8Array",
@@ -29,17 +48,20 @@ const TYPED_ARRAY_TAGS = new Set([
 ]);
 
 /**
- * Recover from stack exhaustion on pathologically deep input. fmt() has no
- * depth bound (a depth counter would have to thread through every branch); a
- * RangeError here means the value nested deeper than the engine's call stack.
- * Returning a sentinel keeps every caller — including logging/metrics that
- * format untrusted args outside a request's try/catch — from crashing.
+ * Recover from over-deep input. fmt() throws FormatDepthError past
+ * MAX_FMT_DEPTH (and a RangeError would mean the engine's call stack was
+ * exhausted first, which the bound makes unreachable in practice). Returning a
+ * sentinel keeps display callers — logging/metrics that format untrusted args
+ * outside a request's try/catch — from crashing. The cache-key path
+ * (formatKeySegment) deliberately does NOT use this and instead rejects, since
+ * a constant sentinel would not be an injective key.
  */
 function safeFmt(produce: () => string): string {
   try {
     return produce();
   } catch (e) {
-    if (e instanceof RangeError) return "[unformattable: too deeply nested]";
+    if (e instanceof RangeError || e instanceof FormatDepthError)
+      return "[unformattable: too deeply nested]";
     throw e;
   }
 }
@@ -49,7 +71,7 @@ export function formatValue(value: unknown, reducers?: Reducers): string {
   const reducerEntries = reducers
     ? Object.getOwnPropertyNames(reducers)
     : undefined;
-  return safeFmt(() => fmt(value, seen, reducers, reducerEntries));
+  return safeFmt(() => fmt(value, seen, reducers, reducerEntries, 0));
 }
 
 export function formatPath(path: PathSegments, reducers?: Reducers): string {
@@ -60,7 +82,7 @@ export function formatPath(path: PathSegments, reducers?: Reducers): string {
   return safeFmt(() => {
     let out = "root";
     for (const seg of path) {
-      out += fmtSegment(seg, seen, reducers, reducerEntries);
+      out += fmtSegment(seg, seen, reducers, reducerEntries, 0);
     }
     return out;
   });
@@ -89,7 +111,7 @@ export function formatSegment(seg: PathSegment, reducers?: Reducers): string {
   const reducerEntries = reducers
     ? Object.getOwnPropertyNames(reducers)
     : undefined;
-  return safeFmt(() => fmtSegment(seg, seen, reducers, reducerEntries));
+  return safeFmt(() => fmtSegment(seg, seen, reducers, reducerEntries, 0));
 }
 
 /**
@@ -133,7 +155,26 @@ export function formatKeySegment(
   seg: PathSegment,
   reducers?: Reducers,
 ): string {
-  const s = formatSegment(seg, reducers);
+  // Unlike formatSegment (which goes through safeFmt and degrades to a constant
+  // sentinel), the cache-key path must produce an INJECTIVE key. Format the
+  // segment directly so an over-deep argument surfaces as a rejectable error
+  // rather than the non-injective "[unformattable]" sentinel that would alias
+  // two distinct arguments to one node.
+  let s: string;
+  try {
+    const seen = new Map<object, number>();
+    const reducerEntries = reducers
+      ? Object.getOwnPropertyNames(reducers)
+      : undefined;
+    s = fmtSegment(seg, seen, reducers, reducerEntries, 0);
+  } catch (e) {
+    if (e instanceof RangeError || e instanceof FormatDepthError) {
+      throw new ValidationError([
+        { message: "Edge argument is too deeply nested" },
+      ]);
+    }
+    throw e;
+  }
   if (s.length <= KEY_SEGMENT_MAX_LEN) return s;
   return s.slice(0, KEY_SEGMENT_MAX_LEN) + "#" + hashString(s) + "~" + s.length;
 }
@@ -143,6 +184,7 @@ function fmtSegment(
   seen: Map<object, number>,
   reducers: Reducers | undefined,
   reducerEntries: string[] | undefined,
+  depth: number,
 ): string {
   if (typeof seg === "string") {
     return IS_IDENT.test(seg) ? "." + seg : "[" + JSON.stringify(seg) + "]";
@@ -150,7 +192,7 @@ function fmtSegment(
   // Call segment: [name, ...args]
   const [name, ...args] = seg;
   const fmtArgs = args
-    .map((a) => fmt(a, seen, reducers, reducerEntries))
+    .map((a) => fmt(a, seen, reducers, reducerEntries, depth + 1))
     .join(", ");
   if (IS_IDENT.test(name)) {
     return "." + name + "(" + fmtArgs + ")";
@@ -164,10 +206,15 @@ function fmt(
   seen: Map<object, number>,
   reducers: Reducers | undefined,
   reducerEntries: string[] | undefined,
+  depth: number,
 ): string {
   // Primitives
   if (thing === undefined) return "undefined";
   if (thing === null) return "null";
+
+  // Deterministic depth bound (see MAX_FMT_DEPTH). Checked after the primitive
+  // fast-paths so only nested (object/array) values can trip it.
+  if (depth > MAX_FMT_DEPTH) throw new FormatDepthError();
 
   switch (typeof thing) {
     case "string":
@@ -208,7 +255,9 @@ function fmt(
         return (
           name +
           "(" +
-          result.map((a) => fmt(a, seen, reducers, reducerEntries)).join(", ") +
+          result
+            .map((a) => fmt(a, seen, reducers, reducerEntries, depth + 1))
+            .join(", ") +
           ")"
         );
       }
@@ -242,9 +291,9 @@ function fmt(
       const entries: string[] = [];
       for (const [k, v] of m) {
         entries.push(
-          fmt(k, seen, reducers, reducerEntries) +
+          fmt(k, seen, reducers, reducerEntries, depth + 1) +
             " => " +
-            fmt(v, seen, reducers, reducerEntries),
+            fmt(v, seen, reducers, reducerEntries, depth + 1),
         );
       }
       return "Map(" + entries.join(", ") + ")";
@@ -253,26 +302,44 @@ function fmt(
       const s = thing as Set<unknown>;
       const items: string[] = [];
       for (const v of s) {
-        items.push(fmt(v, seen, reducers, reducerEntries));
+        items.push(fmt(v, seen, reducers, reducerEntries, depth + 1));
       }
       return "Set(" + items.join(", ") + ")";
     }
     case "Number":
       return (
         "Number(" +
-        fmt((thing as Number).valueOf(), seen, reducers, reducerEntries) +
+        fmt(
+          (thing as Number).valueOf(),
+          seen,
+          reducers,
+          reducerEntries,
+          depth + 1,
+        ) +
         ")"
       );
     case "String":
       return (
         "String(" +
-        fmt((thing as String).valueOf(), seen, reducers, reducerEntries) +
+        fmt(
+          (thing as String).valueOf(),
+          seen,
+          reducers,
+          reducerEntries,
+          depth + 1,
+        ) +
         ")"
       );
     case "Boolean":
       return (
         "Boolean(" +
-        fmt((thing as Boolean).valueOf(), seen, reducers, reducerEntries) +
+        fmt(
+          (thing as Boolean).valueOf(),
+          seen,
+          reducers,
+          reducerEntries,
+          depth + 1,
+        ) +
         ")"
       );
     case "ArrayBuffer":
@@ -287,7 +354,7 @@ function fmt(
     };
     const items: string[] = [];
     for (const v of arr) {
-      items.push(fmt(v, seen, reducers, reducerEntries));
+      items.push(fmt(v, seen, reducers, reducerEntries, depth + 1));
     }
     return tag + "([" + items.join(", ") + "])";
   }
@@ -304,7 +371,7 @@ function fmt(
       if (!(i in thing)) {
         items.push("<hole>");
       } else {
-        items.push(fmt(thing[i], seen, reducers, reducerEntries));
+        items.push(fmt(thing[i], seen, reducers, reducerEntries, depth + 1));
       }
     }
     return "[" + items.join(", ") + "]";
@@ -328,6 +395,7 @@ function fmt(
           seen,
           reducers,
           reducerEntries,
+          depth + 1,
         ),
     );
   }

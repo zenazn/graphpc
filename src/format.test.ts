@@ -3,8 +3,10 @@ import {
   formatValue,
   formatPath,
   formatSegment,
+  formatKeySegment,
   isDescendantPathKey,
 } from "./format";
+import { ValidationError } from "./errors";
 
 // -- Primitives --
 
@@ -547,7 +549,7 @@ describe("formatValue stack-exhaustion recovery", () => {
     expect(out).toBe("[unformattable: too deeply nested]");
   });
 
-  test("formatSegment (cache-key path) also recovers from deep args", () => {
+  test("formatSegment (display path) also recovers from deep args", () => {
     let deep: unknown = 0;
     for (let i = 0; i < 60_000; i++) deep = [deep];
     let out = "";
@@ -555,5 +557,40 @@ describe("formatValue stack-exhaustion recovery", () => {
       out = formatSegment(["e", deep] as [string, unknown]);
     }).not.toThrow();
     expect(out).toContain("unformattable");
+  });
+});
+
+describe("formatKeySegment injectivity (cache-key safety)", () => {
+  test("normal-depth args produce stable, distinct keys", () => {
+    expect(formatKeySegment(["get", "42"])).toBe(
+      formatKeySegment(["get", "42"]),
+    );
+    expect(formatKeySegment(["get", "42"])).not.toBe(
+      formatKeySegment(["get", "43"]),
+    );
+    // Distinct nested-but-shallow args must not collide.
+    expect(formatKeySegment(["e", { a: 1 }] as [string, unknown])).not.toBe(
+      formatKeySegment(["e", { b: 1 }] as [string, unknown]),
+    );
+  });
+
+  test("rejects too-deeply-nested args rather than collapsing distinct values to one key", () => {
+    // Two structurally distinct, pathologically deep arguments. The old code
+    // formatted both to the same "[unformattable: too deeply nested]" sentinel,
+    // so they shared a cache key and the second resolved to the first's node.
+    let a: unknown = { leaf: "a" };
+    let b: unknown = { leaf: "b" };
+    for (let i = 0; i < 60_000; i++) {
+      a = { x: a };
+      b = { y: b };
+    }
+    // The key path must refuse to emit a non-injective key. A too-deep arg is
+    // rejected as invalid instead of silently aliasing a different node.
+    expect(() => formatKeySegment(["getDoc", a] as [string, unknown])).toThrow(
+      ValidationError,
+    );
+    expect(() => formatKeySegment(["getDoc", b] as [string, unknown])).toThrow(
+      ValidationError,
+    );
   });
 });
