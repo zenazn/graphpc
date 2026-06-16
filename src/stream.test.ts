@@ -35,6 +35,12 @@ class Counter extends Node {
     yield 1;
     throw new Error("stream-error");
   }
+
+  @stream
+  async *badYield(signal: AbortSignal): AsyncGenerator<unknown> {
+    // A function cannot be encoded by devalue — serializing this frame throws.
+    yield () => 42;
+  }
 }
 
 class StreamApi extends Node {
@@ -111,6 +117,38 @@ test("basic stream: yields values and completes", async () => {
   const endMsg = messages.find((m) => m.op === "stream_end")!;
   expect(endMsg).toBeDefined();
   expect(endMsg.error).toBeUndefined();
+});
+
+test("stream yielding an unserializable value sends stream_end with error (no silent hang)", async () => {
+  const { clientTransport, received } = setupStream();
+  await navigateToCounter(clientTransport, received);
+
+  clientTransport.send(
+    serializer.stringify({
+      op: "stream_start",
+      tok: 1,
+      stream: "badYield",
+      credits: 8,
+    }),
+  );
+  await flush();
+  await flush();
+
+  const messages = received.map((r) => serializer.parse(r) as WireMessage);
+
+  // The stream started successfully...
+  const startMsg = messages.find((m) => m.op === "stream_start")!;
+  expect(startMsg).toBeDefined();
+  expect(startMsg.error).toBeUndefined();
+
+  // ...but the unserializable yield must terminate it with an error frame so
+  // the client's RpcStream settles, rather than leaving it hanging with no
+  // stream_end at all.
+  const endMsg = messages.find((m) => m.op === "stream_end");
+  expect(endMsg).toBeDefined();
+  expect(endMsg!.error).toBeDefined();
+  // No bogus stream_data frame should have been emitted for the bad value.
+  expect(messages.some((m) => m.op === "stream_data")).toBe(false);
 });
 
 test("stream cancellation: cancel() stops the server generator", async () => {
@@ -202,7 +240,7 @@ test("stream limit exceeded returns STREAM_LIMIT_EXCEEDED", async () => {
 
 test("@stream decorator stores metadata", () => {
   const streams = getStreams(Counter);
-  expect(streams.size).toBe(3);
+  expect(streams.size).toBe(4);
 
   const countMeta = streams.get("count");
   expect(countMeta).toBeDefined();

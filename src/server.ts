@@ -1560,15 +1560,41 @@ function createHandler(
             return;
           }
 
-          // Send data frame
-          stream.credits--;
-          transport.send(
-            serializer.stringify({
+          // Serialize the data frame. The yielded value is userland-controlled
+          // and may be unencodable (a function, an unregistered class instance,
+          // …). If stringify throws, settle the client's stream with an error
+          // frame instead of letting the throw tear the stream down silently —
+          // which would leave the client's RpcStream hanging with no stream_end
+          // (mirrors the iterator-throw branch above and sendResponse()).
+          let frame: string;
+          try {
+            frame = serializer.stringify({
               op: "stream_data",
               sid: stream.sid,
               data: result.value,
-            }),
-          );
+            });
+          } catch (err) {
+            let error: unknown = err;
+            if (!(err instanceof RpcError) && !serializer.handles(err)) {
+              const rpcErr = new RpcError("STREAM_ERROR", String(err));
+              wrappedOriginals.set(rpcErr, err);
+              error = rpcErr;
+            }
+            const response = {
+              op: "stream_end" as const,
+              sid: stream.sid,
+              error,
+              errorId: undefined as string | undefined,
+            };
+            processErrorResponse(response);
+            transport.send(serializer.stringify(response));
+            cleanupStream(stream);
+            return;
+          }
+
+          // Send data frame (credit consumed only once the frame is encodable).
+          stream.credits--;
+          transport.send(frame);
         }
       } finally {
         stream.sending = false;
