@@ -910,12 +910,38 @@ function createHandler(
     const maxQueuedOps = options.maxQueuedOps ?? 1000;
     const maxOperationTimeout = options.maxOperationTimeout ?? 30_000;
     let activeOps = 0;
-    const slotQueue: Array<{
+    // Backpressure queue of operations waiting for a concurrency slot. An
+    // intrusive doubly-linked list (not an array) so enqueue, dequeue, and
+    // abort-removal are all O(1): a client can park up to maxQueuedOps waiters,
+    // and array shift()/indexOf()/splice() would make draining or a burst of
+    // timeouts O(n²) per-connection CPU the client controls cheaply.
+    interface SlotWaiter {
       resolve: () => void;
       reject: (err: Error) => void;
       settled: boolean;
       cleanup: () => void;
-    }> = [];
+      prev: SlotWaiter | null;
+      next: SlotWaiter | null;
+    }
+    let slotQueueHead: SlotWaiter | null = null;
+    let slotQueueTail: SlotWaiter | null = null;
+
+    function enqueueWaiter(w: SlotWaiter) {
+      w.prev = slotQueueTail;
+      w.next = null;
+      if (slotQueueTail) slotQueueTail.next = w;
+      else slotQueueHead = w;
+      slotQueueTail = w;
+    }
+
+    function removeWaiter(w: SlotWaiter) {
+      if (w.prev) w.prev.next = w.next;
+      else if (slotQueueHead === w) slotQueueHead = w.next;
+      if (w.next) w.next.prev = w.prev;
+      else if (slotQueueTail === w) slotQueueTail = w.prev;
+      w.prev = null;
+      w.next = null;
+    }
 
     // -- Token bucket rate limiting --
     const rlOpts = options.rateLimit;
@@ -1059,13 +1085,16 @@ function createHandler(
         return Promise.resolve();
       }
       return new Promise<void>((resolve, reject) => {
-        const waiter = {
+        const waiter: SlotWaiter = {
           settled: false,
           cleanup: () => {},
+          prev: null,
+          next: null,
           resolve: () => {
             if (waiter.settled) return;
             waiter.settled = true;
             waiter.cleanup();
+            removeWaiter(waiter);
             activeOps++;
             resolve();
           },
@@ -1073,13 +1102,14 @@ function createHandler(
             if (waiter.settled) return;
             waiter.settled = true;
             waiter.cleanup();
+            removeWaiter(waiter);
             reject(err);
           },
         };
 
+        // O(1) removal via the linked-list pointers (reject() unlinks); no
+        // indexOf/splice scan of the queue.
         const onAbort = () => {
-          const idx = slotQueue.indexOf(waiter);
-          if (idx !== -1) slotQueue.splice(idx, 1);
           waiter.reject(operationAbortError());
         };
 
@@ -1088,7 +1118,7 @@ function createHandler(
         };
 
         signal.addEventListener("abort", onAbort, { once: true });
-        slotQueue.push(waiter);
+        enqueueWaiter(waiter);
 
         // Handle aborts that race with listener registration.
         if (signal.aborted) onAbort();
@@ -1097,10 +1127,15 @@ function createHandler(
 
     function releaseSlot() {
       activeOps--;
-      while (slotQueue.length > 0) {
-        const next = slotQueue.shift()!;
-        if (next.settled) continue;
-        next.resolve();
+      // Grant the slot to the oldest still-pending waiter (FIFO). Settled
+      // waiters are already unlinked on settle, but guard defensively.
+      while (slotQueueHead) {
+        const next = slotQueueHead;
+        if (next.settled) {
+          removeWaiter(next);
+          continue;
+        }
+        next.resolve(); // unlinks next and bumps activeOps
         return;
       }
     }
@@ -2081,8 +2116,14 @@ function createHandler(
       }
       connAbort.abort();
       const closedErr = new RpcError("CONNECTION_CLOSED", "Connection closed");
-      for (const waiter of slotQueue) waiter.reject(closedErr);
-      slotQueue.length = 0;
+      let waiter = slotQueueHead;
+      while (waiter) {
+        const nextWaiter = waiter.next; // capture before reject() unlinks it
+        waiter.reject(closedErr);
+        waiter = nextWaiter;
+      }
+      slotQueueHead = null;
+      slotQueueTail = null;
       tokenStates.clear();
       tokenPaths.clear();
       pathTokenCount.clear();
