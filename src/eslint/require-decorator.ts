@@ -195,6 +195,15 @@ export const requireDecorator = createRule({
           continue;
         }
 
+        // Skip symbol-keyed / dynamically-computed methods (e.g.
+        // [Symbol.asyncIterator]() or [expr]()). A well-known-symbol protocol
+        // method can't carry an @edge/@method/@stream/@hidden decorator, so
+        // flagging it would be an unfixable false positive. A computed *string
+        // literal* key (["doStuff"]()) is still addressable and stays flagged.
+        if (member.computed && member.key.type !== "Literal") {
+          continue;
+        }
+
         // Skip TS overload signatures / bodiless declarations — a decorator is
         // only legal on the implementation, so flagging the signatures would be
         // an unfixable false positive.

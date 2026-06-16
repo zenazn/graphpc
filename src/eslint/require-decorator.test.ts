@@ -12,6 +12,17 @@ const tester = new RuleTester();
 
 tester.run("require-decorator", requireDecorator, {
   valid: [
+    // Well-known-symbol / computed protocol methods can't carry a graphpc
+    // decorator, so the rule must not flag them (an unfixable false positive).
+    {
+      code: `
+        import { Node } from "graphpc";
+
+        class Api extends Node {
+          [Symbol.asyncIterator]() { return null; }
+        }
+      `,
+    },
     // All methods decorated
     {
       code: `
