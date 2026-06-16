@@ -153,18 +153,19 @@ If a method deterministically returns data larger than the limit, every call wil
 
 ## Connection Limits
 
-| Option            | Default           | Description                                         |
-| ----------------- | ----------------- | --------------------------------------------------- |
-| `tokenWindow`     | 10000             | Sliding window of valid tokens                      |
-| `maxStreams`      | 32                | Max concurrent streams per connection               |
-| `maxMessageBytes` | 0 (disabled)      | Max decoded inbound frame size before close         |
-| `maxCredits`      | 256               | Max stream credits the server will honor at once    |
-| `maxPendingOps`   | 20                | Max concurrent executing operations                 |
-| `maxQueuedOps`    | 1000              | Max total in-flight messages before close           |
-| `maxDepth`        | 64                | Max edge traversal depth (edge ops AND path() args) |
-| `idleTimeout`     | 60000ms           | Inactivity timeout before closing connection        |
-| `lruTTL`          | 60000ms           | Idle time before an unpinned server node is evicted |
-| `rateLimit`       | 200 burst, 50/sec | Per-connection token bucket (`false` to disable)    |
+| Option             | Default           | Description                                                                           |
+| ------------------ | ----------------- | ------------------------------------------------------------------------------------- |
+| `tokenWindow`      | 10000             | Sliding window of valid tokens                                                        |
+| `maxStreams`       | 32                | Max concurrent streams per connection                                                 |
+| `maxMessageBytes`  | 0 (disabled)      | Max decoded inbound frame size before close                                           |
+| `maxBufferedBytes` | 0 (disabled)      | Pause a stream's pump while the send buffer exceeds this (slow-consumer backpressure) |
+| `maxCredits`       | 256               | Max stream credits the server will honor at once                                      |
+| `maxPendingOps`    | 20                | Max concurrent executing operations                                                   |
+| `maxQueuedOps`     | 1000              | Max total in-flight messages before close                                             |
+| `maxDepth`         | 64                | Max edge traversal depth (edge ops AND path() args)                                   |
+| `idleTimeout`      | 60000ms           | Inactivity timeout before closing connection                                          |
+| `lruTTL`           | 60000ms           | Idle time before an unpinned server node is evicted                                   |
+| `rateLimit`        | 200 burst, 50/sec | Per-connection token bucket (`false` to disable)                                      |
 
 ```typescript
 createServer(
@@ -237,6 +238,13 @@ Monitor via `server.on("rateLimit", (ctx, info) => ...)`.
 For IP-based or connection-level rate limiting, rate-limit before WebSocket upgrade. For dynamic in-request controls (per-user plans), enforce in graph code using context.
 
 Detailed examples: [Production Operations — Rate Limiting](production-operations.md#rate-limiting).
+
+## Stream Backpressure (slow consumers)
+
+The rate limiter meters frame _count_, not _bytes_. A client that grants credits but stops reading the socket can make the server keep serializing and queuing `stream_data` frames into the transport's send buffer. Bound this two ways:
+
+- **Transport level:** set the WebSocket library's backpressure limit (Bun: `backpressureLimit`, and consider `closeOnBackpressureLimit: true`).
+- **GraphPC level:** set `maxBufferedBytes`. While the transport reports more than this many buffered bytes, the stream pump pauses (and resumes once the socket drains), so the send buffer is bounded to roughly `maxBufferedBytes` plus one in-flight frame per stream. Requires a transport that reports `bufferedAmount()` — the built-in Bun adapter wires this to `ws.getBufferedAmount()`. Without it (or without a transport-level limit), per-connection send-buffer memory for a non-draining consumer is bounded only by the transport's own backpressure policy.
 
 ## Request IDs
 

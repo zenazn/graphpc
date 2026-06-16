@@ -57,6 +57,7 @@ export interface ServerOptions extends SerializerOptions {
   maxOperationTimeout?: number; // ms before aborting a single operation (0 = disabled)
   maxStreams?: number; // max concurrent streams per client (default: 32)
   maxMessageBytes?: number; // max decoded inbound message size; over this the connection is closed (0 = disabled, default)
+  maxBufferedBytes?: number; // pause a stream's pump while the transport's send buffer exceeds this, so a slow consumer can't grow it without bound (0 = disabled, default; requires a transport that reports bufferedAmount())
   maxCredits?: number; // max credits per stream the server will honor (default: 256)
   maxDepth?: number; // max edge traversal depth per connection (default: 64)
   redactErrors?: boolean; // redact unregistered errors (default: on, except when NODE_ENV is "development" or "test")
@@ -200,6 +201,9 @@ export function createServer<TRoot extends object>(
               send(data: string) {
                 ws.send(data);
               },
+              bufferedAmount: ws.getBufferedAmount
+                ? () => ws.getBufferedAmount!()
+                : undefined,
               close() {
                 try {
                   ws.close();
@@ -404,6 +408,9 @@ function createHandler(
     const maxCredits = options.maxCredits ?? 256;
     const maxDepth = options.maxDepth ?? 64;
     const maxMessageBytes = options.maxMessageBytes ?? 0;
+    const maxBufferedBytes = options.maxBufferedBytes ?? 0;
+    // Poll interval (ms) for re-checking a stream paused on socket backpressure.
+    const BACKPRESSURE_POLL_MS = 25;
 
     // -- Token ring buffer --
     // Slot index = tok % W. Each slot stores a path string (or null).
@@ -1448,17 +1455,38 @@ function createHandler(
       return runWithSession(stream.session, () => pumpStreamLoop(stream));
     }
 
-    // Pause a stream whose egress is throttled by the rate limiter and re-pump
-    // it once the bucket has refilled enough for one more frame. Idempotent: a
-    // stream can have at most one pending resume timer.
-    function scheduleStreamResume(stream: ActiveStream) {
+    // True while the transport's send buffer is over the configured high-water
+    // mark. A consumer that grants credits but stops draining the socket would
+    // otherwise let the pump push frames into the send buffer without bound
+    // (the token bucket meters frame COUNT, not bytes). Requires a transport
+    // that reports bufferedAmount(); a no-op otherwise.
+    function isStreamBackpressured(): boolean {
+      if (maxBufferedBytes <= 0 || !transport.bufferedAmount) return false;
+      return transport.bufferedAmount() > maxBufferedBytes;
+    }
+
+    // Pause a stream and re-pump it later. Two reasons to pause:
+    //   - rate limiter: re-pump once the token bucket has refilled a frame.
+    //   - backpressure: re-pump after a fixed poll once the socket drains.
+    // `explicitDelayMs` selects the backpressure poll; otherwise the delay is
+    // derived from the bucket refill rate. Idempotent: a stream can have at most
+    // one pending resume timer.
+    function scheduleStreamResume(
+      stream: ActiveStream,
+      explicitDelayMs?: number,
+    ) {
       if (stream.resumeTimer || stream.cancelled) return;
-      // With no refill the bucket never recovers on its own; leave the stream
-      // paused until more credits/cancel/disconnect arrive instead of arming an
-      // infinite timer.
-      if (rlRefillRate <= 0) return;
-      const needed = streamFrameCost - rlTokens;
-      const waitMs = needed > 0 ? Math.ceil((needed / rlRefillRate) * 1000) : 0;
+      let waitMs: number;
+      if (explicitDelayMs !== undefined) {
+        waitMs = explicitDelayMs;
+      } else {
+        // With no refill the bucket never recovers on its own; leave the stream
+        // paused until more credits/cancel/disconnect arrive instead of arming
+        // an infinite timer.
+        if (rlRefillRate <= 0) return;
+        const needed = streamFrameCost - rlTokens;
+        waitMs = needed > 0 ? Math.ceil((needed / rlRefillRate) * 1000) : 0;
+      }
       stream.resumeTimer = timers.setTimeout(
         () => {
           stream.resumeTimer = null;
@@ -1477,6 +1505,14 @@ function createHandler(
     async function pumpStreamLoop(stream: ActiveStream) {
       try {
         while (stream.credits > 0 && !stream.cancelled) {
+          // Byte-level backpressure: if the consumer isn't draining the socket,
+          // pause before serializing/queuing another frame so the send buffer
+          // can't grow without bound. Bounds the buffer to maxBufferedBytes plus
+          // at most one in-flight frame.
+          if (isStreamBackpressured()) {
+            scheduleStreamResume(stream, BACKPRESSURE_POLL_MS);
+            return;
+          }
           // Meter stream egress against the per-connection token bucket. When
           // the bucket is empty, pause and resume as it refills so a flood of
           // credit grants cannot drive unbounded serialize/send work.

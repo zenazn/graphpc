@@ -399,6 +399,14 @@ export interface TransportEventMap {
 export interface Transport {
   send(data: string): void;
   close(): void;
+  /**
+   * Optional: bytes buffered in the transport but not yet flushed to the
+   * socket. When provided, the server's stream pump uses it for byte-level
+   * backpressure (see `maxBufferedBytes`), pausing a stream whose consumer is
+   * not draining so the send buffer cannot grow without bound. Transports that
+   * cannot report this (or have no buffer) may omit it.
+   */
+  bufferedAmount?(): number;
   addEventListener<K extends keyof TransportEventMap>(
     type: K,
     listener: (event: TransportEventMap[K]) => void,

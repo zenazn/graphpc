@@ -101,6 +101,54 @@ test("stream egress is bounded by the token bucket despite a huge credit grant",
   expect(timers.pending()).toBe(0);
 });
 
+test("a stream pauses on socket backpressure and resumes once the buffer drains", async () => {
+  const timers = fakeTimers();
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: string[] = [];
+  clientTransport.addEventListener("message", (e) => received.push(e.data));
+
+  // Controllable backpressure signal on the server-side transport.
+  let buffered = 0;
+  (
+    serverTransport as unknown as { bufferedAmount?: () => number }
+  ).bufferedAmount = () => buffered;
+
+  const server = createServer(
+    {
+      idleTimeout: 0,
+      pingInterval: 0,
+      lruTTL: 0,
+      maxOperationTimeout: 0,
+      maxCredits: 10000,
+      rateLimit: false, // isolate: socket backpressure is the only throttle
+      maxBufferedBytes: 1000,
+      timers,
+    },
+    () => new FirehoseApi(),
+  );
+  server.handle(serverTransport, {});
+
+  // Over the high-water mark before the stream even starts pumping.
+  buffered = 5000;
+  const sid = await startSpew(clientTransport, received, 50);
+
+  // The pump must refuse to keep filling the send buffer: at most one in-flight
+  // frame, and a resume poll is pending. (Without byte-level backpressure the
+  // pump would have flushed all 50 credits' worth of frames.)
+  const stalled = countData(received);
+  expect(stalled).toBeLessThanOrEqual(1);
+  expect(timers.pending()).toBeGreaterThanOrEqual(1);
+
+  // Drain the socket and let the poll fire — frames flow again.
+  buffered = 0;
+  timers.fire();
+  await flush();
+  expect(countData(received)).toBeGreaterThan(stalled);
+
+  clientTransport.send(serializer.stringify({ op: "stream_cancel", sid }));
+  await flush();
+});
+
 test("a throttled stream resumes and delivers more frames as the bucket refills", async () => {
   // Real timers: the rate limiter refills off Date.now(), so let real time pass.
   const [serverTransport, clientTransport] = createMockTransportPair();

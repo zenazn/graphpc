@@ -123,6 +123,8 @@ export interface WsLike<T> {
   readonly data: T;
   send(data: string): number | void;
   close(code?: number, reason?: string): void;
+  /** Bytes queued but not yet flushed to the socket (Bun's getBufferedAmount). */
+  getBufferedAmount?(): number;
 }
 
 /** Lifecycle handlers returned by `server.wsHandlers()` for Bun's handler-based WebSocket API. */
