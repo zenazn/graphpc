@@ -613,6 +613,12 @@ export function createClient<S extends ServerInstance<any>>(
       if (batchedRefs && batchedRefs.length > 0) {
         applyRefInvalidation(batchedRefs);
       }
+      // The ResolvedRef reviver populates the persistent cache during parse for
+      // EVERY message — including stream_data, stream_end, and other ops that
+      // return early below before reaching the request/response enforceCacheBound
+      // at the end. Enforce the bound here too so ref() payloads delivered over a
+      // stream can't grow the cache past maxCacheEntries. No-op when unset.
+      enforceCacheBound();
       // Respond to server ping — liveness check, not app traffic
       if (msg.op === "ping") {
         try {
