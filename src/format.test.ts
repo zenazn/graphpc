@@ -538,6 +538,23 @@ describe("formatSegment", () => {
   });
 });
 
+describe("formatValue reducer robustness", () => {
+  test("a reducer returning a truthy non-array does not crash the formatter", () => {
+    // The Reducers contract is `false | unknown[]`; a misconfigured reducer
+    // returning a truthy non-array must not throw "result.map is not a
+    // function" out of logging/error/SSR/cache-key paths.
+    const reducers = {
+      Bad: (() => 123) as unknown as (v: unknown) => false | unknown[],
+    };
+    let out = "";
+    expect(() => {
+      out = formatValue({ id: 1 }, reducers);
+    }).not.toThrow();
+    // Falls through to default object formatting.
+    expect(out).toBe("{id: 1}");
+  });
+});
+
 describe("formatValue stack-exhaustion recovery", () => {
   test("deeply nested input returns a sentinel instead of throwing RangeError", () => {
     let deep: unknown = 0;

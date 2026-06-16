@@ -251,7 +251,11 @@ function fmt(
   if (reducerEntries) {
     for (const name of reducerEntries) {
       const result = reducers![name]!(thing);
-      if (result) {
+      // The Reducers contract is `false | unknown[]`. Require an array before
+      // mapping so a misconfigured reducer returning a truthy non-array doesn't
+      // throw "result.map is not a function" out of logging/error/SSR/cache-key
+      // paths — it simply doesn't claim the value (falls through to default).
+      if (Array.isArray(result)) {
         return (
           name +
           "(" +
