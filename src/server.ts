@@ -1333,6 +1333,10 @@ function createHandler(
       sid: number,
       opSignal: AbortSignal,
     ): Promise<unknown> {
+      // Set once the stream is registered (slot taken, path pinned). If a throw
+      // happens after this point (e.g. the success-frame send fails on a broken
+      // socket), the catch must tear it down to release the slot/pins.
+      let registeredStream: ActiveStream | null = null;
       try {
         if (activeStreamCount >= maxStreams) {
           throw new StreamLimitExceededError();
@@ -1407,6 +1411,7 @@ function createHandler(
 
           // Pin the path
           pinPath(entry);
+          registeredStream = stream;
 
           // Send success response
           transport.send(serializer.stringify({ op: "stream_start", sid, re }));
@@ -1433,6 +1438,15 @@ function createHandler(
       } catch (err) {
         // If the timeout already sent a response, don't double-send
         if (opSignal.aborted) return undefined;
+        // If the stream was already registered (e.g. the success-frame send
+        // threw on a broken socket), tear it down so its maxStreams slot and
+        // LRU pins are released. Don't also emit a stream_start error frame: a
+        // success may already be on the wire and the socket is likely broken —
+        // the error-frame path below is only for pre-registration failures.
+        if (registeredStream) {
+          if (activeStreams.has(sid)) cleanupStream(registeredStream);
+          return err;
+        }
         let error = err;
         if (!(err instanceof RpcError) && !serializer.handles(err)) {
           const rpcErr = new RpcError("STREAM_ERROR", String(err));

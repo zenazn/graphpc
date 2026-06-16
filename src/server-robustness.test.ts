@@ -376,6 +376,57 @@ test("fireLruEviction evicts all expired nodes in one sweep (no early terminatio
   expect(cCount).toBe(2);
 });
 
+test("a failed stream_start success-frame send releases the slot and pins (no maxStreams leak)", async () => {
+  const [st, ct] = createMockTransportPair();
+  const recv: string[] = [];
+  ct.addEventListener("message", (e) => recv.push(e.data));
+
+  // Throw exactly once, on the first stream_start SUCCESS frame, to simulate a
+  // socket that errors mid-send after the stream has been registered (slot
+  // taken, path pinned).
+  let thrown = false;
+  const origSend = st.send.bind(st);
+  (st as Transport).send = (data: string) => {
+    if (!thrown) {
+      const m = ser.parse(data) as { op: string; error?: unknown };
+      if (m.op === "stream_start" && m.error === undefined) {
+        thrown = true;
+        throw new Error("socket write failed");
+      }
+    }
+    origSend(data);
+  };
+
+  const server = createServer(
+    { idleTimeout: 0, pingInterval: 0, rateLimit: false, maxStreams: 1 },
+    () => new Api(),
+  );
+  server.handle(st as Transport, {});
+  await flush();
+
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "feed" })); // token 1
+  await flush();
+  // First stream: its success frame send throws after registration.
+  ct.send(
+    ser.stringify({ op: "stream_start", tok: 1, stream: "ticks", credits: 4 }),
+  );
+  await flush();
+
+  // The single stream slot must have been reclaimed. A second stream_start must
+  // be admitted — not rejected with STREAM_LIMIT_EXCEEDED (which would mean the
+  // failed first stream leaked its slot).
+  recv.length = 0;
+  ct.send(
+    ser.stringify({ op: "stream_start", tok: 1, stream: "ticks", credits: 4 }),
+  );
+  await flush();
+  const startResp = recv
+    .map((r) => ser.parse(r) as { op: string; error?: { code?: string } })
+    .find((m) => m.op === "stream_start");
+  expect(startResp).toBeDefined();
+  expect(startResp!.error?.code).not.toBe("STREAM_LIMIT_EXCEEDED");
+});
+
 test("a throwing 'error' handler does not break the handler loop", async () => {
   const server = createServer(
     { idleTimeout: 0, pingInterval: 0 },
