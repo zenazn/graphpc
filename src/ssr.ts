@@ -189,29 +189,40 @@ export function createSSRClient<S extends ServerInstance<any>>(
               terminal.args,
               ctx,
             );
+            // Transform the result through the same serde pipeline the regular
+            // client uses — References become data+stub proxies, Paths become
+            // stubs, and any user-registered types round-trip correctly. This
+            // prevents SSR/client divergence.
+            //
+            // Serialize BEFORE recording: if the result can't be encoded, this
+            // fetch fails on its own (the await rejects) without leaving an
+            // entry that would later make generateHydrationData() throw and
+            // poison the entire render's hydration payload.
+            const serialized = serializer.stringify(result);
             callEntries.push({
               token,
               method: terminal.name,
               args: terminal.args,
               result,
             });
-            // Transform the result through the same serde pipeline the
-            // regular client uses — References become data+stub proxies,
-            // Paths become stubs, and any user-registered types round-trip
-            // correctly. This prevents SSR/client divergence.
-            return resultSerializer.parse(serializer.stringify(result));
+            return resultSerializer.parse(serialized);
           })();
           callResults.set(callKey, promise);
           return promise;
         } else {
           if (dataResults.has(token)) return dataResults.get(token);
           const data = resolveData(node, ctx);
+          // Serialize BEFORE recording (see the terminal branch): a node whose
+          // data can't be encoded must fail only this fetch, not corrupt
+          // generateHydrationData() for the whole render.
+          const serialized = serializer.stringify(data);
           // Record the raw data (References stay References in the payload),
           // but hand the caller the same revived view the live client builds.
           dataEntries.push({ token, value: data });
-          const revived = resultSerializer.parse(
-            serializer.stringify(data),
-          ) as Record<string, unknown>;
+          const revived = resultSerializer.parse(serialized) as Record<
+            string,
+            unknown
+          >;
           const proxy = createDataProxy(backend, edgePath, revived);
           dataResults.set(token, proxy);
           return proxy;

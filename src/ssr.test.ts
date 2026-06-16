@@ -704,6 +704,44 @@ test("custom serializer: without options, custom types fail to serialize", async
   }
 });
 
+test("SSR: an unserializable fetch fails only itself, not the whole hydration payload", async () => {
+  class PoisonApi extends Node {
+    @method
+    async good(): Promise<number> {
+      return 123;
+    }
+    @method
+    async bad(): Promise<unknown> {
+      return () => 42; // devalue cannot encode a function
+    }
+  }
+  const pgpc = createServer({}, () => new PoisonApi());
+  const client = createSSRClient<typeof pgpc>(new PoisonApi(), {});
+
+  expect(await client.root.good()).toBe(123);
+
+  // The poisoned fetch rejects on its own await...
+  let threw = false;
+  try {
+    await client.root.bad();
+  } catch {
+    threw = true;
+  }
+  expect(threw).toBe(true);
+
+  // ...but it must NOT have been recorded, so generating the hydration payload
+  // still succeeds and the good fetch survives. (Previously the entry was
+  // pushed before the serialize step that throws, poisoning the whole payload.)
+  let json = "";
+  expect(() => {
+    json = client.generateHydrationData();
+  }).not.toThrow();
+  const parsed = createSerializer().parse(json) as HydrationWire;
+  expect(parsed.data.some((entry) => entry[entry.length - 1] === 123)).toBe(
+    true,
+  );
+});
+
 test("custom serializer: full pipeline client vs SSR vs hydrated", async () => {
   // SSR
   const ssrClient = createSSRClient<typeof shopGpc>(
