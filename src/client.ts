@@ -709,6 +709,7 @@ export function createClient<S extends ServerInstance<any>>(
         const stream = activeClientStreams.get(msg.sid);
         if (!stream) return;
         stream.done = true;
+        clearCreditTimer(stream);
         if (msg.error) {
           stream.error = msg.error;
           if (msg.errorId) setErrorUuid(msg.error, msg.errorId);
@@ -826,6 +827,18 @@ export function createClient<S extends ServerInstance<any>>(
     }
   }
 
+  // Clear a stream's pending credit timer. Must run at every stream-termination
+  // site (end, cancel, disconnect, close, reconnect-exhaustion) so a dangling
+  // timer doesn't keep the ended stream's state reachable (and the event loop
+  // armed) for up to its 100ms delay.
+  function clearCreditTimer(stream: ClientStreamState) {
+    if (stream.creditTimer) {
+      const t = options.timers ?? defaultTimers();
+      t.clearTimeout(stream.creditTimer);
+      stream.creditTimer = null;
+    }
+  }
+
   function grantCredits(stream: ClientStreamState, amount = stream.consumed) {
     if (!transport || stream.sid === 0 || stream.cancelled || stream.done)
       return;
@@ -857,11 +870,7 @@ export function createClient<S extends ServerInstance<any>>(
     // Handle active streams on disconnect
     for (const stream of activeClientStreams.values()) {
       // Clear any pending credit timer (it would fire on a closed transport)
-      if (stream.creditTimer) {
-        const t = options.timers ?? defaultTimers();
-        t.clearTimeout(stream.creditTimer);
-        stream.creditTimer = null;
-      }
+      clearCreditTimer(stream);
       if (stream.resume) {
         // With resume: pending next() blocks (doesn't resolve or reject)
         // It will be routed to the new stream on reconnect
@@ -948,6 +957,7 @@ export function createClient<S extends ServerInstance<any>>(
       // Streams held open across the reconnect window can never resume now.
       for (const stream of activeClientStreams.values()) {
         stream.done = true;
+        clearCreditTimer(stream);
         stream.error = err;
         if (stream.pending) {
           stream.pending.reject(err);
@@ -1568,6 +1578,7 @@ export function createClient<S extends ServerInstance<any>>(
             return(): Promise<IteratorResult<unknown>> {
               if (!streamState.cancelled) {
                 streamState.cancelled = true;
+                clearCreditTimer(streamState);
                 startingStreams.delete(streamState);
                 if (streamState.sid !== 0) {
                   // Already have a server-assigned SID — cancel immediately
@@ -1763,12 +1774,8 @@ export function createClient<S extends ServerInstance<any>>(
     pendingTerminals.clear();
 
     // Cancel all streams
-    const t = options.timers ?? defaultTimers();
     for (const stream of activeClientStreams.values()) {
-      if (stream.creditTimer) {
-        t.clearTimeout(stream.creditTimer);
-        stream.creditTimer = null;
-      }
+      clearCreditTimer(stream);
       stream.cancelled = true;
       stream.done = true;
       if (stream.pending) {

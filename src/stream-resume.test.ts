@@ -7,7 +7,7 @@ import { createMockTransportPair } from "./protocol";
 import { RpcError, ConnectionLostError } from "./errors";
 import { Node } from "./types";
 import type { Transport } from "./protocol";
-import { flush, waitForEvent } from "./test-utils";
+import { flush, waitForEvent, fakeTimers, mockConnect } from "./test-utils";
 
 class Feed extends Node {
   @stream(z.string(), z.number().optional())
@@ -376,5 +376,30 @@ test("resume() that throws rejects the held next() with that error", async () =>
   ]);
   expect(result).toBeInstanceOf(Error);
   expect((result as Error).message).toBe("resume blew up");
+  client.close();
+});
+
+test("cancelling a partially-consumed stream clears its pending credit timer", async () => {
+  const timers = fakeTimers();
+  const gpc = createServer(
+    { idleTimeout: 0, pingInterval: 0 },
+    () => new Root(),
+  );
+  const client = createClient<typeof gpc>({ reconnect: false, timers }, () =>
+    mockConnect(gpc, {}),
+  );
+  await client.ready;
+
+  const iter = client.root.feed.updates("X")[Symbol.asyncIterator]();
+  const first = await iter.next();
+  expect(first.done).toBe(false);
+  // Consuming a partial credit window armed the 100ms credit timer.
+  expect(timers.pending()).toBeGreaterThanOrEqual(1);
+
+  // Cancelling must clear it (it was previously cleared only on disconnect/close,
+  // leaving a dangling timer that kept the ended stream's state reachable).
+  await iter.return!();
+  expect(timers.pending()).toBe(0);
+
   client.close();
 });
