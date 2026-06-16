@@ -1480,9 +1480,9 @@ function createHandler(
       if (explicitDelayMs !== undefined) {
         waitMs = explicitDelayMs;
       } else {
-        // With no refill the bucket never recovers on its own; leave the stream
-        // paused until more credits/cancel/disconnect arrive instead of arming
-        // an infinite timer.
+        // Backstop: never arm an infinite/NaN timer if asked to wait on a
+        // bucket that can't refill. The rate-limit caller handles refillRate<=0
+        // by ending the stream (see pumpStreamLoop), so this is defensive.
         if (rlRefillRate <= 0) return;
         const needed = streamFrameCost - rlTokens;
         waitMs = needed > 0 ? Math.ceil((needed / rlRefillRate) * 1000) : 0;
@@ -1517,6 +1517,21 @@ function createHandler(
           // the bucket is empty, pause and resume as it refills so a flood of
           // credit grants cannot drive unbounded serialize/send work.
           if (!consumeTokens(streamFrameCost)) {
+            // If the bucket can never refill (refillRate <= 0), parking would
+            // hang the client forever with no stream_end. End the stream with a
+            // RateLimitError so its RpcStream settles instead.
+            if (rlEnabled && rlRefillRate <= 0) {
+              const response = {
+                op: "stream_end" as const,
+                sid: stream.sid,
+                error: new RateLimitError(),
+                errorId: undefined as string | undefined,
+              };
+              processErrorResponse(response);
+              transport.send(serializer.stringify(response));
+              cleanupStream(stream);
+              return;
+            }
             scheduleStreamResume(stream);
             return;
           }

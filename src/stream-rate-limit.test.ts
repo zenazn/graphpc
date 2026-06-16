@@ -101,6 +101,39 @@ test("stream egress is bounded by the token bucket despite a huge credit grant",
   expect(timers.pending()).toBe(0);
 });
 
+test("a stream ends with RateLimitError (not a silent hang) when the bucket can never refill", async () => {
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: string[] = [];
+  clientTransport.addEventListener("message", (e) => received.push(e.data));
+
+  const server = createServer(
+    {
+      idleTimeout: 0,
+      pingInterval: 0,
+      lruTTL: 0,
+      maxOperationTimeout: 0,
+      maxCredits: 10000,
+      rateLimit: { bucketSize: 10, refillRate: 0 }, // drains and never recovers
+    },
+    () => new FirehoseApi(),
+  );
+  server.handle(serverTransport, {});
+
+  const sid = await startSpew(clientTransport, received, 10000);
+  for (let i = 0; i < 5; i++) await flush();
+
+  const messages = received.map((r) => serializer.parse(r) as WireMessage);
+  // Once the bucket empties with no possible refill, the pump must terminate
+  // the stream with a RateLimitError so the client settles — not park it
+  // indefinitely with no stream_end.
+  const endMsg = messages.find((m) => m.op === "stream_end");
+  expect(endMsg).toBeDefined();
+  expect((endMsg!.error as { code?: string } | undefined)?.code).toBe(
+    "RATE_LIMITED",
+  );
+  expect(sid).toBeLessThan(0);
+});
+
 test("a stream pauses on socket backpressure and resumes once the buffer drains", async () => {
   const timers = fakeTimers();
   const [serverTransport, clientTransport] = createMockTransportPair();
