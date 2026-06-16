@@ -140,6 +140,8 @@ const client = createClient<typeof server>(
 
 Once the cache exceeds the cap, least-recently-inserted nodes are evicted. Nodes with an **active subscriber** (or an in-flight load) are pinned and never evicted, so live UI bindings keep their stable references. An evicted node simply re-fetches on next access — eviction trades the referential-identity guarantee for _cold_ nodes against bounded memory. Leave it unset to keep the default (unbounded) behavior.
 
+`maxCacheEntries` also bounds the internal per-path token bookkeeping and the per-accessor call-stub caches (the navigational stubs returned by calling an edge/method like `root.search(q)` with many distinct arguments), so those can't grow without limit either. With it unset, those keep full referential identity (`root.search("a") === root.search("a")`); with it set, cold call-stubs are dropped and re-created on next use.
+
 ## Reactivity with `subscribe()`
 
 Use `subscribe(stub, callback)` for reactive updates. The callback fires synchronously with the current stub, then again on each invalidation. Returns an unsubscribe function.

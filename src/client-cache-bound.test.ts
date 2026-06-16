@@ -163,6 +163,28 @@ test("maxCacheEntries bounds ref() payloads delivered via a stream", async () =>
   expect(zeroFetches).toBe(1);
 });
 
+test("callable-edge call stubs are bounded by maxCacheEntries (cold args re-created)", () => {
+  const { server } = makeServer();
+  const client = createClient<typeof server>(
+    { reconnect: false, maxCacheEntries: 2 },
+    () => mockConnect(server, {}),
+  );
+
+  const get = (client.root as unknown as { get(id: string): object }).get;
+  const s0 = get("0");
+  const s1 = get("1");
+  const s2 = get("2"); // 3 distinct args > cap 2 → "0" (LRU) evicted
+
+  // Hot args keep their identity...
+  expect(get("2")).toBe(s2);
+  expect(get("1")).toBe(s1);
+  // ...but the evicted cold arg is re-created with a fresh stub. Without the
+  // bound, the per-accessor call cache grows without limit and "0" stays cached.
+  expect(get("0")).not.toBe(s0);
+
+  client.close();
+});
+
 test("default (no maxCacheEntries) keeps everything cached", async () => {
   const { server, dataPaths } = makeServer();
   const client = createClient<typeof server>({ reconnect: false }, () =>

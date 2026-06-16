@@ -1352,6 +1352,10 @@ export function createClient<S extends ServerInstance<any>>(
 
   const backend: ProxyBackend = {
     reducers: options.reducers,
+    // Bound per-accessor call-stub caches by the same cap as the data cache, so
+    // calling an edge/method with unbounded distinct args can't leak memory on a
+    // long-lived client. Unset (default) keeps full stub referential identity.
+    maxStubCacheEntries: maxCacheEntries,
 
     resolve(path: PathSegments): Promise<unknown> {
       if (closed) {

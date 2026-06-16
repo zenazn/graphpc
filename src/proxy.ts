@@ -31,6 +31,16 @@ export interface ProxyBackend {
    * cache keys so distinct custom-typed values produce distinct keys.
    */
   reducers?: Reducers;
+  /**
+   * Soft cap on a callable edge/method accessor's per-argument stub cache. A
+   * long-lived client calling an edge/method with unbounded distinct argument
+   * values would otherwise retain one stub per value forever. When set, the
+   * accessor keeps an LRU window of this many call-stubs; cold ones are dropped
+   * and simply re-created (a fresh navigational handle for the same path — stub
+   * identity is not load-bearing). Unset = unbounded (full referential
+   * identity), matching the default persistent-cache behavior.
+   */
+  maxStubCacheEntries?: number;
 }
 
 /**
@@ -206,10 +216,26 @@ export function createEdgeAccessor(
     }
     const key = args.map((a) => formatValue(a, backend.reducers)).join(",");
     const cached = callCache.get(key);
-    if (cached) return cached;
+    if (cached) {
+      // LRU touch: re-insert so the most-recently-used key is last (Map keeps
+      // insertion order), keeping hot args from being evicted below.
+      const max = backend.maxStubCacheEntries;
+      if (max !== undefined) {
+        callCache.delete(key);
+        callCache.set(key, cached);
+      }
+      return cached;
+    }
     const callPath: PathSegments = [...parentPath, [name, ...args]];
     const stub = createStub(backend, callPath);
     callCache.set(key, stub);
+    // Bound the per-argument stub cache so calling an edge/method with unbounded
+    // distinct args can't grow memory without limit on a long-lived client.
+    const max = backend.maxStubCacheEntries;
+    if (max !== undefined && callCache.size > max) {
+      const oldest = callCache.keys().next().value;
+      if (oldest !== undefined) callCache.delete(oldest);
+    }
     return stub;
   }
 
