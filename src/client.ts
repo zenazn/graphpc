@@ -266,7 +266,17 @@ export function createClient<S extends ServerInstance<any>>(
 
   function emit(event: ClientEvent) {
     for (const handler of listeners[event]) {
-      handler();
+      try {
+        handler();
+      } catch (err) {
+        // emit() runs inside critical control flow — the reconnect path fires
+        // emit("reconnect") immediately before replayPendingTerminals(), and
+        // emit("disconnect")/emit("reconnectFailed") precede cleanup/rejection.
+        // A throwing user handler must NOT escape and abort that work (which
+        // would orphan in-flight ops), nor abort sibling handlers. Surface it
+        // out-of-band, mirroring subscriber-callback isolation in notifyPath().
+        console.error(`[graphpc] "${event}" event handler threw:`, err);
+      }
     }
   }
 

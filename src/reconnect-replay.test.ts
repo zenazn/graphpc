@@ -87,6 +87,34 @@ test("a replayed op survives a second disconnect instead of hanging", async () =
   expect(result).toBe("done");
 });
 
+test("a throwing event handler is isolated and does not abort reconnect replay", async () => {
+  const { client, disconnect } = setup();
+  let secondRan = false;
+  client.on("reconnect", () => {
+    throw new Error("handler boom");
+  });
+  client.on("reconnect", () => {
+    secondRan = true;
+  });
+
+  const slowP = Promise.resolve(client.root.slow());
+  await client.ready;
+  await flush();
+  expect(slowResolvers.length).toBe(1); // conn1's slow() is in-flight
+
+  disconnect();
+  await flush(); // reconnect + hello + emit("reconnect") + replay
+
+  // The throwing first handler must not abort the sibling handler...
+  expect(secondRan).toBe(true);
+  // ...nor the replay of the in-flight slow() onto the new connection.
+  expect(slowResolvers.length).toBe(2);
+
+  // And the replayed op completes normally rather than hanging orphaned.
+  slowResolvers.forEach((r) => r());
+  expect(await slowP).toBe("done");
+});
+
 test("an unserializable argument does not desync response correlation", async () => {
   const { client } = setup();
   await client.ready;
