@@ -4,6 +4,7 @@
  */
 
 import { getEdges, getStreams, isHidden } from "./decorators";
+import { BLOCKED_NAMES } from "./resolve";
 import type { Schema } from "./protocol";
 import type { Context } from "./types";
 
@@ -38,9 +39,16 @@ export function buildSchema(
     schema.push({ edges: {}, streams: [] }); // placeholder
 
     const edges = getEdges(cls);
-    const edgeRecord: Record<string, number> = {};
+    // Null-prototype map: reserved keys are stored/read as plain own properties
+    // rather than tripping the `__proto__` setter, and there are no inherited
+    // members to confuse a consumer's lookups.
+    const edgeRecord: Record<string, number> = Object.create(null);
 
     for (const [name, meta] of edges) {
+      // Skip names the runtime resolver always rejects (resolve.ts BLOCKED_NAMES)
+      // so the advertised schema can't promise a capability that will never be
+      // honored — and so register() side effects don't run for them.
+      if (BLOCKED_NAMES.has(name)) continue;
       if (isHidden(cls, name, ctx)) continue;
       edgeRecord[name] = register(meta.targetType);
     }
@@ -48,6 +56,7 @@ export function buildSchema(
     const streams = getStreams(cls);
     const streamNames: string[] = [];
     for (const [name] of streams) {
+      if (BLOCKED_NAMES.has(name)) continue;
       if (isHidden(cls, name, ctx)) continue;
       streamNames.push(name);
     }

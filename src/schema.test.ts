@@ -227,3 +227,27 @@ test("buildSchema excludes hidden streams", () => {
   expect(schema[1]!.streams).toContain("visible");
   expect(schema[1]!.streams).not.toContain("secret");
 });
+
+test("reserved-name edges are excluded from the schema (matches runtime BLOCKED_NAMES)", () => {
+  class Target extends Node {
+    x = 1;
+  }
+  class WithReserved extends Node {
+    @edge(Target) get prototype(): Target {
+      return new Target();
+    }
+    @edge(Target) get normal(): Target {
+      return new Target();
+    }
+  }
+
+  const { schema } = buildSchema(WithReserved, {});
+  const edges = schema[0]!.edges;
+  // "prototype" is always rejected by the runtime resolver, so it must not be
+  // advertised — the schema must not promise a capability that won't be honored.
+  expect(Object.hasOwn(edges, "prototype")).toBe(false);
+  expect(Object.hasOwn(edges, "normal")).toBe(true);
+  // The edges map is a null-prototype dictionary: no inherited keys, and a
+  // "__proto__" edge could never mutate its prototype.
+  expect(Object.getPrototypeOf(edges)).toBe(null);
+});

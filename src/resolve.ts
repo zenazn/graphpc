@@ -12,7 +12,10 @@ import {
 import { EdgeNotFoundError, MethodNotFoundError } from "./errors";
 import type { Context } from "./types";
 
-const BLOCKED_NAMES = new Set(["constructor", "__proto__", "prototype"]);
+// JS builtins that must never be addressable as edges/methods/streams/fields.
+// Shared with schema building so the advertised schema can't list a name the
+// runtime resolver will always reject.
+export const BLOCKED_NAMES = new Set(["constructor", "__proto__", "prototype"]);
 
 /**
  * Derive the class used for security metadata (@edge/@method/@stream/@hidden)
