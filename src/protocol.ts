@@ -417,11 +417,16 @@ export interface Transport {
   ): void;
 }
 
+// Reused across calls — a non-streaming decode holds no per-call state, so a
+// single module-level decoder avoids allocating one per inbound binary frame on
+// the server's hot path (a client can send every frame as a binary frame).
+const sharedDecoder = new TextDecoder();
+
 /** Convert event.data (which may be a string, Buffer, or ArrayBuffer) to a string. */
 export function eventDataToString(data: unknown): string {
   return typeof data === "string"
     ? data
-    : new TextDecoder().decode(data as ArrayBufferLike);
+    : sharedDecoder.decode(data as ArrayBufferLike);
 }
 
 /** Test-only mock transport pair. Messages are delivered asynchronously via queueMicrotask. Buffers messages sent before any 'message' listener is registered. close() fires 'close' listeners synchronously on both sides. */
