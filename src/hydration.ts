@@ -70,6 +70,16 @@ export class HydrationCache {
    * Returns the schema embedded in the hydration data.
    */
   activate(parsed: HydrationData): Schema {
+    // Reset any state from a prior activation. A second activate() (e.g.
+    // hydrate()/hydrateString() called twice) must not orphan a previously-armed
+    // inactivity timer — it would fire on the first window and drop the freshly
+    // re-activated cache early — nor carry over a stale inFlight count.
+    if (this.inactivityTimer !== undefined) {
+      this.timers.clearTimeout(this.inactivityTimer);
+      this.inactivityTimer = undefined;
+    }
+    this.inFlight = 0;
+
     // Build into locals first; a malformed entry (e.g. a ref that isn't a
     // tuple) throws here, leaving the cache cleanly inactive rather than
     // half-built and permanently bricked.

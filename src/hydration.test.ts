@@ -34,6 +34,26 @@ function makeHydrationData(overrides?: Partial<HydrationData>): HydrationData {
 
 // --- Tests ---
 
+test("re-activate() does not orphan the prior inactivity timer", () => {
+  const timers = fakeTimers();
+  const cache = makeCache({ timeout: 250, timers });
+
+  cache.activate(makeHydrationData());
+  expect(timers.pending()).toBe(1);
+
+  // Re-activating (e.g. hydrate()/hydrateString() called twice) must not leave
+  // the first inactivity timer armed — it would fire on the FIRST window and
+  // drop the freshly re-activated cache early, leaking a timer each time.
+  cache.activate(makeHydrationData());
+  expect(timers.pending()).toBe(1);
+  expect(cache.isActive()).toBe(true);
+
+  // Firing the single armed timer drops the cache; no orphaned timer remains.
+  timers.fire();
+  expect(cache.isActive()).toBe(false);
+  expect(timers.pending()).toBe(0);
+});
+
 test("activate + data lookup hit", () => {
   const cache = makeCache();
   const schema = cache.activate(makeHydrationData());
