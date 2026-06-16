@@ -403,6 +403,20 @@ export function createClient<S extends ServerInstance<any>>(
     return dataLoadCache.has(nodeKey);
   }
 
+  // Drop the per-path token-tracking entries for a node key. Re-traversing the
+  // path simply re-resolves the edge (the maps are a memoization, not a
+  // correctness store — replay works off pendingTerminals). The root entry
+  // (token 0) is permanent and never evicted.
+  function evictEdgeTracking(nodeKey: string): void {
+    if (nodeKey === emptyPathKey) return;
+    resolvedEdges.delete(nodeKey);
+    const tok = pathToTokenSync.get(nodeKey);
+    if (tok !== undefined) {
+      pathToTokenSync.delete(nodeKey);
+      tokenBirthCount.delete(tok);
+    }
+  }
+
   function evictCachedNode(nodeKey: string): void {
     liveDataCache.delete(nodeKey);
     dataProxyCache.delete(nodeKey);
@@ -410,6 +424,9 @@ export function createClient<S extends ServerInstance<any>>(
     for (const k of getCache.keys()) {
       if (k.startsWith(prefix)) getCache.delete(k);
     }
+    // Keep the token-tracking maps in sync with the data cache so they don't
+    // drift and grow unbounded after the node's data is evicted.
+    evictEdgeTracking(nodeKey);
   }
 
   // Opt-in soft cap on the persistent data cache. Evicts least-recently-inserted
@@ -434,6 +451,19 @@ export function createClient<S extends ServerInstance<any>>(
         const nodeKey = sep === -1 ? key : key.slice(0, sep);
         if (isCacheEntryPinned(nodeKey)) continue;
         getCache.delete(key);
+      }
+    }
+    // Bound the per-path token-tracking maps directly. A node reached only by
+    // single-field reads (or a never-data-fetched intermediate edge) has no
+    // liveDataCache entry to drive eviction above, so without this these maps
+    // grow unbounded over a long-lived connection. Evict least-recently-inserted
+    // unpinned paths (root and pinned paths are kept).
+    if (pathToTokenSync.size > maxCacheEntries) {
+      for (const key of pathToTokenSync.keys()) {
+        if (pathToTokenSync.size <= maxCacheEntries) break;
+        if (key === emptyPathKey) continue;
+        if (isCacheEntryPinned(key)) continue;
+        evictEdgeTracking(key);
       }
     }
   }

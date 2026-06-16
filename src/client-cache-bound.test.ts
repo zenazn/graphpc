@@ -74,6 +74,33 @@ test("subscribed nodes are pinned and not evicted by the bound", async () => {
   unsub();
 });
 
+test("maxCacheEntries also evicts the per-path token maps (re-traversal re-resolves the edge)", async () => {
+  const edgePaths: string[] = [];
+  const server = createServer({}, () => new Api());
+  server.on(
+    "operation",
+    async (_ctx, info, execute): Promise<OperationResult> => {
+      if (info.op === "edge") edgePaths.push(info.path);
+      return execute();
+    },
+  );
+  const client = createClient<typeof server>(
+    { reconnect: false, maxCacheEntries: 1 },
+    () => mockConnect(server, {}),
+  );
+
+  await client.root.get("a"); // edge op #1 for a
+  await client.root.get("b"); // a evicted (data AND its edge token)
+  await client.root.get("a"); // cache miss → must re-resolve the edge
+  await flush();
+
+  const aEdges = edgePaths.filter((p) => /get\("a"\)/.test(p)).length;
+  // Without dropping the edge token on eviction, the second get("a") would reuse
+  // the cached token (only a data refetch, no edge op) → 1. With the maps kept
+  // in sync, the edge is re-resolved → 2.
+  expect(aEdges).toBe(2);
+});
+
 test("maxCacheEntries bounds ref() payloads delivered via a stream", async () => {
   const dataPaths: string[] = [];
 
