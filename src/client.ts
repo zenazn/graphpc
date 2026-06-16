@@ -631,8 +631,17 @@ export function createClient<S extends ServerInstance<any>>(
         // combined pass after parse, instead of per-ref during parse.
         deferredRefs = [];
         msg = parseServerMessage(serializer.parse(raw));
-      } catch {
+      } catch (err) {
         deferredRefs = null;
+        // Surface the failure: dropping the connection silently here turns a
+        // protocol/parse error (version skew, a buggy/compromised server, wire
+        // corruption) into an invisible reconnect loop with no signal for an
+        // operator to act on. Log the error and the frame's byte length — but
+        // never the frame contents, which may carry PII.
+        console.error(
+          `[graphpc] dropping connection: unparseable server frame (${raw.length} bytes):`,
+          err,
+        );
         try {
           t.close();
         } catch {}

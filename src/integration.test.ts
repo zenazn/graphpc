@@ -2042,6 +2042,53 @@ test("malformed server responses are treated as fatal (no hang)", async () => {
   ).rejects.toMatchObject({ code: "CONNECTION_CLOSED" });
 });
 
+test("a malformed server frame logs a diagnostic before dropping the connection", async () => {
+  class PingApi extends Node {
+    @method
+    ping(): string {
+      return "pong";
+    }
+  }
+
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  let count = 0;
+  const originalSend = serverTransport.send.bind(serverTransport);
+  serverTransport.send = (data: string) => {
+    count++;
+    if (count === 1)
+      originalSend(data); // valid hello
+    else originalSend(serializer.stringify("bad-frame"));
+  };
+  const server = createServer({}, () => new PingApi());
+  server.handle(serverTransport, {});
+
+  const errors: unknown[][] = [];
+  const origErr = console.error;
+  console.error = (...args: unknown[]) => {
+    errors.push(args);
+  };
+  try {
+    const client = createClient<typeof server>(
+      { reconnect: false },
+      () => clientTransport,
+    );
+    try {
+      await client.root.ping();
+    } catch {
+      // connection dropped — expected
+    }
+    await flush();
+  } finally {
+    console.error = origErr;
+  }
+
+  const logged = errors.some(
+    (a) =>
+      typeof a[0] === "string" && a[0].includes("unparseable server frame"),
+  );
+  expect(logged).toBe(true);
+});
+
 test("malformed message closes connection and emits error event", async () => {
   const [serverTransport, clientTransport] = createMockTransportPair();
   let closed = false;
