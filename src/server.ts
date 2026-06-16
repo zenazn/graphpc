@@ -491,13 +491,21 @@ function createHandler(
 
     function fireLruEviction() {
       const now = Date.now();
-      let entry = lruTail;
-      while (entry) {
-        const prev = entry.lruPrev;
+      // Snapshot the expired, unpinned candidates BEFORE evicting any of them.
+      // evictSubtree() recursively removes a node's descendants, and the LRU
+      // list is ordered by recency (not tree shape), so a descendant can sit
+      // anywhere — including the entry we captured as "next to visit". Mutating
+      // the list mid-walk could null that pointer and truncate the traversal,
+      // leaving still-expired nodes for a later tick. Collect, then evict.
+      const candidates: NodeEntry[] = [];
+      for (let entry = lruTail; entry; entry = entry.lruPrev) {
         if (entry.pinCount === 0 && now - entry.lastAccess > lruTTL) {
-          evictSubtree(entry);
+          candidates.push(entry);
         }
-        entry = prev;
+      }
+      for (const entry of candidates) {
+        // Skip any candidate already evicted as a descendant of an earlier one.
+        if (entry.inLru) evictSubtree(entry);
       }
       resetLruTimer();
     }

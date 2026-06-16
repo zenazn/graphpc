@@ -300,6 +300,82 @@ test("ops on live tokens succeed after LRU eviction (entry rebuild restores refc
   }
 });
 
+test("fireLruEviction evicts all expired nodes in one sweep (no early termination when a child is the captured predecessor)", async () => {
+  const timers = fakeTimers();
+  let cCount = 0;
+
+  class Leaf extends Node {
+    value = "leaf";
+  }
+  class Mid extends Node {
+    @edge(Leaf) get leaf(): Leaf {
+      return new Leaf();
+    }
+  }
+  class Root extends Node {
+    @edge(Mid) get a(): Mid {
+      return new Mid();
+    }
+    @edge(Leaf) get c(): Leaf {
+      cCount++;
+      return new Leaf();
+    }
+  }
+
+  const [st, ct] = createMockTransportPair();
+  const recv: string[] = [];
+  ct.addEventListener("message", (e) => recv.push(e.data));
+  const server = createServer(
+    {
+      idleTimeout: 0,
+      pingInterval: 0,
+      rateLimit: false,
+      maxOperationTimeout: 0,
+      lruTTL: 5,
+      timers,
+    },
+    () => new Root(),
+  );
+  server.handle(st as Transport, {});
+  await flush();
+
+  // Tokens are assigned sequentially: a→1, leaf→2, c→3. B (leaf) is a child of
+  // A (mid); C is a sibling under root.
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "a" })); // token 1 (A = Mid)
+  ct.send(ser.stringify({ op: "edge", tok: 1, edge: "leaf" })); // token 2 (B, child of A)
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "c" })); // token 3 (C, sibling)
+  await flush();
+  expect(cCount).toBe(1); // c resolved once during navigation
+
+  // Pull the nodes into the LRU list (entries enter it on data/get access, not
+  // at edge time). Access order A, B, C makes the recency order tail→head =
+  // A, B, C — so the sweep visits A first and B (A's child) is A's captured
+  // predecessor.
+  ct.send(ser.stringify({ op: "data", tok: 1 }));
+  ct.send(ser.stringify({ op: "data", tok: 2 }));
+  ct.send(ser.stringify({ op: "data", tok: 3 }));
+  await flush();
+  expect(cCount).toBe(1); // data ops reuse the resolved nodes; no re-run
+
+  // All entries are now older than lruTTL (flush waited 15ms > 5ms). Fire the
+  // LRU sweep exactly once. With the early-termination bug, evicting A removes
+  // its child B (the captured predecessor) and the walk stops, skipping C.
+  timers.fire();
+  await flush();
+
+  // Re-access C via its still-valid token. If C was correctly evicted, this
+  // rebuilds and re-resolves it (c getter runs again → cCount 2). If C was
+  // skipped, the cached entry answers and the getter does not re-run.
+  recv.length = 0;
+  ct.send(ser.stringify({ op: "data", tok: 3 }));
+  await flush();
+  const datas = recv
+    .map((r) => ser.parse(r) as { op: string })
+    .filter((m) => m.op === "data");
+  expect(datas).toHaveLength(1);
+  expect(cCount).toBe(2);
+});
+
 test("a throwing 'error' handler does not break the handler loop", async () => {
   const server = createServer(
     { idleTimeout: 0, pingInterval: 0 },
