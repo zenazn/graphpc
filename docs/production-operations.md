@@ -244,6 +244,8 @@ class Api extends Node {
 }
 ```
 
+Note the replay consequence: `abortThisConn()` gives the rejected operation no response, so a client with reconnect enabled will reconnect and replay it — effectively retrying until the limiter allows it. If you want the caller to receive a rejection instead, throw an error (for example a registered custom error) from the edge or method.
+
 ## Request IDs
 
 Generate an ID at upgrade time and store in context.

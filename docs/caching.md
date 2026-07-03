@@ -81,7 +81,7 @@ After `await node`, subsequent property reads like `await node.title` are served
 
 ### Cache key identity
 
-Cache keys are built by formatting each path segment (the same `formatPath`/`formatValue` used in error messages). Object arguments are **not** key-sorted — formatting follows JavaScript's property enumeration order (integer keys ascending, then string keys in insertion order). Two object literals with the same entries in different order produce different cache keys:
+Cache keys are built by formatting each path segment (the same `formatPath`/`formatValue` used in error messages). Object arguments are **not** key-sorted — formatting follows JavaScript's property enumeration order (integer keys ascending, then string keys in insertion order). Two object literals with the same entries in different order produce different cache keys (`search` here is an edge — method calls never coalesce regardless):
 
 ```typescript
 // These are two different cache keys — they will NOT coalesce

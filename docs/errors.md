@@ -6,17 +6,17 @@ When to read this page: when you want exact client-visible error types and `inst
 
 GraphPC provides error classes that all extend `RpcError`:
 
-| Error                      | Code                    | When it occurs                                                            |
-| -------------------------- | ----------------------- | ------------------------------------------------------------------------- |
-| `RpcError`                 | varies                  | Base class for all RPC errors; also wraps non-registered thrown values    |
-| `ValidationError`          | `VALIDATION_ERROR`      | `@edge`, `@method`, or `@stream` argument fails schema validation         |
-| `EdgeNotFoundError`        | `EDGE_NOT_FOUND`        | Server handled an `edge` op for a missing or hidden edge                  |
-| `MethodNotFoundError`      | `METHOD_NOT_FOUND`      | Server handled a `get` op for a missing or hidden member                  |
-| `ConnectionLostError`      | `CONNECTION_LOST`       | All reconnect attempts exhausted                                          |
-| `TokenExpiredError`        | `TOKEN_EXPIRED`         | Auto-replay circuit breaker tripped (5 consecutive failures on same path) |
-| `StreamLimitExceededError` | `STREAM_LIMIT_EXCEEDED` | Too many concurrent streams on this connection                            |
-| `RateLimitError`           | `RATE_LIMITED`          | Per-connection token bucket exhausted                                     |
-| `PathDepthExceededError`   | `PATH_DEPTH_EXCEEDED`   | Edge traversal exceeded `maxDepth` limit                                  |
+| Error                      | Code                    | When it occurs                                                          |
+| -------------------------- | ----------------------- | ----------------------------------------------------------------------- |
+| `RpcError`                 | varies                  | Base class for all RPC errors; also wraps non-registered thrown values  |
+| `ValidationError`          | `VALIDATION_ERROR`      | `@edge`, `@method`, or `@stream` argument fails schema validation       |
+| `EdgeNotFoundError`        | `EDGE_NOT_FOUND`        | Server handled an `edge` op for a missing or hidden edge                |
+| `MethodNotFoundError`      | `METHOD_NOT_FOUND`      | Server handled a `get` op for a missing or hidden member                |
+| `ConnectionLostError`      | `CONNECTION_LOST`       | All reconnect attempts exhausted                                        |
+| `TokenExpiredError`        | `TOKEN_EXPIRED`         | Auto-replay circuit breaker tripped (5 failed replays of the same path) |
+| `StreamLimitExceededError` | `STREAM_LIMIT_EXCEEDED` | Too many concurrent streams on this connection                          |
+| `RateLimitError`           | `RATE_LIMITED`          | Per-connection token bucket exhausted                                   |
+| `PathDepthExceededError`   | `PATH_DEPTH_EXCEEDED`   | Edge traversal exceeded `maxDepth` limit                                |
 
 Token expiry is normally invisible — the client replays the path automatically. `TokenExpiredError` surfaces only after five automatic replays of the same path fail in a row. See [Internals — Token Window](internals.md#token-window).
 

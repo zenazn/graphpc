@@ -57,7 +57,7 @@ export interface ServerOptions extends SerializerOptions {
   maxOperationTimeout?: number; // ms before aborting a single operation (0 = disabled)
   maxStreams?: number; // max concurrent streams per client (default: 32)
   maxMessageBytes?: number; // max decoded inbound message size; over this the connection is closed (0 = disabled, default)
-  maxBufferedBytes?: number; // pause a stream's pump while the transport's send buffer exceeds this, so a slow consumer can't grow it without bound (0 = disabled, default; requires a transport that reports bufferedAmount())
+  maxBufferedBytes?: number; // pause a stream's pump while the transport's send buffer exceeds this, so a slow consumer can't grow it without bound (0 = disabled, default; requires a transport that reports bufferedAmount — a number, as on Web WebSocket/ws, or a function, as the built-in Bun adapter provides)
   maxCredits?: number; // max credits per stream the server will honor (default: 256)
   maxDepth?: number; // max edge traversal depth per connection (default: 64)
   redactErrors?: boolean; // redact unregistered errors (default: on, except when NODE_ENV is "development" or "test")
@@ -619,10 +619,13 @@ function createHandler(
           ) {
             evictSubtree(oldEntry);
           }
-        } else if (oldPath !== "root") {
-          // Fix 2: entry was already LRU-evicted but pathSegmentsIndex/nodeCache
-          // were retained for the live token. Now that the token has expired,
-          // clean up the orphaned data.
+        } else if (oldPath !== "root" && !pathTokenCount.has(oldPath)) {
+          // Entry was already LRU-evicted but pathSegmentsIndex/nodeCache were
+          // retained for live tokens. Only clean up once NO in-window token
+          // still references this path (pathTokenCount was just decremented
+          // above). Deleting the reconstruction data while another live token
+          // remains would orphan it: that token's next op rebuilds from missing
+          // segments/nodeCache and spuriously fails with INVALID_TOKEN.
           pathSegmentsIndex.delete(oldPath);
           nodeCache.delete(oldPath);
         }
@@ -777,7 +780,7 @@ function createHandler(
             settled: true,
             parent: rootEntry,
             children: new Set(),
-            tokenRefCount: 1,
+            tokenRefCount: pathTokenCount.get(path) ?? 1,
             pinCount: 0,
             lastAccess: Date.now(),
             lruPrev: null,
@@ -820,6 +823,12 @@ function createHandler(
               segName,
               segArgs,
             );
+            // Restore this entry's in-window token refcount. A rebuilt ancestor
+            // may itself have live tokens; leaving it at ensureEntry's default
+            // of 0 would let a later token expiry (oldEntry.tokenRefCount--)
+            // drive it negative and evictSubtree it, deleting reconstruction
+            // data another live token still needs → spurious INVALID_TOKEN.
+            nextEntry.tokenRefCount = pathTokenCount.get(entryPath) ?? 0;
           }
           currentEntry = nextEntry;
         }
@@ -1481,10 +1490,14 @@ function createHandler(
     // mark. A consumer that grants credits but stops draining the socket would
     // otherwise let the pump push frames into the send buffer without bound
     // (the token bucket meters frame COUNT, not bytes). Requires a transport
-    // that reports bufferedAmount(); a no-op otherwise.
+    // that reports bufferedAmount (a number property, as on Web WebSocket / ws,
+    // or a zero-arg function, as the built-in Bun adapter provides); a no-op
+    // otherwise.
     function isStreamBackpressured(): boolean {
-      if (maxBufferedBytes <= 0 || !transport.bufferedAmount) return false;
-      return transport.bufferedAmount() > maxBufferedBytes;
+      if (maxBufferedBytes <= 0) return false;
+      const v = transport.bufferedAmount;
+      const n = typeof v === "function" ? v() : v;
+      return n !== undefined && n > maxBufferedBytes;
     }
 
     // Pause a stream and re-pump it later. Two reasons to pause:

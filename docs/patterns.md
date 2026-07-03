@@ -79,8 +79,6 @@ The client passes `nextCursor` back to get the next page. Each item is a referen
 For richer pagination — page metadata, caching, and component-friendly data loading — model pages as graph nodes with items as a data property:
 
 ```typescript
-import { canonicalPath } from "graphpc";
-
 class PostsPage extends Node {
   cursor: string;
   total: number;
@@ -106,10 +104,6 @@ class PostsPage extends Node {
     const result = await db.posts.list({ after: cursor, limit: 20 });
     const items = await Promise.all(result.rows.map((r) => ref(Post, r.id)));
     return new PostsPage(result.cursor, result.total, result.nextCursor, items);
-  }
-
-  static [canonicalPath](root: Api, cursor: string) {
-    return root.posts.page(cursor);
   }
 }
 ```
@@ -150,7 +144,7 @@ if (nextCursor) {
 
 With cursor-based pagination, a page's contents are stable — the same cursor always returns the same data. This makes items a natural fit for a data property rather than a method. Storing pre-resolved references as properties means `await page` fetches everything in one shot: metadata, items (with their data), and the next cursor.
 
-The client navigates to the next page via `posts.page(nextCursor)` — the same edge used to load the first page. Each page is independently addressable: `posts.page("abc123")` is an ordinary edge path, so it works for deep linking, SSR, and hydration like any other node. Pages are cached by path, so revisiting a page is a cache hit. (The `[canonicalPath]` static on `Post` is what lets the page return its items as `ref()`s — it plays no role in addressing the page itself.)
+The client navigates to the next page via `posts.page(nextCursor)` — the same edge used to load the first page. Each page is independently addressable: `posts.page("abc123")` is an ordinary edge path, so it works for deep linking, SSR, and hydration like any other node. Pages are cached by path, so revisiting a page is a cache hit. (The `[canonicalPath]` static on `Post` — not shown here, see [Identity and References](identity.md) — is what lets the page return its items as `ref()`s. `PostsPage` itself needs no `[canonicalPath]`: pages are addressed by their ordinary edge path.)
 
 Use the page-node approach when pages need caching, component integration with `use()` / `await`, or meaningful metadata (counts, facets).
 

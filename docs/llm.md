@@ -95,7 +95,7 @@ Operational policy (redaction/reporting): [Production Guide](production.md).
 
 ## Production (`production.md`)
 
-- Set limits: `tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, `maxDepth`, `rateLimit`; payload size at the transport layer (not a graphpc option).
+- Set limits: `tokenWindow`, `maxStreams`, `maxPendingOps`, `maxQueuedOps`, `maxDepth`, `rateLimit`; cap payload size with `maxMessageBytes` (default disabled) and/or at the transport layer.
 - Set `maxOperationTimeout`; use `abortSignal()` in long-running work (timeout does not kill handlers that ignore it).
 - Log `operationError` with `errorId`.
 - Use `connection` / `disconnect` / `operation` events for observability.

@@ -4673,7 +4673,6 @@ test("credit timer cleared on disconnect for resumable streams (bug 6)", async (
   expect(first).toEqual({ value: 0, done: false });
 
   // The credit timer (100ms) should be pending from consuming the first value
-  // A credit timer (100ms) should be pending from consuming the first value
   expect(ft.pending()).toBeGreaterThan(0);
 
   // Disconnect — for resumable streams, the stream stays alive

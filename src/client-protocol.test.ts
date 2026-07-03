@@ -54,6 +54,26 @@ test("a non-object data payload rejects the caller instead of hanging", async ()
   expect((caught as RpcError).code).toBe("PROTOCOL_ERROR");
 });
 
+test("ready rejects when a reconnect-disabled connection closes before hello", async () => {
+  // With reconnect disabled, a transport that dies before sending `hello` leaves
+  // `ready` with no way to ever resolve. It must reject rather than hang forever.
+  const [st, ct] = createMockTransportPair();
+  const client = createClient<any>({ reconnect: false }, () => ct);
+  const readyPromise = client.ready; // triggers ensureConnected → wires ct
+  await flush();
+
+  st.close(); // no hello was ever sent; fires 'close' on ct
+
+  let caught: unknown;
+  try {
+    await readyPromise;
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(RpcError);
+  expect((caught as RpcError).code).toBe("CONNECTION_CLOSED");
+});
+
 test("subsequent messages still dispatch after a malformed data frame", async () => {
   // The throw must not escape the message listener and break dispatch.
   const [st, ct] = createMockTransportPair();
