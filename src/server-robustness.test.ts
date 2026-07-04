@@ -376,6 +376,53 @@ test("fireLruEviction evicts all expired nodes in one sweep (no early terminatio
   expect(cCount).toBe(2);
 });
 
+test("a live token survives a same-path sibling token expiring after LRU eviction (no spurious INVALID_TOKEN)", async () => {
+  const timers = fakeTimers();
+  // Small token window so a few ops force token expiry; tiny LRU TTL so one
+  // sweep evicts the shared entry.
+  const { ct, recv } = connect({
+    tokenWindow: 3,
+    lruTTL: 1,
+    maxOperationTimeout: 0,
+    timers,
+  });
+  await flush();
+
+  // Two traversals of the SAME edge → two distinct tokens (1 and 2) that
+  // reference one path / NodeEntry. pathTokenCount for that path is now 2.
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "child" })); // token 1
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "child" })); // token 2
+  await flush();
+
+  // Pull the shared entry into the LRU list, then evict it. Its segment +
+  // nodeCache reconstruction data must be retained because two live tokens
+  // still reference the path.
+  ct.send(ser.stringify({ op: "data", tok: 1 }));
+  await flush(); // real time passes the 1ms TTL
+  timers.fireAll(); // LRU sweep evicts the (unpinned) shared entry
+  await flush();
+
+  // Allocate two more tokens (3 and 4) to push token 1 out of the sliding
+  // window. Token 4 lands on token 1's ring slot and expires it; token 2 stays
+  // in-window and still references the evicted path.
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "feed" })); // token 3
+  ct.send(ser.stringify({ op: "edge", tok: 0, edge: "feed" })); // token 4 expires token 1
+  await flush();
+
+  // token 2 is valid and in-window: its data op must transparently rebuild the
+  // evicted entry and succeed. The bug deleted the path's reconstruction data
+  // when token 1 expired (ignoring token 2), turning this into INVALID_TOKEN.
+  recv.length = 0;
+  ct.send(ser.stringify({ op: "data", tok: 2 }));
+  await flush();
+
+  const reply = recv
+    .map((r) => ser.parse(r) as { op: string; error?: unknown })
+    .find((m) => m.op === "data");
+  expect(reply, "token 2 must still resolve, not error out").toBeDefined();
+  expect("error" in (reply as object)).toBe(false);
+});
+
 test("a failed stream_start success-frame send releases the slot and pins (no maxStreams leak)", async () => {
   const [st, ct] = createMockTransportPair();
   const recv: string[] = [];

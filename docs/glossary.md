@@ -40,25 +40,25 @@ The typed client-side proxy for a node. Stubs mirror server graph shape and supp
 
 The sequence of edge/property/method-call segments used to reach a node (for example: `root.posts.get("42")`).
 
-See also: [Mental Model](mental-model.md), [Path References](identity.md)
+See also: [Mental Model](mental-model.md), [Identity and References](identity.md)
 
 ### Canonical path
 
 A class-defined path (via `[canonicalPath]`) used as the stable identity route for `ref()` and `pathTo()`.
 
-See also: [Identity and References](identity.md), [Path References](identity.md)
+See also: [Identity and References](identity.md)
 
 ### PathArg
 
 Client-side wire wrapper for path segments, typically created by `pathOf(stub)`.
 
-See also: [Path References](identity.md)
+See also: [Identity and References](identity.md)
 
 ### Path<T>
 
 Server-side thenable path reference. `await` resolves it to a live node after validation and graph walking.
 
-See also: [Path References](identity.md)
+See also: [Identity and References](identity.md)
 
 ## Freshness and Lifecycle Terms
 

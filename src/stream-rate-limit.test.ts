@@ -182,6 +182,60 @@ test("a stream pauses on socket backpressure and resumes once the buffer drains"
   await flush();
 });
 
+test("backpressure works with a Web WebSocket-style numeric bufferedAmount property", async () => {
+  const timers = fakeTimers();
+  const [serverTransport, clientTransport] = createMockTransportPair();
+  const received: string[] = [];
+  clientTransport.addEventListener("message", (e) => received.push(e.data));
+
+  // Web WebSocket / ws expose bufferedAmount as a readonly number getter, not
+  // a method. The server must treat that shape as a backpressure signal too —
+  // not call it as a function (which would throw and tear the stream down).
+  let buffered = 0;
+  Object.defineProperty(serverTransport, "bufferedAmount", {
+    get: () => buffered,
+    configurable: true,
+  });
+
+  const server = createServer(
+    {
+      idleTimeout: 0,
+      pingInterval: 0,
+      lruTTL: 0,
+      maxOperationTimeout: 0,
+      maxCredits: 10000,
+      rateLimit: false, // isolate: socket backpressure is the only throttle
+      maxBufferedBytes: 1000,
+      timers,
+    },
+    () => new FirehoseApi(),
+  );
+  server.handle(serverTransport, {});
+
+  // Over the high-water mark before the stream even starts pumping.
+  buffered = 5000;
+  const sid = await startSpew(clientTransport, received, 50);
+
+  // The stream must NOT have been torn down with an error…
+  const endMsg = received
+    .map((r) => serializer.parse(r) as WireMessage)
+    .find((m) => m.op === "stream_end");
+  expect(endMsg).toBeUndefined();
+  // …it paused: at most one in-flight frame, with a resume poll pending.
+  const stalled = countData(received);
+  expect(stalled).toBeLessThanOrEqual(1);
+  expect(timers.pending()).toBeGreaterThanOrEqual(1);
+
+  // Drain the socket and let the poll fire — frames flow again.
+  buffered = 0;
+  timers.fire();
+  await flush();
+  expect(countData(received)).toBeGreaterThan(stalled);
+
+  clientTransport.send(serializer.stringify({ op: "stream_cancel", sid }));
+  await flush();
+});
+
 test("a throttled stream resumes and delivers more frames as the bucket refills", async () => {
   // Real timers: the rate limiter refills off Date.now(), so let real time pass.
   const [serverTransport, clientTransport] = createMockTransportPair();

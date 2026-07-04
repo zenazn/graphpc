@@ -244,7 +244,7 @@ Detailed examples: [Production Operations — Rate Limiting](production-operatio
 The rate limiter meters frame _count_, not _bytes_. A client that grants credits but stops reading the socket can make the server keep serializing and queuing `stream_data` frames into the transport's send buffer. Bound this two ways:
 
 - **Transport level:** set the WebSocket library's backpressure limit (Bun: `backpressureLimit`, and consider `closeOnBackpressureLimit: true`).
-- **GraphPC level:** set `maxBufferedBytes`. While the transport reports more than this many buffered bytes, the stream pump pauses (and resumes once the socket drains), so the send buffer is bounded to roughly `maxBufferedBytes` plus one in-flight frame per stream. Requires a transport that reports `bufferedAmount()` — the built-in Bun adapter wires this to `ws.getBufferedAmount()`. Without it (or without a transport-level limit), per-connection send-buffer memory for a non-draining consumer is bounded only by the transport's own backpressure policy.
+- **GraphPC level:** set `maxBufferedBytes`. While the transport reports more than this many buffered bytes, the stream pump pauses (and resumes once the socket drains), so the send buffer is bounded to roughly `maxBufferedBytes` plus one in-flight frame per stream. Requires a transport that reports `bufferedAmount` (a number, as on Web `WebSocket` and `ws`, or a zero-arg function — the built-in Bun adapter wires this to `ws.getBufferedAmount()`). Without it (or without a transport-level limit), per-connection send-buffer memory for a non-draining consumer is bounded only by the transport's own backpressure policy.
 
 ## Request IDs
 

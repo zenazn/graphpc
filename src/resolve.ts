@@ -273,7 +273,9 @@ export async function resolveStream(
 
   const result = fn.call(node, signal, ...validatedArgs);
 
-  // Support async generators, async iterables, and async disposables
+  // Support async generators and async iterables (anything exposing
+  // Symbol.asyncIterator). A bare async iterator or async disposable that
+  // does not expose Symbol.asyncIterator is rejected below.
   if (result != null && typeof result === "object") {
     if (typeof result[Symbol.asyncIterator] === "function") {
       return result[Symbol.asyncIterator]();

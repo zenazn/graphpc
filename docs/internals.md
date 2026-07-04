@@ -328,6 +328,8 @@ This ensures that a fast-producing server does not overwhelm a slow-consuming cl
 
 In addition to credits (which bound the _client's_ willingness to receive), each `stream_data` frame the server sends costs one token from the connection's [rate-limit bucket](production.md#rate-limiting). When the bucket is exhausted the pump pauses and resumes as it refills, so a client cannot use cheap `stream_credit` grants to make the server perform unbounded serialization/egress work. Stream throughput is thus bounded by both the credit window and the rate limiter's `refillRate`.
 
+A third, byte-level bound applies when the transport reports its send-buffer size (`bufferedAmount`, a property or a function — see [Transport Interface](#transport-interface)): with `maxBufferedBytes` set, the pump pauses while the buffer exceeds the limit, so a consumer that grants credits but stops draining the socket cannot grow the send buffer without bound. See [Production Guide — Stream Backpressure](production.md#stream-backpressure-slow-consumers).
+
 The server enforces `maxStreams` (default: 32) concurrent streams per connection. Opening a stream beyond this limit returns a `StreamLimitExceededError`.
 
 ## Failure Semantics
@@ -386,6 +388,12 @@ The protocol is transport-agnostic. Any object satisfying this interface works:
 interface Transport {
   send(data: string): void;
   close(): void;
+  // Optional: bytes buffered but not yet flushed to the socket — either the
+  // Web WebSocket-style number property or a function returning the byte
+  // count (Bun-style). When present, the server uses it for byte-level stream
+  // backpressure (`maxBufferedBytes`); transports that cannot report this may
+  // omit it.
+  bufferedAmount?: number | (() => number);
   addEventListener(
     type: "message",
     listener: (event: { data: string }) => void,
@@ -396,7 +404,7 @@ interface Transport {
 }
 ```
 
-This matches the Web `WebSocket` API, so you can pass a `WebSocket` directly to `server.handle()` or `createClient()`.
+This matches the Web `WebSocket` API, so you can pass a `WebSocket` directly to `server.handle()`, or return one from `createClient()`'s transport factory.
 
 ### Web / Node.js `ws`
 

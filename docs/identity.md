@@ -151,7 +151,7 @@ Client-side, `Path<T>` return values are typed as `RpcStub<T>`.
 
 1. path shape matches current connection schema
 2. endpoint type matches expected class
-3. depth limit (64 segments)
+3. depth limit (the connection's `maxDepth`, capped at 64 segments)
 
 Because connection schema excludes `@hidden` members, hidden-edge paths are rejected early. `await` still performs full real-graph auth checks.
 

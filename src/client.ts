@@ -871,9 +871,12 @@ export function createClient<S extends ServerInstance<any>>(
     for (const stream of activeClientStreams.values()) {
       // Clear any pending credit timer (it would fire on a closed transport)
       clearCreditTimer(stream);
-      if (stream.resume) {
-        // With resume: pending next() blocks (doesn't resolve or reject)
-        // It will be routed to the new stream on reconnect
+      if (stream.resume && reconnectConfig) {
+        // With resume AND reconnection enabled: pending next() blocks (doesn't
+        // resolve or reject). It will be routed to the new stream on reconnect.
+        // When reconnection is disabled there will never be a new connection, so
+        // a resume callback is inert — fall through and end the stream instead of
+        // leaving the held next() blocked forever.
       } else {
         // Without resume: complete the stream
         stream.done = true;
@@ -916,6 +919,11 @@ export function createClient<S extends ServerInstance<any>>(
         pt.reject(err);
       }
       pendingTerminals.clear();
+      // Reconnection is disabled, so `ready` can never resolve on this
+      // connection and there is no next one. Reject it (a no-op if it already
+      // resolved after a hello) so `await client.ready` — and any work parked on
+      // it — can't hang forever, mirroring close()/scheduleReconnect().
+      rejectReady(err);
     }
   }
 

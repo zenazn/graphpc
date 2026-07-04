@@ -120,6 +120,8 @@ Streams (`@stream` members) have specific reconnect behavior:
 - **Without a resume callback**: on disconnect, the pending `next()` returns `{ done: true }`. The `for await` loop exits cleanly.
 - **With a resume callback**: on disconnect, the pending `next()` blocks (does not resolve or reject). On reconnect, the library calls `resume()` to get a new underlying stream and routes the held `next()` to the new iterator's first yield. The loop continues transparently.
 
+A resume callback only has effect when reconnection is enabled. With `reconnect: false` there is no next connection to resume onto, so the callback is inert and the stream ends with `{ done: true }` as if none were set.
+
 To opt in to auto-resume, assign a `resume` callback on the stream object. The cursor must reflect the most recent successfully consumed message:
 
 ```typescript

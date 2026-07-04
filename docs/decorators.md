@@ -233,7 +233,7 @@ For the full story — providing the context at connection time, session revocat
 
 ## Validation
 
-Both `@edge`, `@method`, and `@stream` accept positional Standard Schema validators. Arguments are validated server-side before the method executes.
+`@edge`, `@method`, and `@stream` all accept positional Standard Schema validators. Arguments are validated server-side before the method executes.
 
 ```typescript
 @edge(User, z.string().uuid())

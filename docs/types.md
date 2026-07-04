@@ -166,6 +166,6 @@ export default [
 
 Flags public methods on `Node` subclasses that are missing `@edge`, `@method`, `@stream`, or `@hidden`.
 
-Skipped by rule design: constructors, getters/setters, static methods, private/protected methods, `#private` methods.
+Skipped by rule design: constructors, getters/setters, static methods, private/protected methods, `#private` methods, symbol-keyed/computed-key methods (a computed string-literal key like `["doStuff"]()` is still flagged), and TS overload signatures.
 
 Known limitation: detects direct `extends Node`, not transitive inheritance chains.
